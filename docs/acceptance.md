@@ -21,13 +21,15 @@
 - 新增真实 GOST TCP/TLS 双跳、错误证书拒绝，限购并发/跨渠道、邮箱门槛、卡密新请求/幂等重试、入口脱敏和工单/文章排序测试通过。
 - 两套离线部署测试验证安装、修复、回退、保数据卸载、精确范围清理、GHCR/Release 预构建备用来源、SHA/imageID/架构/标签校验及紧凑 JSON 解析；不是实际 VPS 操作。
 - 首轮 GitHub Linux race、静态检查、HTTP/浏览器/GOST/脚本测试通过；双架构镜像构建成功，PostgreSQL 和控制服务健康。Caddy 启动暴露了动态地址池冲突，因此 v0.1.0 的发布被阻止，未生成正式 Release。
-- v0.1.1 已修复地址池和版本解析，发布状态以 [GitHub Actions](https://github.com/mozziexwz/node/actions) 和对应 Release 为准；不将构建或容器健康等同于真实客户业务验收。
+- v0.1.1 的 [完整发布流水线](https://github.com/mozziexwz/node/actions/runs/34673089928) 已全部成功：Linux 自动化测试、双架构构建、真实 PostgreSQL/控制服务/Caddy Compose 启动、反向代理健康 JSON 与版本检查、两架构预构建归档导入与标签/架构/来源校验。
+- [公开 Release v0.1.1](https://github.com/mozziexwz/node/releases/tag/v0.1.1) 已发布（源码提交 `cf6d6e8edb7313b0cc0bd32b2ae50b2c6c6dc6dc`）。部署包、安装器、两份 Agent 与两份镜像归档全部匿名下载，SHA-256 与清单及 GitHub 资产摘要一致；Agent ELF 架构正确。公开入口 `install.sh` 与该标签的 Git blob 完全相同。
+- GHCR 匿名清单验证包含 `linux/amd64` 与 `linux/arm64`。实际 Compose 冒烟测试在 Linux amd64 runner 上运行，arm64 完成构建、导入和文件架构校验；没有声称执行过 arm64 真机业务或公网 ACME。
 
 ## 尚未验收 / 未完成
 
 - 真实 Debian/Ubuntu VPS 的部署与修复；可丢弃 VPS 的 Debian 12 DD；公网前置/中转/游戏认证路径。
 - Linux 真机 Agent 安装、进程崩溃、网络分区及失联租约演练。
-- PostgreSQL 容器集成与容量压测，Docker / Caddy / DNS / TLS 部署。
+- PostgreSQL 容量压测、真实 Debian 12 主机安装、生产 DNS / 公网 ACME / TLS 验收（CI 的 HTTP Compose 启动已通过）。
 - SMTP 服务商真实投递、真实 Turnstile 域名与商户付款回调。
 - SFTP 真机传输、异机恢复、财务对账与灾难恢复演练。
 - 规划中尚未交付的 UDP、FLVX 全量兼容、二维码/查单/退款、分表架构及高级备份等见 [安全与差距](security-and-limits.md)。
