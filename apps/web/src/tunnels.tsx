@@ -203,6 +203,11 @@ export function RouteBuilder() {
         </Button>
       </Header>
       <ErrorNotice error={error || nodeError || message} />
+      {message && (
+        <a className="btn mt16" href="#rules">
+          管理关联用户中转（可按线路筛选）
+        </a>
+      )}
       {!nodes.length && (
         <Notice>请先在“节点”中新增中转节点并安装 Agent。</Notice>
       )}
@@ -472,7 +477,7 @@ export function RouteBuilder() {
                   required
                   value={editing.rateMbps}
                   onChange={(e) => change({ rateMbps: e.target.value })}
-                  hint="实际速率同时受用户套餐限制，上下行分别限速。"
+                  hint="这是线路上限，不代表用户速率。实际每条规则取用户限速与此上限的较小值，上下行分别限速，不是账号共享带宽。"
                 />
                 <Check
                   checked={editing.requireFront}

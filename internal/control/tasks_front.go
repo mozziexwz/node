@@ -41,6 +41,9 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 		if !t.hasExecutor(s) {
 			return errors.New("没有在线 executor 执行机")
 		}
+		if err := trustSSH(s, userID, ssh); err != nil {
+			return err
+		}
 		return SaveDoc(s, "tasks", job.ID, job)
 	})
 	if err == nil {
@@ -53,7 +56,8 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 	select {
 	case out := <-result:
 		if out.State != "succeeded" || len(out.Hops) != 1 {
-			return zero, errors.New("前置机安装失败；请检查其 SSH、固定 GOST 资源和站内入口可达性")
+			d := executor.PublicDiagnostic(out.ErrorCode, out.Phase)
+			return zero, errors.New(d.Message + "；" + d.NextStep)
 		}
 		h := out.Hops[0]
 		if h.FromHost != ssh.Host || h.ToHost != targetHost || h.ToPort != targetPort || h.FromPort < 1 || h.FromPort > 65535 {

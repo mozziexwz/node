@@ -42,6 +42,7 @@ import { Articles, Tickets } from "./content";
 import { UsersPage } from "./users";
 import { RouteBuilder } from "./tunnels";
 import { Backups } from "./backups";
+import { navigationGroups } from "./navigation";
 import "./app.css";
 const labels: Record<string, [string, typeof Server]> = {
   tutorials: ["公告/教程", BookOpen],
@@ -222,45 +223,7 @@ function App() {
     scrollTo(0, 0);
   }
   const admin = user?.role === "admin";
-  let nav = admin
-    ? [
-        "home",
-        "deploy",
-        "relay",
-        "dd",
-        "users",
-        "tasks",
-        "executors",
-        "agents",
-        "routes",
-        "rules",
-        "plans",
-        "cards",
-        "orders",
-        "payments",
-        "tutorials",
-        "backups",
-        "invitations",
-        "settings",
-        "tickets",
-        "release",
-      ]
-    : [
-        "tutorials",
-        "home",
-        ...(user && user.expiresAt > Date.now()
-          ? ["routes", "traffic", "status"]
-          : []),
-        "deploy",
-        "relay",
-        "dd",
-        "tasks",
-        "plans",
-        "wallet",
-        "orders",
-        "account",
-        "tickets",
-      ];
+  const nav = navigationGroups(admin, !!user && user.expiresAt > Date.now());
   if (loading) return <Loading />;
   if (error && !user)
     return (
@@ -275,7 +238,15 @@ function App() {
       </div>
     );
   if (!user)
-    return <AuthPage settings={settings} onLogin={() => void refresh()} />;
+    return (
+      <AuthPage
+        settings={settings}
+        onLogin={() => {
+          navigate("tutorials");
+          void refresh();
+        }}
+      />
+    );
   let page: React.ReactNode;
   switch (view) {
     case "home":
@@ -400,32 +371,42 @@ function App() {
             </small>
           </div>
         </div>
-        <nav className="side-nav">
-          {nav.map((k) => {
-            const [n, I] = labels[k];
-            const name =
-              admin && k === "routes"
-                ? "隧道"
-                : admin && k === "plans"
-                  ? "套餐管理"
-                  : admin && k === "home"
-                    ? "运营概览"
-                    : admin && k === "tasks"
-                      ? "任务审计"
-                      : admin && k === "orders"
-                        ? "订单管理"
-                        : n;
-            return (
-              <button
-                key={k}
-                className={"nav-item " + (view === k ? "active" : "")}
-                onClick={() => navigate(k)}
-              >
-                <I size={18} />
-                {name}
-              </button>
-            );
-          })}
+        <nav className="side-nav" aria-label="主导航">
+          {nav.map((group) => (
+            <section
+              className="nav-group"
+              aria-label={group.title}
+              key={group.title}
+            >
+              <h2 className="nav-group-title">{group.title}</h2>
+              {group.items.map((k) => {
+                const [n, I] = labels[k];
+                const name =
+                  admin && k === "routes"
+                    ? "隧道"
+                    : admin && k === "plans"
+                      ? "套餐管理"
+                      : admin && k === "home"
+                        ? "运营概览"
+                        : admin && k === "tasks"
+                          ? "任务审计"
+                          : admin && k === "orders"
+                            ? "订单管理"
+                            : n;
+                return (
+                  <button
+                    key={k}
+                    className={"nav-item " + (view === k ? "active" : "")}
+                    aria-current={view === k ? "page" : undefined}
+                    onClick={() => navigate(k)}
+                  >
+                    <I size={18} />
+                    {name}
+                  </button>
+                );
+              })}
+            </section>
+          ))}
         </nav>
         <div className="side-footer">
           <span>MSBOOST</span>

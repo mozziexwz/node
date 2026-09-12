@@ -284,6 +284,8 @@ func TestExecutorClaimIsSingleDeliveryAndLeaseBound(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &task)
 	r := httptest.NewRequest("GET", "/api/executor/next", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
+	r.RemoteAddr = "8.8.4.4:33333"
+	r.Header.Set("X-Forwarded-For", "1.1.1.1")
 	w = httptest.NewRecorder()
 	s.next(w, r)
 	if w.Code != 200 {
@@ -294,6 +296,13 @@ func TestExecutorClaimIsSingleDeliveryAndLeaseBound(t *testing.T) {
 	if job.Request.SSH.Password != "ONE_TIME_SSH_DO_NOT_PERSIST" {
 		t.Fatal("envelope missing credential")
 	}
+	_ = a.Store.View(func(state *State) error {
+		record, _ := LoadDoc[ExecutorRecord](state, "executors", "executor-test")
+		if record.IP != "8.8.4.4" {
+			t.Fatal("executor source IP accepted untrusted forwarding header")
+		}
+		return nil
+	})
 	s.mu.Lock()
 	if s.envelopes[job.ID].Job.Request.SSH.Password != "" {
 		t.Fatal("credential retained after delivery")
@@ -320,6 +329,9 @@ func TestExecutorClaimIsSingleDeliveryAndLeaseBound(t *testing.T) {
 	}
 	result.Lease = job.Lease
 	result.Message = "secret in malicious diagnostic: ONE_TIME_SSH_DO_NOT_PERSIST"
+	result.NextStep = "ONE_TIME_SSH_DO_NOT_PERSIST"
+	result.ErrorCode = "ssh_auth"
+	result.Phase = "ONE_TIME_SSH_DO_NOT_PERSIST"
 	data, _ = json.Marshal(result)
 	r = httptest.NewRequest("POST", "/api/executor/result", bytes.NewReader(data))
 	r.Header.Set("Authorization", "Bearer "+token)
@@ -333,6 +345,9 @@ func TestExecutorClaimIsSingleDeliveryAndLeaseBound(t *testing.T) {
 		stored, _ := LoadDoc[Task](state, "tasks", job.ID)
 		if strings.Contains(stored.Message, "DO_NOT_PERSIST") {
 			t.Fatal("untrusted diagnostic persisted")
+		}
+		if stored.ErrorCode != "ssh_auth" || stored.Phase != "ssh_auth" || strings.Contains(stored.NextStep, "DO_NOT_PERSIST") || !strings.Contains(stored.Message, "认证失败") {
+			t.Fatalf("diagnostic vocabulary mismatch: %+v", stored)
 		}
 		return nil
 	})

@@ -7,11 +7,13 @@ import (
 )
 
 type SSH struct {
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	User        string `json:"user"`
-	Password    string `json:"password"`
-	Fingerprint string `json:"fingerprint"`
+	Host               string `json:"host"`
+	Port               int    `json:"port"`
+	User               string `json:"user"`
+	Password           string `json:"password"`
+	Fingerprint        string `json:"fingerprint"`
+	TrustMode          string `json:"trustMode,omitempty"`
+	ReplaceFingerprint string `json:"replaceFingerprint,omitempty"`
 }
 type DDOptions struct {
 	ConfirmErase bool   `json:"confirmErase"`
@@ -28,6 +30,24 @@ type Request struct {
 	Front         *SSH            `json:"front,omitempty"`
 	DD            *DDOptions      `json:"dd,omitempty"`
 	ForwardTarget *Target         `json:"forwardTarget,omitempty"`
+	Remark        string          `json:"remark,omitempty"`
+	Cleanup       *CleanupOptions `json:"cleanup,omitempty"`
+}
+type CleanupOptions struct {
+	Scope     string `json:"scope"`
+	PreviewID string `json:"previewId,omitempty"`
+	Digest    string `json:"digest,omitempty"`
+	Confirm   bool   `json:"confirm"`
+}
+type CleanupItem struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+type CleanupReport struct {
+	Scope   string        `json:"scope"`
+	Digest  string        `json:"digest"`
+	Items   []CleanupItem `json:"items"`
+	Removed bool          `json:"removed"`
 }
 type Target struct {
 	Host string `json:"host"`
@@ -67,6 +87,9 @@ type Result struct {
 	Config      json.RawMessage `json:"config,omitempty"`
 	Health      *Health         `json:"health,omitempty"`
 	Hops        []Hop           `json:"hops,omitempty"`
+	ErrorCode   string          `json:"errorCode,omitempty"`
+	NextStep    string          `json:"nextStep,omitempty"`
+	Cleanup     *CleanupReport  `json:"cleanup,omitempty"`
 }
 type Remote interface {
 	Run(context.Context, SSH, string) ([]byte, error)

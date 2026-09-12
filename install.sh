@@ -4,23 +4,23 @@ set -Eeuo pipefail
 umask 077
 
 readonly REPOSITORY=mozziexwz/node
-readonly INITIAL_VERSION=v0.1.2
+readonly INITIAL_VERSION=v0.2.0
 
 bootstrap_help() {
   printf '%s\n' \
-    'MSBOOST Debian 12 deployment (root required)' \
-    '  bash install.sh                       Interactive menu' \
+    'MSBOOST 网站部署管理（Debian 12，需 root 权限）' \
+    '  bash install.sh                       中文交互菜单' \
     '  bash install.sh install --domain panel.example.com --email 12345678@qq.com' \
     '  bash install.sh install --ip 203.0.113.10 --email 12345678@qq.com --allow-insecure-http' \
-    '  bash install.sh upgrade [--version v0.1.2]' \
-    '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  (failed v0.1.1 first install)' \
+    '  bash install.sh upgrade [--version v0.2.0]' \
+    '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  bash install.sh repair|status|logs|uninstall|purge' \
-    'Optional: --build explicitly builds reviewed release source; never an automatic fallback.' \
-    'uninstall retains all data. purge is separate and requires two interactive confirmations.'
+    '默认拉取预构建镜像；只有显式 --build 才在服务器编译源码。' \
+    'uninstall 卸载但保留数据；purge 为独立彻底清理，需要两次交互确认。'
 }
 
 bootstrap_menu() {
-  printf '%s\n' 'MSBOOST: 1) 安装  2) 升级  3) 修复  4) 状态  5) 日志  6) 卸载（保留数据）  7) 彻底清理  0) 退出' >&2
+  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  0) 退出' >&2
   local choice
   read -r -p '请选择: ' choice </dev/tty
   case "$choice" in
@@ -43,8 +43,8 @@ bootstrap_main() {
   case "$action" in install|upgrade|repair|status|logs|uninstall|purge) ;; *) bootstrap_help; return 2 ;; esac
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --version) [[ $# -ge 2 ]] || { printf '%s\n' 'Missing --version value' >&2; return 2; }; version=$2; shift 2 ;;
-      --source-dir) printf '%s\n' '--source-dir is reserved for the verified release bootstrap' >&2; return 2 ;;
+      --version) [[ $# -ge 2 ]] || { printf '%s\n' '缺少 --version 参数' >&2; return 2; }; version=$2; shift 2 ;;
+      --source-dir) printf '%s\n' '--source-dir 仅供已校验的发布入口使用' >&2; return 2 ;;
       *) forward+=("$1"); shift ;;
     esac
   done
@@ -53,7 +53,7 @@ bootstrap_main() {
     [[ -f /opt/msboost/.managed-by-msboost && ! -L /opt/msboost && -f /opt/msboost/deploy/manage.sh ]] || { printf '%s\n' '未发现此安装器管理的 /opt/msboost' >&2; return 1; }
     exec bash /opt/msboost/deploy/manage.sh "$action" "${forward[@]}"
   fi
-  for entry in curl tar sha256sum sed mktemp; do command -v "$entry" >/dev/null || { printf 'Required command missing: %s\n' "$entry" >&2; return 1; }; done
+  for entry in curl tar sha256sum sed mktemp; do command -v "$entry" >/dev/null || { printf '缺少必要依赖：%s\n' "$entry" >&2; return 1; }; done
   if [[ -z $version ]]; then
     if [[ $action == install ]]; then version=$INITIAL_VERSION
     else
@@ -69,12 +69,13 @@ bootstrap_main() {
   BOOTSTRAP_WORK=$work
   # Only the exact directory allocated by mktemp is eligible for cleanup.
   trap 'if [[ -n ${BOOTSTRAP_WORK:-} && $BOOTSTRAP_WORK == /tmp/msboost-release.* && ! -L $BOOTSTRAP_WORK ]]; then rm -rf -- "$BOOTSTRAP_WORK"; fi' EXIT
-  printf '下载正式发布 %s（优先预构建镜像，未发布时明确失败）…\n' "$version"
+  printf '\n[1/3] 下载正式发布 %s（优先预构建镜像）\n' "$version"
   for entry in "$archive" SHA256SUMS; do
     curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 600 --max-filesize 67108864 --retry 2 \
       "https://github.com/$REPOSITORY/releases/download/$version/$entry" -o "$work/$entry" || return
   done
   expected=$(awk -v asset="$archive" '$2 == asset || $2 == "*" asset {print $1}' "$work/SHA256SUMS")
+  printf '\n[2/3] 校验部署包 SHA-256 与安全解包路径\n'
   [[ $expected =~ ^[a-fA-F0-9]{64}$ ]] || { printf '%s\n' 'Release 校验清单缺失、重复或无效' >&2; return 1; }
   actual=$(sha256sum "$work/$archive"); actual=${actual%% *}
   [[ ${actual,,} == ${expected,,} ]] || { printf '%s\n' '部署包 SHA256 不一致；停止执行' >&2; return 1; }
@@ -89,6 +90,7 @@ bootstrap_main() {
   mkdir "$work/bundle" || return
   tar -xzf "$work/$archive" -C "$work/bundle" --no-same-owner --no-same-permissions || return
   [[ -f $work/bundle/deploy/manage.sh && -f $work/bundle/install.sh ]] || { printf '%s\n' '部署包结构无效' >&2; return 1; }
+  printf '\n[3/3] 执行部署管理（详细进度如下）\n'
   bash "$work/bundle/deploy/manage.sh" "$action" --source-dir "$work/bundle" --version "$version" "${forward[@]}"
 }
 

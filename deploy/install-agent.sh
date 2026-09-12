@@ -8,30 +8,29 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 usage() {
   cat <<'HELP'
-Usage: sudo bash deploy/install-agent.sh \
+用法：sudo bash deploy/install-agent.sh \
   --capability executor|relay --server https://YOUR_DOMAIN \
   --agent /absolute/path/to/msboost-agent-linux-ARCH \
   --agent-sha256 EXPECTED_SHA256 --token-file /root/agent-token \
   --gost-version 3.3.0
 
-Build the Agent from this reviewed repository for the target architecture first:
+通常请使用仓库根 agent.sh 下载预构建版本；仅源码部署时先为目标架构构建：
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/msboost-agent-linux-amd64 ./cmd/agent
   sha256sum dist/msboost-agent-linux-amd64
 
-The token file must be root-owned, mode 0600 or stricter, and contain ONLY the
-corresponding executor token or relay enrollment token. Tokens are never echoed.
-GOST 3.3.0 is the only currently audited/pinned version accepted by this installer.
-Existing installations are changed only when the MSBOOST ownership marker exists.
-Failed service starts restore the previous binary, service and environment file.
+令牌文件必须归 root 所有，权限 0600 或更严格，只包含对应角色的注册令牌。
+安装过程不会回显令牌。GOST 固定为已审核的 3.3.0，不使用 latest。
+只更新带 MSBOOST 所有权标记的安装；服务启动失败时尝试恢复原程序、服务与配置。
 HELP
 }
-fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+fail() { printf '错误：%s\n' "$*" >&2; exit 1; }
+step() { printf '\n  → %s\n' "$*" >&2; }
 capability=''; server=''; agent_file=''; agent_sha=''; token_file=''; gost_version=''
 while (( $# )); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --capability|--server|--agent|--agent-sha256|--token-file|--gost-version)
-      (( $# >= 2 )) || fail "Missing value for $1"
+      (( $# >= 2 )) || fail "缺少 $1 参数"
       case "$1" in
         --capability) capability=$2 ;;
         --server) server=${2%/} ;;
@@ -41,35 +40,36 @@ while (( $# )); do
         --gost-version) gost_version=$2 ;;
       esac
       shift 2 ;;
-    *) fail "Unknown option $1" ;;
+    *) fail "未知参数 $1" ;;
   esac
 done
 
-[[ "$capability" == executor || "$capability" == relay ]] || fail 'Choose exactly one capability: executor or relay.'
-[[ "$server" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || fail 'Use an HTTPS origin with a DNS hostname, without credentials, path or query.'
-[[ "$agent_sha" =~ ^[a-fA-F0-9]{64}$ ]] || fail 'An explicit --agent-sha256 is required.'
-[[ "$gost_version" == 3.3.0 ]] || fail 'Explicit --gost-version 3.3.0 is required; no latest downloads are used.'
-[[ -f "$agent_file" && ! -L "$agent_file" ]] || fail 'The explicitly selected Agent binary must be a regular file.'
-[[ -f "$token_file" && ! -L "$token_file" ]] || fail 'Provide a private regular --token-file.'
-[[ "$(uname -s)" == Linux ]] || fail 'This systemd installer supports Linux only.'
-[[ "$(id -u)" == 0 ]] || fail 'Run this installer as root.'
-command -v systemctl >/dev/null || fail 'systemd is required.'
-[[ "$(systemctl --version | awk 'NR==1 {print $2}')" -ge 247 ]] || fail 'systemd 247 or newer is required.'
-[[ "$(stat -c %u "$token_file")" == 0 ]] || fail 'The token file must be owned by root.'
+step '检查参数、系统与私有令牌文件'
+[[ "$capability" == executor || "$capability" == relay ]] || fail '请选择 executor（控制执行机）或 relay（中转节点）。'
+[[ "$server" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || fail '请填写 HTTPS 域名地址，不要包含凭据、路径或查询参数。'
+[[ "$agent_sha" =~ ^[a-fA-F0-9]{64}$ ]] || fail '必须通过 --agent-sha256 指定校验值。'
+[[ "$gost_version" == 3.3.0 ]] || fail '必须指定 --gost-version 3.3.0；不使用 latest。'
+[[ -f "$agent_file" && ! -L "$agent_file" ]] || fail 'Agent 程序必须是普通文件，不能是符号链接。'
+[[ -f "$token_file" && ! -L "$token_file" ]] || fail '请提供私有的普通 --token-file 文件。'
+[[ "$(uname -s)" == Linux ]] || fail '该 systemd 安装器仅支持 Linux。'
+[[ "$(id -u)" == 0 ]] || fail '请以 root 运行。'
+command -v systemctl >/dev/null || fail '系统缺少 systemd。'
+[[ "$(systemctl --version | awk 'NR==1 {print $2}')" -ge 247 ]] || fail '需要 systemd 247 或更高版本。'
+[[ "$(stat -c %u "$token_file")" == 0 ]] || fail '令牌文件必须归 root 所有。'
 token_mode=$(stat -c %a "$token_file")
-(( (8#$token_mode & 077) == 0 )) || fail 'The token file must not be accessible by group or others.'
+(( (8#$token_mode & 077) == 0 )) || fail '令牌文件不能允许用户组或其他用户访问，请设置 chmod 600。'
 token=$(< "$token_file")
-[[ "$token" =~ ^[A-Za-z0-9_-]{32,256}$ ]] || fail 'The token file must contain only the selected capability token.'
+[[ "$token" =~ ^[A-Za-z0-9_-]{32,256}$ ]] || fail '令牌文件只能包含对应角色的注册令牌。'
 agent_sha=${agent_sha,,}
-[[ "$(sha256sum "$agent_file" | cut -d' ' -f1)" == "$agent_sha" ]] || fail 'Agent SHA256 verification failed.'
+[[ "$(sha256sum "$agent_file" | cut -d' ' -f1)" == "$agent_sha" ]] || fail 'Agent SHA-256 校验失败。'
 
 case "$(uname -m)" in
   x86_64) arch=amd64; expected_machine=62; gost_sha=676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5 ;;
   aarch64|arm64) arch=arm64; expected_machine=183; gost_sha=d03699e3f385d4ff5dad68046712adfcc7515325a064d2ab046e0bece30f8f8f ;;
-  *) fail 'Supported architectures: amd64 and arm64.' ;;
+  *) fail '当前仅支持 amd64 和 arm64 架构。' ;;
 esac
-[[ "$(od -An -tx1 -N4 "$agent_file" | tr -d ' \n')" == 7f454c46 ]] || fail 'Agent must be a Linux ELF binary.'
-[[ "$(od -An -tu2 -j18 -N2 "$agent_file" | tr -d ' \n')" == "$expected_machine" ]] || fail 'Agent architecture does not match this server.'
+[[ "$(od -An -tx1 -N4 "$agent_file" | tr -d ' \n')" == 7f454c46 ]] || fail 'Agent 必须是 Linux ELF 程序。'
+[[ "$(od -An -tu2 -j18 -N2 "$agent_file" | tr -d ' \n')" == "$expected_machine" ]] || fail 'Agent 架构与本服务器不一致。'
 
 managed=/usr/local/libexec/msboost-agent
 binary=/usr/local/bin/msboost-agent
@@ -77,12 +77,12 @@ envfile="/etc/msboost-${capability}.env"
 unit="msboost-${capability}.service"
 unitfile="/etc/systemd/system/${unit}"
 for path in "$managed" "$binary" "$envfile" "$unitfile"; do
-  [[ ! -L "$path" ]] || fail "Refusing symlink target: $path"
+  [[ ! -L "$path" ]] || fail "拒绝覆盖符号链接：$path"
 done
 if [[ ! -f "$managed/managed-v1" ]]; then
-  [[ ! -e "$binary" && ! -e "$envfile" && ! -e "$unitfile" && ! -e "$managed" ]] || fail 'Existing paths are not marked as managed by MSBOOST; inspect them before installing.'
+  [[ ! -e "$binary" && ! -e "$envfile" && ! -e "$unitfile" && ! -e "$managed" ]] || fail '已有文件不属于 MSBOOST 受管安装，拒绝接管；请先核查。'
 else
-  [[ "$(< "$managed/managed-v1")" == MSBOOST_AGENT_MANAGED_V1 ]] || fail 'The existing ownership marker does not match this installer.'
+  [[ "$(< "$managed/managed-v1")" == MSBOOST_AGENT_MANAGED_V1 ]] || fail '已有安装的所有权标记不正确。'
 fi
 stage=$(mktemp -d /tmp/msboost-agent.XXXXXX)
 backup=''; mutation=0; committed=0; was_active=0
@@ -106,23 +106,24 @@ cleanup() {
       masked-runtime) systemctl mask --runtime "$unit" >/dev/null 2>&1 || true ;;
     esac
     if (( was_active )); then systemctl start "$unit" >/dev/null 2>&1 || true; fi
-    printf 'Installation failed; prior files were restored. Private backup: %s\n' "$backup" >&2
+    printf '安装失败，已尝试恢复原文件与服务。请核查服务状态；私有备份：%s\n' "$backup" >&2
   fi
   [[ "$stage" == /tmp/msboost-agent.* ]] && rm -rf -- "$stage"
   exit "$code"
 }
 trap cleanup EXIT
 
+step '准备已校验的 Agent 与运行依赖'
 install -m 0755 "$agent_file" "$stage/msboost-agent"
-[[ "$(sha256sum "$stage/msboost-agent" | cut -d' ' -f1)" == "$agent_sha" ]] || fail 'Staged Agent SHA256 verification failed.'
+[[ "$(sha256sum "$stage/msboost-agent" | cut -d' ' -f1)" == "$agent_sha" ]] || fail '暂存 Agent 的 SHA-256 校验失败。'
 if [[ "$capability" == relay ]]; then
-  command -v curl >/dev/null || fail 'Install curl and ca-certificates first.'
-  command -v tar >/dev/null || fail 'Install tar first.'
+  command -v curl >/dev/null || fail '请先安装 curl 与 ca-certificates。'
+  command -v tar >/dev/null || fail '请先安装 tar。'
   gost_url="https://github.com/go-gost/gost/releases/download/v3.3.0/gost_3.3.0_linux_${arch}.tar.gz"
-  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-time 180 "$gost_url" -o "$stage/gost.tar.gz"
-  printf '%s  %s\n' "$gost_sha" "$stage/gost.tar.gz" | sha256sum -c - >/dev/null
+  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-time 180 "$gost_url" -o "$stage/gost.tar.gz" || fail 'GOST 下载失败，请检查服务器访问 GitHub 的网络。'
+  printf '%s  %s\n' "$gost_sha" "$stage/gost.tar.gz" | sha256sum -c - >/dev/null || fail 'GOST SHA-256 校验失败。'
   tar -xzf "$stage/gost.tar.gz" -C "$stage" gost
-  [[ -f "$stage/gost" && ! -L "$stage/gost" ]] || fail 'Pinned archive did not contain a regular gost binary.'
+  [[ -f "$stage/gost" && ! -L "$stage/gost" ]] || fail 'GOST 发布包缺少正确程序文件。'
   "$stage/gost" -V >/dev/null
 fi
 printf 'MSBOOST_SERVER_URL=%s\n' "$server" > "$stage/environment"
@@ -173,6 +174,7 @@ else
 fi
 printf '\n[Install]\nWantedBy=multi-user.target\n' >> "$stage/unit"
 
+step '保存私有回滚备份并安装服务'
 install -d -m 0700 /var/backups/msboost-agent
 backup=$(mktemp -d "/var/backups/msboost-agent/${capability}.XXXXXXXX")
 [[ ! -f "$binary" ]] || cp -p -- "$binary" "$backup/binary"
@@ -188,8 +190,9 @@ install -m 0600 "$stage/environment" "$envfile"
 install -m 0644 "$stage/unit" "$unitfile"
 systemctl daemon-reload
 systemctl enable "$unit" >/dev/null
+step '启动服务并检查本机运行状态'
 systemctl restart "$unit"
 sleep 3
-systemctl is-active --quiet "$unit" || fail 'Agent service did not remain running; inspect journalctl after rollback.'
+systemctl is-active --quiet "$unit" || fail 'Agent 未保持运行，将尝试回滚；请随后检查服务日志。'
 committed=1
-printf 'Installed %s with verified Agent/GOST pins. Verify its live status in the control panel.\nPrivate pre-install backup: %s\n' "$unit" "$backup"
+printf '\n安装完成：%s\n程序和 GOST 已校验。请在控制面后台确认在线与注册状态。\n私有安装前备份：%s\n查看本机日志：journalctl -u %s -n 80 --no-pager\n请勿公开令牌或完整环境文件。\n' "$unit" "$backup" "$unit"

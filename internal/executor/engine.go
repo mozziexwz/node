@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -46,7 +47,7 @@ func verifyAsset(a Asset) error {
 	return nil
 }
 func prepareAsset(a Asset) string {
-	return "set -Eeuo pipefail\numask 077\n[ \"$(id -u)\" = 0 ]\nwork=$(mktemp -d /run/msboost-task.XXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\nprintf '%s' '" + base64.StdEncoding.EncodeToString(a.Data) + "' | base64 -d > \"$work/installer.sh\"\nprintf '%s  %s\\n' '" + a.SHA256 + "' \"$work/installer.sh\" | sha256sum -c - >/dev/null\n"
+	return "set -Eeuo pipefail\numask 077\n" + diagnosticPrelude + "[ \"$(id -u)\" = 0 ]\nwork=$(mktemp -d /run/msboost-task.XXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\nprintf '%s' '" + base64.StdEncoding.EncodeToString(a.Data) + "' | base64 -d > \"$work/installer.sh\"\nprintf '%s  %s\\n' '" + a.SHA256 + "' \"$work/installer.sh\" | sha256sum -c - >/dev/null\n"
 }
 func marker(out []byte, key string) string {
 	for _, line := range strings.Split(string(out), "\n") {
@@ -57,10 +58,16 @@ func marker(out []byte, key string) string {
 	return ""
 }
 func failed(r Result, phase, message string) Result {
-	r.State = "failed"
-	r.Phase = phase
-	r.Message = message
-	return r
+	code := "execution_failed"
+	switch phase {
+	case "validate":
+		code = "invalid_request"
+	case "integrity":
+		code = "integrity_failed"
+	case "config":
+		code = "invalid_config"
+	}
+	return failRemote(r, phase, nil, PublicDiagnostic(code, phase))
 }
 func (e *Engine) Execute(ctx context.Context, job Job) Result {
 	r := Result{ID: job.ID, Lease: job.Lease}
@@ -73,7 +80,7 @@ func (e *Engine) Execute(ctx context.Context, job Job) Result {
 	if job.Request.Kind == "fingerprint" {
 		fp, alg, err := e.Remote.Probe(ctx, job.Request.SSH.Host, job.Request.SSH.Port)
 		if err != nil {
-			return failed(r, "fingerprint", "SSH 指纹检查失败，请检查地址与网络")
+			return failRemote(r, "fingerprint", nil, err)
 		}
 		r.State = "succeeded"
 		r.Fingerprint = fp
@@ -93,6 +100,8 @@ func (e *Engine) Execute(ctx context.Context, job Job) Result {
 		return e.dd(ctx, job, r)
 	case "relay":
 		return e.relay(ctx, job, r)
+	case "cleanup", "cleanup-preview":
+		return e.cleanup(ctx, job, r)
 	}
 	return failed(r, "validate", "不支持的任务")
 }
@@ -100,7 +109,7 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	if err := verifyAsset(job.Script); err != nil {
 		return failed(r, "integrity", err.Error())
 	}
-	script := prepareAsset(job.Script) + encodedAssignment("MSBOOST_SERVER_IP", job.Request.SSH.Host) + "export MSBOOST_SERVER_IP\n"
+	script := prepareAsset(job.Script) + encodedAssignment("MSBOOST_SERVER_IP", job.Request.SSH.Host) + "export MSBOOST_SERVER_IP\nmsboost_phase=install\n"
 	if job.Request.Mode == "fresh" {
 		script += encodedAssignment("node_user", "msboost-"+randomHex(8)) + encodedAssignment("node_pass", randomHex(24))
 		// The original installer performs ownership checks and transactional rollback.
@@ -109,10 +118,10 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	} else {
 		script += "bash \"$work/installer.sh\" >\"$work/private.log\" 2>&1\n"
 	}
-	script += "systemctl is-active --quiet msboost.service\nprintf 'MSBOOST_CONFIG='\nbase64 -w0 /root/直连.json\nprintf '\\n'\n"
+	script += "msboost_phase=service\nsystemctl is-active --quiet msboost.service\nmsboost_phase=config\nprintf 'MSBOOST_CONFIG='\nbase64 -w0 /root/直连.json\nprintf '\\n'\n"
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	if err != nil {
-		return failed(r, "install", "安装未成功完成；请检查 VPS 的系统、网络和受管文件，已由安装器执行可用的回滚步骤")
+		return failRemote(r, "install", out, err)
 	}
 	data, err := base64.StdEncoding.DecodeString(marker(out, "MSBOOST_CONFIG"))
 	if err != nil || len(data) == 0 {
@@ -154,10 +163,10 @@ func (e *Engine) dd(ctx context.Context, job Job, r Result) Result {
 		port = opts.NewPort
 	}
 	script := prepareAsset(job.Script) + encodedAssignment("new_password", p) + encodedAssignment("new_port", strconv.Itoa(port))
-	script += "bash \"$work/installer.sh\" debian 12 --password \"$new_password\" --ssh-port \"$new_port\" >\"$work/private.log\" 2>&1\nprintf 'MSBOOST_PREPARED=1\\n'\n"
+	script += "msboost_phase=prepare\nbash \"$work/installer.sh\" debian 12 --password \"$new_password\" --ssh-port \"$new_port\" >\"$work/private.log\" 2>&1\nprintf 'MSBOOST_PREPARED=1\\n'\n"
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	if err != nil || marker(out, "MSBOOST_PREPARED") != "1" {
-		return failed(r, "prepare", "重装准备未成功完成，尚未提交重启；请检查 VPS 后重新决定操作")
+		return failRemote(r, "prepare", out, err)
 	}
 	commitCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
@@ -209,13 +218,13 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 		if s == nil {
 			continue
 		}
-		if _, err = e.Remote.Run(ctx, *s, "set -e\n[ \"$(id -u)\" = 0 ]\ncommand -v systemctl >/dev/null\nprintf 'MSBOOST_READY=1\\n'\n"); err != nil {
-			return failed(r, "preflight", "两台服务器均需通过 SSH、指纹及运行环境检查")
+		if out, runErr := e.Remote.Run(ctx, *s, "set -Eeuo pipefail\n"+diagnosticPrelude+"[ \"$(id -u)\" = 0 ]\n[ -d /run/systemd/system ]\ncommand -v systemctl >/dev/null\nprintf 'MSBOOST_READY=1\\n'\n"); runErr != nil {
+			return failRemote(r, "preflight", out, runErr)
 		}
 	}
 	port, err := e.installRelay(ctx, job.Request.SSH, target, info.TargetPort, job.ID+"r", 625000)
 	if err != nil {
-		return failed(r, "relay", err.Error())
+		return failRemote(r, "relay", nil, err)
 	}
 	r.Hops = []Hop{{FromHost: job.Request.SSH.Host, FromPort: port, ToHost: info.TargetHost, ToPort: info.TargetPort}}
 	entryHost, entryPort := job.Request.SSH.Host, port
@@ -223,7 +232,7 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 		frontPort, err := e.installRelay(ctx, *job.Request.Front, job.Request.SSH.Host, port, job.ID+"f", 625000)
 		if err != nil {
 			e.cleanupRelay(ctx, job.Request.SSH, job.ID+"r")
-			return failed(r, "front", "前置机部署失败；已尝试清理本次任务创建的中转服务，请检查 VPS 确认清理状态")
+			return failRemote(r, "front", nil, err)
 		}
 		r.Hops = append(r.Hops, Hop{FromHost: job.Request.Front.Host, FromPort: frontPort, ToHost: job.Request.SSH.Host, ToPort: port})
 		entryHost = job.Request.Front.Host
@@ -232,6 +241,15 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 	r.Config, err = RewriteClientConfig(job.Request.ClientConfig, entryHost, entryPort)
 	if err != nil {
 		return failed(r, "config", "入口配置生成失败")
+	}
+	if job.Request.Remark != "" {
+		var doc map[string]any
+		if json.Unmarshal(r.Config, &doc) == nil {
+			profile := doc["profiles"].([]any)[0].(map[string]any)
+			profile["profileName"] = job.Request.Remark
+			doc["activeProfile"] = job.Request.Remark
+			r.Config, _ = json.MarshalIndent(doc, "", "  ")
+		}
 	}
 	r.State = "succeeded"
 	r.Phase = "complete"
@@ -253,7 +271,7 @@ func (e *Engine) front(ctx context.Context, job Job, r Result) Result {
 	}
 	port, err := e.installRelay(ctx, job.Request.SSH, host, target.Port, job.ID+"p", 0)
 	if err != nil {
-		return failed(r, "front", err.Error())
+		return failRemote(r, "front", nil, err)
 	}
 	r.State = "succeeded"
 	r.Hops = []Hop{{FromHost: job.Request.SSH.Host, FromPort: port, ToHost: target.Host, ToPort: target.Port}}
@@ -267,7 +285,7 @@ func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetP
 	}
 	archOut, err := e.Remote.Run(ctx, s, "uname -m\n")
 	if err != nil {
-		return 0, errors.New("无法读取远端架构")
+		return 0, remoteDiagnostic(err, archOut, "preflight")
 	}
 	url, digest := e.GostAMD64URL, e.GostAMD64SHA256
 	switch strings.TrimSpace(string(archOut)) {
@@ -275,15 +293,15 @@ func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetP
 	case "aarch64", "arm64":
 		url, digest = e.GostARM64URL, e.GostARM64SHA256
 	default:
-		return 0, errors.New("不支持该服务器架构")
+		return 0, diagnosticError("unsupported_system")
 	}
 	if !strings.HasPrefix(url, "https://github.com/go-gost/gost/releases/download/v") || !validSHA(digest) {
-		return 0, errors.New("执行机尚未配置此架构的固定版本 GOST 下载地址和 SHA256")
+		return 0, diagnosticError("executor_configuration")
 	}
-	script := "set -Eeuo pipefail\numask 077\n" + encodedAssignment("gost_url", url) + encodedAssignment("gost_sha", digest) + encodedAssignment("task_id", id) + encodedAssignment("target_host", target) + encodedAssignment("target_port", strconv.Itoa(targetPort)) + encodedAssignment("rate_bytes", strconv.Itoa(rateBytes)) + relayInstallScript
+	script := "set -Eeuo pipefail\numask 077\n" + diagnosticPrelude + encodedAssignment("gost_url", url) + encodedAssignment("gost_sha", digest) + encodedAssignment("task_id", id) + encodedAssignment("target_host", target) + encodedAssignment("target_port", strconv.Itoa(targetPort)) + encodedAssignment("rate_bytes", strconv.Itoa(rateBytes)) + relayInstallScript
 	out, err := e.Remote.Run(ctx, s, script)
 	if err != nil {
-		return 0, errors.New("中转服务安装、目标连通或真实绑定失败")
+		return 0, remoteDiagnostic(err, out, "relay")
 	}
 	port, err := strconv.Atoi(marker(out, "MSBOOST_RELAY_PORT"))
 	if err != nil || port < 20000 || port > 59999 {

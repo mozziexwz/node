@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"mime"
 	"net/http"
 	"net/netip"
 	"os"
@@ -21,23 +22,29 @@ import (
 )
 
 type Task struct {
-	ID              string           `json:"id"`
-	UserID          string           `json:"userId"`
-	Kind            string           `json:"kind"`
-	Host            string           `json:"host"`
-	Mode            string           `json:"mode,omitempty"`
-	State           string           `json:"state"`
-	Phase           string           `json:"phase"`
-	Message         string           `json:"message"`
-	CreatedAt       int64            `json:"createdAt"`
-	UpdatedAt       int64            `json:"updatedAt"`
-	Idempotency     string           `json:"-"`
-	RequestDigest   string           `json:"-"`
-	Health          *executor.Health `json:"health,omitempty"`
-	Hops            []executor.Hop   `json:"hops,omitempty"`
-	ConfigAvailable bool             `json:"configAvailable"`
-	ConfigHost      string           `json:"configHost,omitempty"`
-	ConfigPort      int              `json:"configPort,omitempty"`
+	ID              string                  `json:"id"`
+	UserID          string                  `json:"userId"`
+	Kind            string                  `json:"kind"`
+	Host            string                  `json:"host"`
+	Mode            string                  `json:"mode,omitempty"`
+	State           string                  `json:"state"`
+	Phase           string                  `json:"phase"`
+	Message         string                  `json:"message"`
+	CreatedAt       int64                   `json:"createdAt"`
+	UpdatedAt       int64                   `json:"updatedAt"`
+	Idempotency     string                  `json:"-"`
+	RequestDigest   string                  `json:"-"`
+	Health          *executor.Health        `json:"health,omitempty"`
+	Hops            []executor.Hop          `json:"hops,omitempty"`
+	ConfigAvailable bool                    `json:"configAvailable"`
+	ConfigHost      string                  `json:"configHost,omitempty"`
+	ConfigPort      int                     `json:"configPort,omitempty"`
+	ErrorCode       string                  `json:"errorCode,omitempty"`
+	NextStep        string                  `json:"nextStep,omitempty"`
+	Remark          string                  `json:"remark,omitempty"`
+	Cleanup         *executor.CleanupReport `json:"cleanup,omitempty"`
+	SSHFingerprint  string                  `json:"sshFingerprint,omitempty"`
+	SSHPort         int                     `json:"sshPort,omitempty"`
 }
 
 // Internal idempotency metadata stays separate because Task is also a public response.
@@ -52,6 +59,8 @@ type ExecutorRecord struct {
 	TokenHash  string `json:"tokenHash,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
 	LastSeenAt int64  `json:"lastSeenAt"`
+	IP         string `json:"ip"`
+	Online     bool   `json:"online"`
 }
 type taskEnvelope struct {
 	Job       executor.Job
@@ -73,6 +82,28 @@ type taskProbe struct {
 type taskDigestSecret struct {
 	Sealed string `json:"sealed"`
 }
+type sshTrust struct {
+	Fingerprint string `json:"fingerprint"`
+	UpdatedAt   int64  `json:"updatedAt"`
+}
+
+func sshTrustID(user string, s executor.SSH) string {
+	sum := sha256.Sum256([]byte(taskProbeKey(user, s)))
+	return hex.EncodeToString(sum[:])
+}
+func trustSSH(s *State, user string, connection executor.SSH) error {
+	id := sshTrustID(user, connection)
+	previous, exists := LoadDoc[sshTrust](s, "ssh_trust", id)
+	if exists && previous.Fingerprint != connection.Fingerprint && connection.ReplaceFingerprint != previous.Fingerprint {
+		return errors.New("SSH 主机指纹已变化，请通过 VPS 控制台核实，并在高级 SSH 设置中明确确认替换")
+	}
+	// Empty mode preserves compatibility with already-confirmed strict clients.
+	if !exists && connection.ReplaceFingerprint != "" {
+		return errors.New("主机信任记录已变化，请重新检查指纹")
+	}
+	return SaveDoc(s, "ssh_trust", id, sshTrust{Fingerprint: connection.Fingerprint, UpdatedAt: time.Now().UnixMilli()})
+}
+
 type TaskService struct {
 	app       *App
 	mu        sync.Mutex
@@ -194,7 +225,8 @@ func (t *TaskService) expire() {
 						v.State = "unknown"
 					}
 					v.Phase = "executor_timeout"
-					v.Message = "执行机响应中断；请核实 VPS 状态，系统不会自动重试"
+					d := executor.PublicDiagnostic("executor_offline", "executor")
+					v.ErrorCode, v.Message, v.NextStep = d.Code, d.Message, d.NextStep
 					v.UpdatedAt = now.UnixMilli()
 					return SaveDoc(s, "tasks", id, v)
 				}
@@ -277,7 +309,7 @@ func taskPublicMessage(state string) string {
 	case "unknown":
 		return "提交结果不明确；请从 VPS 控制台核实，禁止自动重试"
 	default:
-		return "任务未成功完成，请检查 SSH 指纹、凭据、服务器环境和执行机配置"
+		return "任务未成功完成，请查看失败阶段和处理建议；系统不会自动重试"
 	}
 }
 func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
@@ -336,7 +368,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	job := Task{ID: ID(), UserID: u.ID, Kind: request.Kind, Host: request.SSH.Host, Mode: request.Mode, State: "queued", Phase: "queued", Message: "等待执行机领取一次性任务", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli()}
+	job := Task{ID: ID(), UserID: u.ID, Kind: request.Kind, Host: request.SSH.Host, Mode: request.Mode, State: "queued", Phase: "queued", Message: "等待执行机领取一次性任务", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli(), Remark: request.Remark, SSHFingerprint: request.SSH.Fingerprint, SSHPort: request.SSH.Port}
 	raw, _ := json.Marshal(request)
 	mac := hmac.New(sha256.New, t.digestKey)
 	_, _ = mac.Write(raw)
@@ -364,6 +396,27 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		if !t.confirmedProbe(u.ID, request.SSH) || (request.Front != nil && !t.confirmedProbe(u.ID, *request.Front)) {
 			return errors.New("请先检查并确认每台 SSH 服务器的真实指纹，指纹检查有效期为 30 分钟")
 		}
+		if request.Cleanup != nil {
+			tool := "deploy"
+			if request.Cleanup.Scope == "relay" {
+				tool = "relay"
+			}
+			if err := taskGate(s, fresh, tool); err != nil {
+				return err
+			}
+			if request.Kind == "cleanup" {
+				preview, ok := LoadDoc[Task](s, "tasks", request.Cleanup.PreviewID)
+				if !ok || preview.UserID != u.ID || preview.Kind != "cleanup-preview" || preview.State != "succeeded" || preview.Host != job.Host || preview.SSHPort != job.SSHPort || preview.SSHFingerprint != job.SSHFingerprint || preview.UpdatedAt < now.Add(-10*time.Minute).UnixMilli() || preview.Cleanup == nil || preview.Cleanup.Scope != request.Cleanup.Scope || preview.Cleanup.Digest != request.Cleanup.Digest {
+					return errors.New("清理预览已失效或与当前服务器不一致，请重新预览")
+				}
+				if _, used := LoadDoc[taskIdempotency](s, "cleanup_consumed", preview.ID); used {
+					return errors.New("此清理预览已用于提交，不能再次执行；请重新检查 VPS 并预览")
+				}
+				if err := SaveDoc(s, "cleanup_consumed", preview.ID, taskIdempotency{TaskID: job.ID}); err != nil {
+					return err
+				}
+			}
+		}
 		if t.targetBusy(request.SSH.Host) || (request.Front != nil && t.targetBusy(request.Front.Host)) {
 			return errors.New("该服务器已有未结束任务，请先核实其结果")
 		}
@@ -372,6 +425,14 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		}
 		if !(fresh.Role == "admin" && request.Kind == "deploy") && toolLimit(s, request.Kind, u.ID, now.UnixMilli()).Remaining == 0 {
 			return errors.New("本工具已达到次数限制，请等待下一次可用时间")
+		}
+		if err := trustSSH(s, u.ID, request.SSH); err != nil {
+			return err
+		}
+		if request.Front != nil {
+			if err := trustSSH(s, u.ID, *request.Front); err != nil {
+				return err
+			}
 		}
 		if err := SaveDoc(s, "tasks", job.ID, job); err != nil {
 			return err
@@ -423,7 +484,7 @@ func (t *TaskService) list(w http.ResponseWriter, r *http.Request) {
 				rows = append(rows, v)
 			}
 		}
-		for _, k := range []string{"deploy", "relay", "dd", "fingerprint"} {
+		for _, k := range []string{"deploy", "relay", "dd", "fingerprint", "cleanup", "cleanup-preview"} {
 			limits[k] = toolLimit(s, k, u.ID, time.Now().UnixMilli())
 		}
 		return nil
@@ -475,7 +536,25 @@ func (t *TaskService) download(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store, private")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="msboost.json"`)
+	name := "msboost"
+	_ = t.app.Store.View(func(s *State) error {
+		job, ok := LoadDoc[Task](s, "tasks", r.PathValue("id"))
+		if ok && job.UserID == u.ID && job.Remark != "" {
+			name = job.Remark
+		}
+		return nil
+	})
+	name = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return '_'
+		}
+		return r
+	}, name)
+	name = strings.Trim(name, ". ")
+	if name == "" {
+		name = "msboost"
+	}
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + ".json"}))
 	_, _ = w.Write(c.Data)
 }
 func (t *TaskService) adminTasks(w http.ResponseWriter, r *http.Request) {
@@ -503,6 +582,13 @@ func (t *TaskService) fingerprint(w http.ResponseWriter, r *http.Request) {
 	u, err := t.app.User(r)
 	if err != nil {
 		Fail(w, 401, "请先登录")
+		return
+	}
+	// Public-key discovery is read-only and accepts no SSH credentials. Keep
+	// diagnostics available during maintenance and independent of free-tool
+	// email policy; execution endpoints still enforce their own strict gates.
+	if u.Status != "active" {
+		Fail(w, 403, "账号当前不可检查 SSH 主机指纹")
 		return
 	}
 	var input struct {
@@ -541,10 +627,17 @@ func (t *TaskService) fingerprint(w http.ResponseWriter, r *http.Request) {
 	select {
 	case out := <-result:
 		if out.State != "succeeded" {
-			Fail(w, 502, "SSH 指纹检查失败，请检查地址、端口和网络")
+			d := executor.PublicDiagnostic(out.ErrorCode, out.Phase)
+			Fail(w, 502, d.Message+"；"+d.NextStep)
 			return
 		}
-		WriteJSON(w, 200, map[string]any{"host": input.Host, "port": input.Port, "fingerprint": out.Fingerprint, "algorithm": out.Algorithm, "checkedAt": time.Now().UnixMilli()})
+		remembered := ""
+		_ = t.app.Store.View(func(s *State) error {
+			prior, _ := LoadDoc[sshTrust](s, "ssh_trust", sshTrustID(u.ID, executor.SSH{Host: input.Host, Port: input.Port}))
+			remembered = prior.Fingerprint
+			return nil
+		})
+		WriteJSON(w, 200, map[string]any{"host": input.Host, "port": input.Port, "fingerprint": out.Fingerprint, "algorithm": out.Algorithm, "checkedAt": time.Now().UnixMilli(), "rememberedFingerprint": remembered, "authenticationChecked": false})
 	case <-time.After(28 * time.Second):
 		Fail(w, 504, "SSH 指纹检查超时，请稍后重试")
 	case <-r.Context().Done():
@@ -585,6 +678,7 @@ func (t *TaskService) heartbeat(w http.ResponseWriter, r *http.Request) {
 			return errors.New("令牌已撤销")
 		}
 		current.LastSeenAt = time.Now().UnixMilli()
+		current.IP = t.app.clientIP(r)
 		return SaveDoc(s, "executors", a.ID, current)
 	})
 	if err != nil {
@@ -603,6 +697,7 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 		current, ok := LoadDoc[ExecutorRecord](s, "executors", a.ID)
 		if ok {
 			current.LastSeenAt = time.Now().UnixMilli()
+			current.IP = t.app.clientIP(r)
 			return SaveDoc(s, "executors", a.ID, current)
 		}
 		return nil
@@ -722,6 +817,19 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if envelope.Job.Request.Kind == "cleanup" || envelope.Job.Request.Kind == "cleanup-preview" {
+		if out.State == "succeeded" && !executor.ValidCleanupReport(out.Cleanup, envelope.Job.Request.Cleanup.Scope, envelope.Job.Request.Kind == "cleanup") {
+			Fail(w, 400, "清理结果范围校验失败")
+			return
+		}
+		if out.State == "succeeded" && envelope.Job.Request.Kind == "cleanup" && out.Cleanup.Digest != envelope.Job.Request.Cleanup.Digest {
+			Fail(w, 400, "清理结果摘要与已确认预览不一致")
+			return
+		}
+	} else if out.Cleanup != nil {
+		Fail(w, 400, "该任务不接受清理结果")
+		return
+	}
 	err = t.app.Store.Update(func(s *State) error {
 		job, ok := LoadDoc[Task](s, "tasks", out.ID)
 		if !ok {
@@ -729,11 +837,21 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		}
 		job.State = out.State
 		job.Phase = "complete"
-		switch out.Phase {
-		case "integrity", "validate", "install", "config", "prepare", "submission_unknown", "preflight", "target", "relay", "front":
+		if executor.ValidPhase(out.Phase) {
 			job.Phase = out.Phase
 		}
 		job.Message = taskPublicMessage(out.State)
+		if out.State == "failed" {
+			d := executor.PublicDiagnostic(out.ErrorCode, out.Phase)
+			job.ErrorCode, job.Phase, job.Message, job.NextStep = d.Code, d.Phase, d.Message, d.NextStep
+		}
+		if out.State == "succeeded" && out.Cleanup != nil {
+			job.Cleanup = out.Cleanup
+			job.Message = "清理预览已完成，尚未删除任何服务或文件；请核对清单并再次确认。"
+			if out.Cleanup.Removed {
+				job.Message = "清单内受管服务、文件和本项目创建的防火墙规则已清理。备份、系统账户、依赖及共享二进制缓存仍保留。"
+			}
+		}
 		job.UpdatedAt = time.Now().UnixMilli()
 		job.Health = cleanTaskHealth(out.Health)
 		if len(out.Config) > 0 {
@@ -788,6 +906,7 @@ func (t *TaskService) listExecutors(w http.ResponseWriter, r *http.Request) {
 	_ = t.app.Store.View(func(s *State) error { rows = ListDocs[ExecutorRecord](s, "executors"); return nil })
 	for i := range rows {
 		rows[i].TokenHash = ""
+		rows[i].Online = rows[i].Status == "active" && rows[i].LastSeenAt > 0 && time.Now().UnixMilli()-rows[i].LastSeenAt < 90000
 	}
 	WriteJSON(w, 200, map[string]any{"executors": rows})
 }

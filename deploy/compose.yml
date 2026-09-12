@@ -1,7 +1,7 @@
 name: msboost
 services:
   server:
-    image: ${MSBOOST_IMAGE:-ghcr.io/mozziexwz/node:v0.1.2}
+    image: ${MSBOOST_IMAGE:-ghcr.io/mozziexwz/node:v0.2.0}
     restart: unless-stopped
     env_file: ${MSBOOST_ENV_FILE:-../.env}
     environment:
@@ -10,7 +10,7 @@ services:
       TRUSTED_PROXY_CIDRS: 172.30.86.2/32
       DATABASE_HOST: database
       DATABASE_USER: msboost
-      DATABASE_NAME: msboost
+      DATABASE_NAME: ${MSBOOST_DATABASE_NAME:-msboost}
       DATABASE_SSLMODE: disable
     volumes:
       - app_data:/app/data

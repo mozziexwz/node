@@ -77,6 +77,7 @@ const schemas: Record<string, Resource> = {
       ["name", "套餐"],
       ["priceCents", "售价（元）"],
       ["days", "天数"],
+      ["rateMbps", "每规则限速"],
       ["maxPurchasesPerUser", "每人限购"],
       ["enabled", "已上架"],
     ],
@@ -150,7 +151,9 @@ const schemas: Record<string, Resource> = {
     ],
     columns: [
       ["name", "名称"],
+      ["ip", "连接 IP"],
       ["status", "启用状态"],
+      ["online", "在线状态"],
       ["lastSeenAt", "最后心跳"],
     ],
   },
@@ -193,6 +196,13 @@ const schemas: Record<string, Resource> = {
   },
 };
 function show(value: any, key: string) {
+  if (key === "rateMbps") return `${value} Mbps`;
+  if (key === "online")
+    return (
+      <Badge tone={value ? "green" : "orange"}>
+        {value ? "在线" : "离线 / 未连接"}
+      </Badge>
+    );
   if (key === "priceCents") return `¥ ${money(value)}`;
   if (key === "maxPurchasesPerUser") return value ? `${value} 次` : "不限购";
   if (key.endsWith("At") || key === "lastSeen") return date(value);
@@ -231,6 +241,11 @@ export function ResourcePage({ kind }: { kind: string }) {
     setEditing(row);
   }
   const rows = array(data, s.key);
+  useEffect(() => {
+    if (!["executors", "agents"].includes(kind)) return;
+    const timer = setInterval(reload, 10000);
+    return () => clearInterval(timer);
+  }, [kind]);
   return (
     <>
       <Header title={s.title}>
@@ -240,6 +255,16 @@ export function ResourcePage({ kind }: { kind: string }) {
         </Button>
       </Header>
       <ErrorNotice error={error || message} />
+      {kind === "agents" && message && (
+        <div className="actions mt16">
+          <a className="btn" href="#routes">
+            管理关联隧道
+          </a>
+          <a className="btn" href="#rules">
+            管理用户中转
+          </a>
+        </div>
+      )}
       {kind === "payments" && (
         <Notice>
           保存后的密钥不回显。当前使用真实收银台跳转；回调地址须公网 HTTPS
@@ -419,7 +444,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             终端运行下面命令，再粘贴令牌。令牌不会进入命令行历史；不要发给客户。节点注册令牌有有效期，过期可重新生成。
           </Notice>
           <pre className="code-panel mt16">
-            {`curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.1.2/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`}
+            {`curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`}
           </pre>
           {location.protocol !== "https:" && (
             <Notice tone="orange">
@@ -430,7 +455,7 @@ export function ResourcePage({ kind }: { kind: string }) {
           <Button
             onClick={() =>
               void copyText(
-                `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.1.2/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`,
+                `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`,
               ).catch((e) => setMessage(e.message))
             }
           >
@@ -1013,24 +1038,221 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
   );
 }
 export function AdminRules() {
-  const { data, error } = useData("/api/admin/user-rules");
+  const { data, error, reload } = useData("/api/admin/user-rules");
+  const [query, setQuery] = useState(""),
+    [state, setState] = useState(""),
+    [route, setRoute] = useState(""),
+    [message, setMessage] = useState(""),
+    [selectedID, setSelectedID] = useState(""),
+    [busy, setBusy] = useState(false);
+  const rules = array(data, "rules");
+  const selected = rules.find((r) => r.id === selectedID);
+  const states: Record<string, string> = {
+    active: "转发中",
+    pending: "待确认",
+    syncing: "同步中",
+    paused: "已暂停",
+    pausing: "暂停中",
+    revoking: "正在撤销",
+    failed: "执行失败",
+    suspended: "账号停用",
+    quota_exhausted: "流量耗尽",
+    unavailable: "权益 / 线路不可用",
+    awaiting_front: "前置机配置中",
+  };
+  const status = (r: RecordData) => states[r.syncState || r.state] || r.state;
+  const rows = rules.filter(
+    (r) =>
+      (!query ||
+        `${r.userEmail} ${r.userId} ${r.id} ${r.routeName} ${r.targetHost}`
+          .toLowerCase()
+          .includes(query.toLowerCase())) &&
+      (!state || r.state === state) &&
+      (!route || r.routeId === route),
+  );
+  useEffect(() => {
+    const timer = setInterval(reload, 5000);
+    return () => clearInterval(timer);
+  }, []);
+  async function change(r: RecordData, action: "pause" | "resume" | "delete") {
+    if (
+      !confirm(
+        action === "delete"
+          ? `撤销 ${r.userEmail || r.userId} 在 ${r.routeName} 的转发并删除服务器配置？等待节点停止或租约到期后归档，不会立即释放端口。`
+          : `${action === "pause" ? "暂停" : "恢复"} ${r.userEmail || r.userId} 在 ${r.routeName} 的转发？`,
+      )
+    )
+      return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const url = `/api/admin/user-rules/${encodeURIComponent(r.id)}`;
+      if (action === "delete") await api(url, { method: "DELETE" });
+      else await post(url, { paused: action === "pause" }, "PATCH");
+      reload();
+    } catch (e) {
+      setMessage((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function actions(r: RecordData) {
+    const blocked = busy || ["revoking", "awaiting_front"].includes(r.state);
+    return (
+      <div className="actions">
+        <Button
+          disabled={blocked}
+          onClick={() =>
+            void change(r, r.state === "paused" ? "resume" : "pause")
+          }
+        >
+          {r.state === "paused" ? "恢复" : "暂停"}
+        </Button>
+        <Button
+          disabled={busy || r.state === "revoking"}
+          onClick={() => void change(r, "delete")}
+        >
+          撤销 / 删除
+        </Button>
+      </div>
+    );
+  }
   return (
     <>
-      <Header title="用户中转" sub="查看每位用户的站内转发、目标及执行状态。" />
-      <ErrorNotice error={error} />
-      <div className="card flush">
+      <Header
+        title="用户中转"
+        sub="每条规则独立限速；修改后全部跳点 ACK 才确认生效。暂停与删除均等待节点停止或租约失效。"
+      >
+        <Button onClick={reload}>刷新</Button>
+      </Header>
+      <ErrorNotice error={error || message} />
+      <div className="filterbar">
+        <input
+          aria-label="搜索用户中转"
+          placeholder="邮箱 / 用户 ID / 规则 ID / 目标"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <select
+          aria-label="按线路筛选"
+          value={route}
+          onChange={(e) => setRoute(e.target.value)}
+        >
+          <option value="">全部线路</option>
+          {[
+            ...new Map(rules.map((r) => [r.routeId, r.routeName])).entries(),
+          ].map(([id, name]) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="按规则状态筛选"
+          value={state}
+          onChange={(e) => setState(e.target.value)}
+        >
+          <option value="">全部状态</option>
+          {[...new Set(rules.map((r) => r.state))].map((v) => (
+            <option key={v} value={v}>
+              {states[v] || v}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="card flush mt16">
         <Table
-          headers={["用户", "线路", "入口", "目标", "状态", "计费流量"]}
-          rows={array(data, "rules").map((r) => [
-            <span className="mono">{r.userId}</span>,
+          headers={[
+            "用户邮箱",
+            "线路",
+            "目标",
+            "每规则限速",
+            "同步状态",
+            "计费流量",
+            "操作",
+          ]}
+          rows={rows.map((r) => [
+            <span title={r.userId}>{r.userEmail || r.userId}</span>,
             r.routeName,
-            `${r.entryAddress}:${r.entryPort}`,
             `${r.targetHost}:${r.targetPort}`,
-            r.state,
+            `${r.effectiveRateMbps} Mbps`,
+            <span>
+              {status(r)}
+              <small className="muted">
+                {" "}
+                · {r.readySegments}/{r.totalSegments} 已确认
+              </small>
+            </span>,
             (r.trafficBytes / 1e9).toFixed(2) + " GB",
+            <div className="actions">
+              <Button onClick={() => setSelectedID(r.id)}>详情</Button>
+              {actions(r)}
+            </div>,
           ])}
         />
       </div>
+      {selectedID && (
+        <Modal title="用户转发详情" onClose={() => setSelectedID("")}>
+          <ErrorNotice error={message} />
+          {selected ? (
+            <>
+              <p>
+                {selected.userEmail || selected.userId} · {selected.routeName}
+              </p>
+              <p className="muted mt8">
+                规则 ID：{selected.id} · 版本 {selected.version}
+              </p>
+              <p className="mt16">
+                入口 {selected.entryAddress}:{selected.entryPort} → 目标{" "}
+                {selected.targetHost}:{selected.targetPort}
+              </p>
+              <p className="mt16">
+                当前配置：上下行各 {selected.effectiveRateMbps} Mbps。
+                {selected.appliedRateMbps > 0
+                  ? `全部节点已确认 ${selected.appliedRateMbps} Mbps 生效。`
+                  : "尚未确认全链路生效。"}
+              </p>
+              <p className="mt8">
+                状态：{status(selected)}
+                {selected.stopDeadline
+                  ? `；最迟租约截止 ${date(selected.stopDeadline)}`
+                  : ""}
+              </p>
+              <Table
+                headers={[
+                  "节点 ID",
+                  "监听端口",
+                  "限速",
+                  "ACK",
+                  "ACK 时间",
+                  "租约截止",
+                ]}
+                rows={(selected.segments || []).map((seg: RecordData) => [
+                  seg.agentId,
+                  seg.runtime.listenPort,
+                  `${seg.runtime.rateMbps} Mbps`,
+                  (
+                    {
+                      ready: "已确认",
+                      pending: "待确认",
+                      stopped: "已停止",
+                      failed: "执行失败",
+                    } as Record<string, string>
+                  )[seg.ackState] || seg.ackState,
+                  date(seg.ackAt),
+                  date(seg.lastLease),
+                ])}
+              />
+              <Notice>
+                上下行各自限速，每条规则独立，不共享账号带宽。暂停保留配置；删除会撤销转发、清除配置，并在租约失效后归档。
+              </Notice>
+              <div className="mt16">{actions(selected)}</div>
+            </>
+          ) : (
+            <Notice>此规则已撤销归档或不再存在。</Notice>
+          )}
+        </Modal>
+      )}
     </>
   );
 }

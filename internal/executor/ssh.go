@@ -5,20 +5,30 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
-	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
-type SSHRemote struct{}
+type SSHRemote struct {
+	// Private test seam; production always uses a bounded TCP dialer.
+	dialContext func(context.Context, string, string) (net.Conn, error)
+}
+
+func (remote SSHRemote) dial(ctx context.Context, address string, timeout time.Duration) (net.Conn, error) {
+	if remote.dialContext != nil {
+		return remote.dialContext(ctx, "tcp", address)
+	}
+	return (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", address)
+}
 
 var errFingerprintCaptured = errors.New("host key captured without authentication")
 
-func (SSHRemote) Probe(ctx context.Context, host string, port int) (string, string, error) {
+func (remote SSHRemote) Probe(ctx context.Context, host string, port int) (string, string, error) {
 	if err := PublicIP(host); err != nil {
 		return "", "", err
 	}
@@ -26,11 +36,13 @@ func (SSHRemote) Probe(ctx context.Context, host string, port int) (string, stri
 		return "", "", errors.New("SSH 端口无效")
 	}
 	address := net.JoinHostPort(host, strconv.Itoa(port))
-	conn, err := (&net.Dialer{Timeout: 12 * time.Second}).DialContext(ctx, "tcp", address)
+	conn, err := remote.dial(ctx, address, 12*time.Second)
 	if err != nil {
-		return "", "", errors.New("无法连接 SSH 端口")
+		return "", "", connectDiagnostic(err)
 	}
 	defer conn.Close()
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopClose()
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	var fp, algorithm string
 	_, _, _, _ = ssh.NewClientConn(conn, address, &ssh.ClientConfig{User: "root", HostKeyCallback: func(_ string, _ net.Addr, k ssh.PublicKey) error {
@@ -39,7 +51,10 @@ func (SSHRemote) Probe(ctx context.Context, host string, port int) (string, stri
 		return errFingerprintCaptured
 	}})
 	if fp == "" {
-		return "", "", errors.New("SSH 握手失败，未获得真实主机指纹")
+		if ctx.Err() != nil {
+			return "", "", ctx.Err()
+		}
+		return "", "", diagnosticError("ssh_handshake")
 	}
 	return fp, algorithm, nil
 }
@@ -47,7 +62,7 @@ func (SSHRemote) Probe(ctx context.Context, host string, port int) (string, stri
 func PinnedHostKey(fingerprint string) ssh.HostKeyCallback {
 	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
 		if subtle.ConstantTimeCompare([]byte(fingerprint), []byte(ssh.FingerprintSHA256(key))) != 1 {
-			return errors.New("SSH 主机指纹已变化，执行已中止")
+			return diagnosticError("ssh_host_changed")
 		}
 		return nil
 	}
@@ -73,27 +88,53 @@ func (b *limitedOutput) Bytes() []byte {
 	defer b.mu.Unlock()
 	return append([]byte(nil), b.buffer.Bytes()...)
 }
-func (SSHRemote) Run(ctx context.Context, s SSH, script string) ([]byte, error) {
+func (remote SSHRemote) Run(ctx context.Context, s SSH, script string) ([]byte, error) {
 	if err := ValidateSSH(s); err != nil {
 		return nil, err
 	}
 	address := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
-	conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", address)
+	conn, err := remote.dial(ctx, address, 15*time.Second)
 	if err != nil {
-		return nil, errors.New("SSH 连接失败")
+		return nil, connectDiagnostic(err)
 	}
 	defer conn.Close()
+	// Cancellation must cover handshake AND synchronous channel-open, not only
+	// session.Run below. A peer can authenticate yet never answer NewSession.
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopClose()
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
-	clientConn, chans, reqs, err := ssh.NewClientConn(conn, address, &ssh.ClientConfig{User: s.User, Auth: []ssh.AuthMethod{ssh.Password(s.Password)}, HostKeyCallback: PinnedHostKey(s.Fingerprint), Timeout: 15 * time.Second})
+	hostChanged := false
+	pin := PinnedHostKey(s.Fingerprint)
+	clientConn, chans, reqs, err := ssh.NewClientConn(conn, address, &ssh.ClientConfig{User: s.User, Auth: []ssh.AuthMethod{ssh.Password(s.Password)}, HostKeyCallback: func(host string, addr net.Addr, key ssh.PublicKey) error {
+		err := pin(host, addr, key)
+		hostChanged = err != nil
+		return err
+	}, Timeout: 15 * time.Second})
 	if err != nil {
-		return nil, fmt.Errorf("SSH 握手/认证失败（请检查凭据与指纹）")
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if hostChanged {
+			return nil, diagnosticError("ssh_host_changed")
+		}
+		if strings.Contains(err.Error(), "unable to authenticate") {
+			return nil, diagnosticError("ssh_auth")
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil, diagnosticError("ssh_timeout")
+		}
+		return nil, diagnosticError("ssh_handshake")
 	}
 	_ = conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(clientConn, chans, reqs)
 	defer client.Close()
 	session, err := client.NewSession()
 	if err != nil {
-		return nil, errors.New("SSH 会话创建失败")
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, diagnosticError("ssh_session")
 	}
 	defer session.Close()
 	var output limitedOutput
@@ -104,6 +145,9 @@ func (SSHRemote) Run(ctx context.Context, s SSH, script string) ([]byte, error) 
 	go func() { done <- session.Run("bash -s") }()
 	select {
 	case err = <-done:
+		if ctx.Err() != nil {
+			return output.Bytes(), ctx.Err()
+		}
 		return output.Bytes(), err
 	case <-ctx.Done():
 		_ = client.Close()

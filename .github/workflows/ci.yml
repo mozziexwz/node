@@ -13,6 +13,20 @@ defaults:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: msboost_ci
+          POSTGRES_PASSWORD: isolated-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U msboost_ci -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - name: Validate release tag before publishing
@@ -32,7 +46,15 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
-      - run: go test -race ./...
+      - run: go test -race -count=1 ./...
+        env:
+          MSBOOST_TEST_POSTGRES_URL: postgres://msboost_ci:isolated-ci-only@127.0.0.1:5432/postgres?sslmode=disable
+      - name: Verify isolated Linux cleanup and real PostgreSQL disaster import
+        env:
+          MSBOOST_TEST_POSTGRES_URL: postgres://msboost_ci:isolated-ci-only@127.0.0.1:5432/postgres?sslmode=disable
+        run: |
+          go test -race -count=1 -v ./internal/executor -run '^TestCleanupPython(IsolatedInventoryAndMutation|MSBOOSTOwnershipAndRetainedData)$'
+          go test -race -count=1 -v ./internal/control -run '^TestOfflineRestorePostgresIntegration$'
       - run: go vet ./...
       - run: npm ci && npm run build
         working-directory: apps/web
@@ -63,7 +85,8 @@ jobs:
           bash agent.sh --help
           bash deploy/manage_test.sh
           bash deploy/bootstrap_test.sh
-      - run: go build ./cmd/server && go build ./cmd/agent
+          bash deploy/agent_bootstrap_test.sh
+      - run: go build ./cmd/server && go build ./cmd/agent && go build ./cmd/restore
   image:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest

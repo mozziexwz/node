@@ -245,6 +245,10 @@ func (a *App) relaySyncAgent(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
+		// Policy changes invalidate all rules/hops before old-version ACKs are read.
+		if err := relayCleanup(s, now); err != nil {
+			return err
+		}
 		seqKey := agent.ID + ":" + in.BootID
 		prev, _ := LoadDoc[int64](s, "relay_sync_sequences", seqKey)
 		if in.Sequence > prev {
@@ -300,30 +304,20 @@ func (a *App) relaySyncAgent(w http.ResponseWriter, r *http.Request) {
 			if required && !rule.HasFront && rule.State != "awaiting_front" {
 				continue
 			}
-			rate := user.RateMbps
-			if rate > route.RateMbps {
-				rate = route.RateMbps
-			}
-			if rate < 1 {
-				rate = 1
-			}
-			if len(rule.Segments) > 0 && (rotateTLS || rule.Segments[0].Runtime.RateMbps != rate || rule.EntitlementVersion != entitlementVersion(s, rule.UserID)) {
+			if len(rule.Segments) > 0 && rotateTLS {
 				rule.Version++
-				rule.EntitlementVersion = entitlementVersion(s, rule.UserID)
 				for i := range rule.Segments {
 					rule.Segments[i].Runtime.Version = rule.Version
-					rule.Segments[i].Runtime.RateMbps = rate
-					rule.Segments[i].Runtime.EntitlementVersion = rule.EntitlementVersion
 					rule.Segments[i].AckState = "pending"
+					rule.Segments[i].AckAt = 0
 				}
 				if rule.State != "awaiting_front" {
 					rule.State = "pending"
 				}
 			}
-			allReady, downstreamReady := true, true
+			allReady, downstreamReady := len(rule.Segments) > 0, true
 			for _, seg := range rule.Segments {
-				ag, _ := LoadDoc[RelayAgent](s, "relay_agents", seg.AgentID)
-				ready := seg.AckState == "ready" && seg.LastLease > now && ag.Enabled && ag.LastSeen > now-relayLeaseMS
+				ready := relaySegmentReady(s, seg, now)
 				allReady = allReady && ready
 				if !seg.Runtime.Billing {
 					downstreamReady = downstreamReady && ready

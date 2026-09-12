@@ -18,7 +18,7 @@ import {
   date,
   gb,
 } from "./ui";
-import { ConfigUpload, SSHFields, SSH } from "./tools";
+import { ConfigUpload, SSHFields, SSH, prepareSSH } from "./tools";
 
 export function Account({
   user,
@@ -172,6 +172,7 @@ export function Plans({
               <span> / {p.days} 天</span>
             </div>
             <p className="muted">{gb(p.trafficBytes)} GB 总流量额度</p>
+            <p className="mt8">每条规则上下行各 {p.rateMbps} Mbps</p>
             <ul className="features">
               <li>所有已启用线路均可选择</li>
               <li>每条线路独立配置</li>
@@ -347,6 +348,8 @@ export function Routes({ user }: { user: RecordData }) {
     [useFront, setUseFront] = useState(false),
     [message, setMessage] = useState("");
   const rules = array(rulesData, "rules");
+  const userRate =
+    rulesData?.userRateMbps ?? data?.userRateMbps ?? user.rateMbps;
   async function action(fn: () => Promise<unknown>) {
     try {
       await fn();
@@ -358,7 +361,10 @@ export function Routes({ user }: { user: RecordData }) {
     }
   }
   useEffect(() => {
-    const id = setInterval(reloadRules, 5000);
+    const id = setInterval(() => {
+      reloadRules();
+      reload();
+    }, 5000);
     return () => clearInterval(id);
   }, []);
   return (
@@ -379,7 +385,7 @@ export function Routes({ user }: { user: RecordData }) {
             "剩余流量",
             gb(Math.max(0, user.trafficTotal - user.trafficUsed)) + " GB",
           ],
-          ["当前套餐已用", gb(user.trafficUsed) + " GB"],
+          ["当前每规则限速", userRate + " Mbps"],
           ["已配置线路", rules.length + " 条"],
         ].map(([t, v]) => (
           <div className="card stat" key={t}>
@@ -388,6 +394,9 @@ export function Routes({ user }: { user: RecordData }) {
           </div>
         ))}
       </div>
+      <p className="muted mt16">
+        每条转发规则独立限速，上下行分别计算，不是账号共享总带宽；实际取用户限速与线路上限的较小值。
+      </p>
       <div className="summary mt24 between">
         <span>同一账号所有线路必须转发同一个 MSBOOST 节点配置。</span>
         <Button
@@ -414,8 +423,8 @@ export function Routes({ user }: { user: RecordData }) {
               </div>
               <div className="route-facts">
                 <div>
-                  <small>每端口速率</small>
-                  <b>{route.rateMbps} Mbps</b>
+                  <small>此线路每规则有效限速</small>
+                  <b>{rule?.effectiveRateMbps ?? route.rateMbps} Mbps</b>
                 </div>
                 <div>
                   <small>自备前置机</small>
@@ -428,16 +437,30 @@ export function Routes({ user }: { user: RecordData }) {
                       ? (
                           {
                             pending: "等待各跳确认",
+                            syncing: "限速 / 配置同步中",
                             active: "转发中",
                             paused: "已暂停",
+                            pausing: "暂停中，等待停止 / 租约到期",
                             revoking: "正在撤销",
+                            failed: "节点执行失败",
+                            suspended: "账号已停用",
+                            quota_exhausted: "流量耗尽",
+                            unavailable: "权益或线路不可用",
+                            awaiting_front: "等待前置机配置",
                             provisioning: "前置机配置中",
                           } as Record<string, string>
-                        )[rule.state] || rule.state
+                        )[rule.syncState || rule.state] || rule.state
                       : "尚未配置"}
                   </b>
                 </div>
               </div>
+              {rule && (
+                <p className="muted mt16">
+                  {rule.appliedRateMbps > 0
+                    ? `各跳已确认：上下行各 ${rule.appliedRateMbps} Mbps`
+                    : `尚未确认全链路生效：${rule.readySegments || 0} / ${rule.totalSegments || 0} 个节点已确认。同步期间旧配置最多保留 45 秒。`}
+                </p>
+              )}
               <div className="route-action">
                 {rule ? (
                   <div className="actions">
@@ -455,6 +478,9 @@ export function Routes({ user }: { user: RecordData }) {
                       从服务器下载
                     </Button>
                     <Button
+                      disabled={["revoking", "awaiting_front"].includes(
+                        rule.state,
+                      )}
                       onClick={() =>
                         void action(() =>
                           post(
@@ -520,12 +546,13 @@ export function Routes({ user }: { user: RecordData }) {
             label="确认配置此线路"
             onSubmit={async () => {
               if (!config) throw new Error("请上传此线路的节点配置");
-              if (useFront && !front.fingerprint)
-                throw new Error("请检查并核对前置机指纹");
+              const preparedFront = useFront
+                ? await prepareSSH(front, setFront)
+                : undefined;
               await post(`/api/user/routes/${selected.id}/rules`, {
                 config,
                 requestId: requestID(),
-                ...(useFront ? { front } : {}),
+                ...(preparedFront ? { front: preparedFront } : {}),
               });
               setSelected(null);
               setConfig(null);

@@ -47,6 +47,12 @@ func ValidateSSH(s SSH) error {
 	if !fingerprintPattern.MatchString(s.Fingerprint) {
 		return errors.New("请先检查并核对真实 SSH SHA256 指纹")
 	}
+	if s.TrustMode != "" && s.TrustMode != "strict" && s.TrustMode != "tofu" {
+		return errors.New("SSH 信任模式无效")
+	}
+	if s.ReplaceFingerprint != "" && !fingerprintPattern.MatchString(s.ReplaceFingerprint) {
+		return errors.New("待替换指纹格式无效")
+	}
 	return nil
 }
 func ValidateRequest(r Request) error {
@@ -56,7 +62,23 @@ func ValidateRequest(r Request) error {
 	if r.ForwardTarget != nil {
 		return errors.New("用户任务不接受内部转发参数")
 	}
+	if len([]rune(r.Remark)) > 60 || strings.ContainsAny(r.Remark, "\x00\r\n") {
+		return errors.New("备注最多 60 个字符，不能包含换行")
+	}
+	if r.Kind != "cleanup" && r.Kind != "cleanup-preview" && r.Cleanup != nil {
+		return errors.New("清理参数不匹配")
+	}
 	switch r.Kind {
+	case "cleanup", "cleanup-preview":
+		if r.Cleanup == nil || (r.Cleanup.Scope != "msboost" && r.Cleanup.Scope != "relay") || r.Front != nil || r.DD != nil || len(r.ClientConfig) > 0 {
+			return errors.New("清理参数无效")
+		}
+		if r.Kind == "cleanup" && (!r.Cleanup.Confirm || r.Cleanup.PreviewID == "" || !validSHA(r.Cleanup.Digest)) {
+			return errors.New("请先预览并明确确认清理范围")
+		}
+		if r.Kind == "cleanup-preview" && (r.Cleanup.Confirm || r.Cleanup.PreviewID != "" || r.Cleanup.Digest != "") {
+			return errors.New("预览任务不能携带清理确认")
+		}
 	case "deploy":
 		if ip, err := netip.ParseAddr(r.SSH.Host); err != nil || !ip.Is4() {
 			return errors.New("当前 MSBOOST 安装脚本要求公网 IPv4 服务器")

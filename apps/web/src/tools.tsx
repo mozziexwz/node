@@ -23,6 +23,9 @@ export type SSH = {
   user: string;
   password: string;
   fingerprint: string;
+  trustMode?: "tofu" | "strict";
+  replaceFingerprint?: string;
+  _rememberedFingerprint?: string;
 };
 const newSSH = (): SSH => ({
   host: "",
@@ -30,7 +33,60 @@ const newSSH = (): SSH => ({
   user: "root",
   password: "",
   fingerprint: "",
+  trustMode: "tofu",
 });
+export async function prepareSSH(
+  value: SSH,
+  onChange?: (s: SSH) => void,
+): Promise<SSH> {
+  const { _rememberedFingerprint: _unused, ...input } = value;
+  if (value.trustMode === "strict") {
+    if (!value.fingerprint)
+      throw new Error("请在高级 SSH 设置中检查并核对主机指纹");
+    return input;
+  }
+  const probe = await post("/api/fingerprints", {
+    host: value.host,
+    port: value.port,
+  });
+  const previous = String(probe.rememberedFingerprint || "");
+  if (
+    previous &&
+    previous !== probe.fingerprint &&
+    (value.replaceFingerprint !== previous ||
+      value.fingerprint !== probe.fingerprint)
+  ) {
+    onChange?.({
+      ...value,
+      fingerprint: probe.fingerprint,
+      replaceFingerprint: "",
+      _rememberedFingerprint: previous,
+    });
+    throw new Error(
+      "SSH 主机指纹发生变化，未提交操作。请从 VPS 控制台核实后，在高级 SSH 设置中明确确认新指纹。",
+    );
+  }
+  return {
+    ...input,
+    trustMode: "tofu",
+    fingerprint: probe.fingerprint,
+    replaceFingerprint:
+      previous !== probe.fingerprint ? value.replaceFingerprint : "",
+  };
+}
+function configName(task: RecordData) {
+  const base = String(
+    task.remark || (task.kind === "deploy" ? "直连" : "自备中转"),
+  )
+    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, "_")
+    .replace(/[. ]+$/g, "")
+    .slice(0, 60);
+  return (
+    (base && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(base)
+      ? base
+      : "MSBOOST配置") + ".json"
+  );
+}
 export function SSHFields({
   value,
   onChange,
@@ -47,7 +103,13 @@ export function SSHFields({
     onChange({
       ...value,
       [k]: v,
-      ...(["host", "port"].includes(k) ? { fingerprint: "" } : {}),
+      ...(["host", "port"].includes(k)
+        ? {
+            fingerprint: "",
+            replaceFingerprint: "",
+            _rememberedFingerprint: "",
+          }
+        : {}),
     });
     if (["host", "port"].includes(k)) setObserved("");
   }
@@ -88,7 +150,34 @@ export function SSHFields({
           required
         />
       </div>
-      <div className="mt8">
+      <Notice>
+        点击提交时会自动检查
+        SSH：首次连接信任并记住主机指纹，后续变化会拦截。首次信任不能代替 VPS
+        控制台独立核对；需要严格核对时展开高级设置。密码仅在实际任务连接时验证。
+      </Notice>
+      <details
+        className="mt8"
+        open={
+          !!value._rememberedFingerprint &&
+          value._rememberedFingerprint !== value.fingerprint
+        }
+      >
+        <summary>高级 SSH 设置 / 重新确认主机</summary>
+        <Select
+          label="主机信任策略"
+          value={value.trustMode || "tofu"}
+          onChange={(e) =>
+            onChange({
+              ...value,
+              trustMode: e.target.value as "tofu" | "strict",
+              fingerprint: "",
+              replaceFingerprint: "",
+            })
+          }
+        >
+          <option value="tofu">首次信任，后续自动核对</option>
+          <option value="strict">每次手动核对 VPS 控制台指纹</option>
+        </Select>
         <Button
           disabled={checking || !value.host}
           onClick={async () => {
@@ -100,6 +189,12 @@ export function SSHFields({
                 port: value.port,
               });
               setObserved(result.fingerprint);
+              onChange({
+                ...value,
+                fingerprint: "",
+                _rememberedFingerprint: result.rememberedFingerprint || "",
+                replaceFingerprint: "",
+              });
             } catch (e) {
               setError((e as Error).message);
             } finally {
@@ -110,6 +205,9 @@ export function SSHFields({
           <ShieldCheck size={16} />
           {checking ? "正在检查…" : "检查 SSH 主机指纹"}
         </Button>
+        <p className="muted mt8">
+          指纹探测只读取主机公钥，不验证 SSH 密码；能显示指纹不等于密码正确。
+        </p>
         {observed && (
           <div className="mt16">
             <div className="code-panel">{observed}</div>
@@ -125,8 +223,33 @@ export function SSHFields({
             />
           </div>
         )}
+        {value._rememberedFingerprint &&
+          value._rememberedFingerprint !== (value.fingerprint || observed) && (
+            <div className="mt16">
+              <Notice tone="red">
+                主机指纹变化。若不是你刚完成的重装或主机更换，请停止操作。
+              </Notice>
+              <p className="mono">原指纹：{value._rememberedFingerprint}</p>
+              <p className="mono">新指纹：{value.fingerprint || observed}</p>
+              <Check
+                checked={
+                  value.replaceFingerprint === value._rememberedFingerprint
+                }
+                onChange={(e) =>
+                  onChange({
+                    ...value,
+                    fingerprint: value.fingerprint || observed,
+                    replaceFingerprint: e.target.checked
+                      ? value._rememberedFingerprint
+                      : "",
+                  })
+                }
+                label="我已通过 VPS 控制台独立核实新指纹，明确允许替换原主机记录"
+              />
+            </div>
+          )}
         <ErrorNotice error={error} />
-      </div>
+      </details>
     </>
   );
 }
@@ -186,6 +309,52 @@ const states: Record<string, string> = {
   interrupted: "已中断",
   executed: "已执行 DD 操作",
 };
+const phases: Record<string, string> = {
+  queued: "等待执行机",
+  executing: "执行中",
+  complete: "完成",
+  fingerprint: "主机指纹探测",
+  validate: "参数校验",
+  install: "安装",
+  config: "配置交付",
+  prepare: "重装准备（未提交重启）",
+  submitted: "重装重启已提交",
+  submission_unknown: "重启提交待核实",
+  preflight: "运行环境检查",
+  target: "目标连接检查",
+  relay: "中转部署",
+  front: "前置机部署",
+  integrity: "完整性校验",
+  dependencies: "系统依赖",
+  download: "资源下载",
+  service: "服务启动",
+  self_test: "本地自测",
+  execution: "远端执行",
+  ssh_connect: "SSH 网络连接",
+  ssh_host_key: "SSH 主机校验",
+  ssh_auth: "SSH 认证",
+  ssh_handshake: "SSH 握手",
+  ssh_session: "SSH 会话",
+  executor: "执行机通信",
+  executor_timeout: "执行机通信超时",
+  server_restart: "服务重启中断",
+  ownership: "受管所有权检查",
+  cleanup: "清理",
+};
+const healthLabels: Record<string, string> = {
+  service: "服务运行",
+  localSelfTest: "本地自测",
+  publicTCP: "公网 TCP 可达性",
+};
+const healthValues: Record<string, string> = {
+  running: "运行中",
+  passed: "通过",
+  reachable: "可达",
+  unreachable: "不可达",
+  not_tested: "未检测",
+  target_tcp_reachable: "目标 TCP 可达",
+  unknown: "未知",
+};
 export function TaskDetail({
   task,
   onClose,
@@ -235,12 +404,7 @@ export function TaskDetail({
           return;
         }
         try {
-          await saveLocal(
-            owner,
-            current.id,
-            d,
-            current.kind === "deploy" ? "直连.json" : "自备中转.json",
-          );
+          await saveLocal(owner, current.id, d, configName(current));
           if (live) setStatus("已存当前浏览器");
         } catch {
           if (live) setStatus("仅本次可下载：浏览器存储不可用，请立即下载。");
@@ -278,10 +442,39 @@ export function TaskDetail({
       <p className="mt16">
         {current.message || current.phase || "等待执行机接收任务"}
       </p>
+      <div className="kv">
+        <span>执行阶段</span>
+        <strong>{phases[current.phase] || "等待结果"}</strong>
+      </div>
+      {current.errorCode && <small>诊断编号：{current.errorCode}</small>}
+      {current.nextStep && (
+        <Notice tone="orange">下一步：{current.nextStep}</Notice>
+      )}
       {current.health && (
         <Table
           headers={["检查项目", "结果"]}
-          rows={Object.entries(current.health).map(([k, v]) => [k, String(v)])}
+          rows={Object.entries(healthLabels).map(([k, label]) => [
+            label,
+            healthValues[current.health[k]] || "未知",
+          ])}
+        />
+      )}
+      {current.health && (
+        <p className="muted mt8">
+          游戏实际连接需由客户端自行验证；TCP 可达不代表游戏可正常使用。
+        </p>
+      )}
+      {current.cleanup && (
+        <Table
+          headers={["清理对象", "类型"]}
+          rows={(current.cleanup.items || []).map((item: RecordData) => [
+            item.path,
+            item.kind === "firewall"
+              ? "本项目创建的防火墙规则"
+              : item.kind === "directory"
+                ? "目录"
+                : "文件",
+          ])}
         />
       )}
       <div className="mt16">
@@ -310,12 +503,7 @@ export function TaskDetail({
           <Button
             primary
             className="mt16"
-            onClick={() =>
-              download(
-                config,
-                current.kind === "deploy" ? "直连.json" : "自备中转.json",
-              )
-            }
+            onClick={() => download(config, configName(current))}
           >
             <Download size={16} />
             下载配置
@@ -346,6 +534,7 @@ export function ToolPage({
     [newPort, setNewPort] = useState(""),
     [newPassword, setNewPassword] = useState(""),
     [config, setConfig] = useState<RecordData | null>(null),
+    [remark, setRemark] = useState(""),
     [erase, setErase] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -363,27 +552,29 @@ export function ToolPage({
     e.preventDefault();
     if (busy) return;
     setError("");
-    if (
-      !ssh.fingerprint ||
-      (kind === "relay" && useFront && !front.fingerprint)
-    ) {
-      setError("请先检查并核对每台服务器的 SSH 主机指纹");
-      return;
-    }
     if (kind === "relay" && !config) {
       setError("请上传节点配置");
       return;
     }
     setBusy(true);
     try {
+      const pinnedSSH = await prepareSSH(ssh, setSSH);
+      const pinnedFront =
+        kind === "relay" && useFront
+          ? await prepareSSH(front, setFront)
+          : undefined;
       const r = await post(
         "/api/tasks",
         {
           kind,
-          ssh,
+          ssh: pinnedSSH,
           ...(kind === "deploy" ? { mode } : {}),
           ...(kind === "relay"
-            ? { clientConfig: config, ...(useFront ? { front } : {}) }
+            ? {
+                clientConfig: config,
+                remark,
+                ...(pinnedFront ? { front: pinnedFront } : {}),
+              }
             : {}),
           ...(kind === "dd"
             ? {
@@ -510,6 +701,13 @@ export function ToolPage({
               )}
               {kind === "relay" && (
                 <>
+                  <Field
+                    label="配置备注"
+                    placeholder="例如：东京中转（将用于配置名称和文件名）"
+                    value={remark}
+                    maxLength={60}
+                    onChange={(e) => setRemark(e.target.value)}
+                  />
                   <Check
                     checked={useFront}
                     onChange={(e) => setUseFront(e.target.checked)}
@@ -644,6 +842,14 @@ export function ToolPage({
           </aside>
         </div>
       )}
+      {!gate &&
+        settings[kind] !== false &&
+        ["deploy", "relay"].includes(kind) && (
+          <CleanupPanel
+            scope={kind === "deploy" ? "msboost" : "relay"}
+            user={user}
+          />
+        )}
       {task && (
         <TaskDetail
           task={task}
@@ -653,6 +859,165 @@ export function ToolPage({
         />
       )}
     </>
+  );
+}
+function CleanupPanel({
+  scope,
+  user,
+}: {
+  scope: "msboost" | "relay";
+  user: RecordData;
+}) {
+  const [ssh, setSSH] = useState(newSSH),
+    [preview, setPreview] = useState<RecordData | null>(null),
+    [task, setTask] = useState<RecordData | null>(null),
+    [confirmation, setConfirmation] = useState(""),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  useEffect(() => {
+    if (!preview || !["queued", "running"].includes(preview.state)) return;
+    let alive = true;
+    const timer = setInterval(
+      () =>
+        api("/api/tasks/" + preview.id)
+          .then((r) => {
+            if (alive) setPreview(r.task || r);
+          })
+          .catch((e) => {
+            if (alive) setError(e.message);
+          }),
+      2000,
+    );
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [preview?.id, preview?.state]);
+  async function submit(remove: boolean) {
+    if (busy) return;
+    if (remove && (confirmation !== "确认清理" || !preview?.cleanup)) return;
+    setBusy(true);
+    setError("");
+    try {
+      const connection = await prepareSSH(ssh, setSSH);
+      const result = await post(
+        "/api/tasks",
+        {
+          kind: remove ? "cleanup" : "cleanup-preview",
+          ssh: connection,
+          cleanup: {
+            scope,
+            ...(remove
+              ? {
+                  previewId: preview!.id,
+                  digest: preview!.cleanup.digest,
+                  confirm: true,
+                }
+              : { confirm: false }),
+          },
+        },
+        "POST",
+        { "Idempotency-Key": requestID() },
+      );
+      if (remove) {
+        setTask(result);
+        setPreview(null);
+        setSSH(newSSH());
+      } else setPreview(result);
+      setConfirmation("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <details className="card mt24">
+      <summary>
+        {scope === "msboost"
+          ? "清理 VPS 上的 MSBOOST"
+          : "清理 VPS 上本项目创建的全部自备转发"}
+      </summary>
+      <Notice tone="red">
+        清理会停止相关服务并删除清单内配置。先预览、不删除；再次输入“确认清理”才提交一次性清理任务。不会卸载本网站、Docker、第三方
+        GOST 或重置全局防火墙。备份、系统账户、依赖和共享二进制缓存保留。
+      </Notice>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit(false);
+        }}
+      >
+        <fieldset
+          className="fieldset mt16"
+          disabled={
+            busy || (!!preview && ["queued", "running"].includes(preview.state))
+          }
+        >
+          <SSHFields
+            title="需要清理的 VPS 公网 IP"
+            value={ssh}
+            onChange={(next) => {
+              setSSH(next);
+              setPreview(null);
+              setConfirmation("");
+            }}
+          />
+          <Button type="submit" className="mt16" disabled={busy}>
+            只预览清理范围
+          </Button>
+        </fieldset>
+      </form>
+      {preview && (
+        <div className="mt16">
+          <Badge>{states[preview.state] || preview.state}</Badge>
+          <p>{preview.message}</p>
+          {preview.nextStep && <Notice>{preview.nextStep}</Notice>}
+          {preview.state === "succeeded" && preview.cleanup && (
+            <>
+              <Table
+                headers={["将删除的对象", "类型"]}
+                rows={preview.cleanup.items.map((item: RecordData) => [
+                  item.path,
+                  item.kind === "firewall"
+                    ? "本项目防火墙规则"
+                    : item.kind === "directory"
+                      ? "目录"
+                      : "文件",
+                ])}
+              />
+              {!preview.cleanup.items.length ? (
+                <Notice>未发现符合所有权校验的受管组件，无需清理。</Notice>
+              ) : (
+                <>
+                  <Notice tone="orange">
+                    预览有效期 10
+                    分钟。执行时会重新检查主机指纹、文件摘要和服务所有权；范围变化即中止。自备前置与中转位于不同
+                    VPS 时，需分别预览和清理。
+                  </Notice>
+                  <Field
+                    label="二次确认"
+                    placeholder="输入：确认清理"
+                    value={confirmation}
+                    onChange={(e) => setConfirmation(e.target.value)}
+                  />
+                  <Button
+                    disabled={busy || confirmation !== "确认清理"}
+                    onClick={() => submit(true)}
+                  >
+                    确认停止服务并清理清单
+                  </Button>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      <ErrorNotice error={error} />
+      {task && (
+        <TaskDetail task={task} owner={user.id} onClose={() => setTask(null)} />
+      )}
+    </details>
   );
 }
 export function TasksPage({ user }: { user: RecordData }) {
@@ -701,6 +1066,8 @@ export function TasksPage({ user }: { user: RecordData }) {
                   deploy: "部署 MSBOOST",
                   relay: "自备中转",
                   dd: "DD 系统",
+                  "cleanup-preview": "清理范围预览",
+                  cleanup: "清理受管组件",
                 } as Record<string, string>
               )[t.kind] || t.kind}
               <small>{date(t.createdAt)}</small>
@@ -715,7 +1082,7 @@ export function TasksPage({ user }: { user: RecordData }) {
             >
               {states[t.state] || t.state}
             </Badge>,
-            t.kind === "dd"
+            ["dd", "cleanup", "cleanup-preview"].includes(t.kind)
               ? "不生成配置"
               : files[t.id]
                 ? "已存当前浏览器"
@@ -813,7 +1180,7 @@ export function TasksPage({ user }: { user: RecordData }) {
                   user.id,
                   restoring.id,
                   restoreConfig,
-                  restoring.kind === "deploy" ? "直连.json" : "自备中转.json",
+                  configName(restoring),
                 );
                 setFiles({ ...files, [restoring.id]: true });
                 setRestoring(null);

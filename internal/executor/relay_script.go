@@ -5,6 +5,10 @@ package executor
 const relayInstallScript = `
 [ "$(id -u)" = 0 ]
 command -v systemctl >/dev/null
+command -v flock >/dev/null
+[ ! -L /run/msboost-customer-cleanup.lock ]
+exec 8>/run/msboost-customer-cleanup.lock
+flock -n 8
 systemd_version=$(systemctl --version | awk 'NR==1 {print $2}')
 [ "$systemd_version" -ge 247 ]
 work=$(mktemp -d /run/msboost-relay.XXXXXX)
@@ -31,6 +35,7 @@ cleanup() {
 }
 trap cleanup EXIT
 if ! command -v python3 >/dev/null || ! command -v curl >/dev/null || ! command -v tar >/dev/null; then
+  msboost_phase=dependencies
   [ -f /etc/os-release ]
   . /etc/os-release
   case "$ID" in debian|ubuntu) ;; *) exit 1 ;; esac
@@ -38,17 +43,21 @@ if ! command -v python3 >/dev/null || ! command -v curl >/dev/null || ! command 
   apt-get update > "$work/packages.log" 2>&1
   apt-get install -y --no-install-recommends python3 curl tar ca-certificates >> "$work/packages.log" 2>&1
 fi
+msboost_phase=target
 python3 - "$target_host" "$target_port" <<'PY'
 import socket,sys
 with socket.create_connection((sys.argv[1],int(sys.argv[2])),timeout=10): pass
 PY
+msboost_phase=download
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-time 180 "$gost_url" -o "$work/gost.tar.gz"
+msboost_phase=integrity
 printf '%s  %s\n' "$gost_sha" "$work/gost.tar.gz" | sha256sum -c - >/dev/null
 tar -xzf "$work/gost.tar.gz" -C "$work" gost
 "$work/gost" -V >/dev/null
 install -d -m 0755 /usr/local/libexec/msboost-free
 install -m 0755 "$work/gost" "/usr/local/libexec/msboost-free/gost-${gost_sha}"
 install -d -m 0700 "$confdir"
+printf '%s\n' msboost-free-v1 > "$confdir/managed-by"
 cat > "/etc/systemd/system/$unit" <<EOF
 [Unit]
 Description=MSBOOST customer TCP forwarding
@@ -70,6 +79,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
+msboost_phase=service
 for attempt in $(seq 1 12); do
   port=$(python3 - <<'PY'
 import secrets,socket

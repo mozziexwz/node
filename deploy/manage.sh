@@ -6,7 +6,7 @@ umask 077
 INSTALL_ROOT=/opt/msboost
 PROJECT=msboost
 MARKER=MSBOOST_DEPLOY_V1
-VERSION=v0.1.2
+VERSION=v0.2.0
 SOURCE_DIR=
 DOMAIN=
 IP_ADDRESS=
@@ -21,15 +21,15 @@ die() { printf '错误：%s\n' "$*" >&2; return 1; }
 note() { printf '%s\n' "$*" >&2; }
 usage() {
   printf '%s\n' \
-    'MSBOOST Debian 12 (amd64/arm64), fixed root /opt/msboost, Compose project msboost' \
+    'MSBOOST Debian 12（amd64/arm64），安装目录 /opt/msboost，Compose 项目 msboost' \
     '  msboost install --domain panel.example.com --email 12345678@qq.com' \
     '  msboost install --ip SERVER_IPV4 --email 12345678@qq.com --allow-insecure-http' \
     '  msboost upgrade [--version vX.Y.Z] [--build]' \
-    '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  (failed v0.1.1 first install only)' \
+    '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  msboost repair|status|logs|uninstall|purge' \
-    '  --build is explicit and requires a verified release source bundle.' \
-    'uninstall keeps .env, keys, database, application data, certificates and backups.' \
-    'purge requires two TTY confirmations and removes only this installation and its four named volumes.'
+    '  --build 需显式选择，并提供已校验的完整源码包。' \
+    'uninstall 保留配置、密钥、数据库、应用数据、证书及备份。' \
+    'purge 需要两次终端确认，只删除本站安装及四个站点数据卷。'
 }
 read_tty() {
   local prompt=$1 answer
@@ -37,7 +37,7 @@ read_tty() {
   printf '%s' "$answer"
 }
 menu() {
-  note '1) 安装  2) 升级  3) 修复  4) 状态  5) 日志  6) 卸载（保留数据）  7) 彻底清理  0) 退出'
+  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  0) 退出' >&2
   local choice; choice=$(read_tty '请选择: ')
   case "$choice" in 1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;; 5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 0) printf exit ;; *) die '无效选择' ;; esac
 }
@@ -151,7 +151,7 @@ ensure_docker() {
 }
 compose_at() {
   local directory=$1 environment=$2; shift 2
-  (unset MSBOOST_IMAGE MSBOOST_VERSION MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS POSTGRES_PASSWORD POSTGRES_IMAGE CADDY_IMAGE
+  (unset MSBOOST_IMAGE MSBOOST_VERSION MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS MSBOOST_DATABASE_NAME POSTGRES_PASSWORD POSTGRES_IMAGE CADDY_IMAGE
    MSBOOST_ENV_FILE="$environment" docker compose --project-name "$PROJECT" --env-file "$environment" -f "$directory/deploy/compose.yml" "$@")
 }
 compose_live() { compose_at "$INSTALL_ROOT" "$INSTALL_ROOT/.env" "$@"; }
@@ -195,6 +195,7 @@ install_launcher() {
 }
 prepare_stage() {
   require_release_version || return
+  note '  → 准备私有部署文件，保留已有密码与主密钥'
   STAGE=$(mktemp -d "$INSTALL_ROOT/.stage.XXXXXXXX") || return
   copy_deployment_files "$SOURCE_DIR" "$STAGE" || return
   install -m 0600 "$INSTALL_ROOT/.env" "$STAGE/.env" || return
@@ -212,11 +213,12 @@ prepare_stage() {
   compose_at "$STAGE" "$STAGE/.env" config --quiet || return
 }
 acquire_images() {
+  note '  → 获取数据库、反向代理和应用镜像'
   # Dependency failures are distinct from a GHCR application-image failure.
   compose_at "$STAGE" "$STAGE/.env" pull database caddy || { die 'PostgreSQL/Caddy 镜像拉取失败，停止部署，不会误用应用镜像备用来源'; return 1; }
   if [[ $BUILD == 1 ]]; then
     note '已显式选择源码构建；这会占用较多内存、CPU、磁盘和时间。'
-    (unset MSBOOST_IMAGE MSBOOST_VERSION MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS POSTGRES_PASSWORD POSTGRES_IMAGE CADDY_IMAGE
+    (unset MSBOOST_IMAGE MSBOOST_VERSION MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS MSBOOST_DATABASE_NAME POSTGRES_PASSWORD POSTGRES_IMAGE CADDY_IMAGE
      MSBOOST_ENV_FILE="$STAGE/.env" docker compose --project-name "$PROJECT" --env-file "$STAGE/.env" -f "$STAGE/deploy/compose.yml" -f "$STAGE/deploy/compose.build.yml" build server) || return
   else
     if ! compose_at "$STAGE" "$STAGE/.env" pull server; then
@@ -296,9 +298,13 @@ snapshot_configuration() {
   install -m 0600 "$INSTALL_ROOT/.env" "$SNAPSHOT/.env" || return
 }
 snapshot_deployment() {
+  local database_name
+  database_name=$(env_get "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME)
+  database_name=${database_name:-msboost}
+  [[ $database_name =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]] || { die '当前数据库名称无效，停止备份与升级'; return 1; }
   snapshot_configuration || return
   note '升级前保存私有配置副本与 PostgreSQL 一致性快照；这些备份含敏感数据，请另行离机保管。'
-  if ! compose_live exec -T database pg_dump --username=msboost --dbname=msboost --format=custom > "$SNAPSHOT/database.dump"; then
+  if ! compose_live exec -T database pg_dump --username=msboost --dbname="$database_name" --format=custom > "$SNAPSHOT/database.dump"; then
     die '数据库备份失败，停止升级。若站点已卸载，请先 repair 恢复服务。'; return 1
   fi
   [[ -s $SNAPSHOT/database.dump ]] || { die '数据库备份为空，停止升级'; return 1; }
@@ -319,6 +325,7 @@ check_frontend() {
     --retry 12 --retry-delay 5 --retry-all-errors --resolve "$host:$port:127.0.0.1" "$public/api/health" >/dev/null
 }
 start_live() {
+  note '  → 启动容器并检查应用、反向代理及 HTTPS'
   local expected_id actual_id
   expected_id=$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID)
   actual_id=$(server_identity "$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE)") || return

@@ -1,7 +1,6 @@
 package control
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -58,6 +57,7 @@ type BackupRecord struct {
 	Status    string            `json:"status"`
 	Targets   map[string]string `json:"targets"`
 	Error     string            `json:"error,omitempty"`
+	Protected bool              `json:"protected,omitempty"`
 }
 type BackupEnvelope struct {
 	Version   int    `json:"version"`
@@ -75,6 +75,7 @@ func (b *BackupService) Register(m *http.ServeMux) {
 	m.HandleFunc("GET /api/admin/backups", b.list)
 	m.HandleFunc("POST /api/admin/backups", b.create)
 	m.HandleFunc("GET /api/admin/backups/{id}/download", b.download)
+	m.HandleFunc("DELETE /api/admin/backups/{id}", b.deleteBackup)
 	m.HandleFunc("GET /api/admin/backup-plan", b.getPlan)
 	m.HandleFunc("PUT /api/admin/backup-plan", b.savePlan)
 	m.HandleFunc("GET /api/admin/backup-targets", b.targets)
@@ -249,7 +250,11 @@ func (b *BackupService) pack(s *State) ([]byte, error) {
 		return nil, err
 	}
 	sum := sha256.Sum256(raw)
-	return json.Marshal(BackupEnvelope{Version: 1, CreatedAt: time.Now().UnixMilli(), SHA256: hex.EncodeToString(sum[:]), Sealed: sealed})
+	packed, err := json.Marshal(BackupEnvelope{Version: 1, CreatedAt: time.Now().UnixMilli(), SHA256: hex.EncodeToString(sum[:]), Sealed: sealed})
+	if len(packed) > 100<<20 {
+		return nil, errors.New("加密备份超过当前 100 MB 恢复上限，不能生成不可恢复的副本")
+	}
+	return packed, err
 }
 func (b *BackupService) unpack(raw []byte) (*State, error) {
 	if len(raw) > 100<<20 {
@@ -268,11 +273,14 @@ func (b *BackupService) unpack(raw []byte) (*State, error) {
 		return nil, errors.New("备份完整性校验失败")
 	}
 	var s State
-	if json.Unmarshal(clear, &s) != nil || s.Users == nil || s.Docs == nil || s.Settings == nil {
+	if json.Unmarshal(clear, &s) != nil || s.Users == nil || s.Docs == nil || s.Settings == nil || s.Sessions == nil {
 		return nil, errors.New("备份数据结构不完整")
 	}
 	hasAdmin := false
-	for _, u := range s.Users {
+	for id, u := range s.Users {
+		if u == nil || u.ID != id {
+			return nil, errors.New("备份用户身份关系无效")
+		}
 		if u.Role == "admin" && u.Status == "active" {
 			hasAdmin = true
 		}
@@ -415,7 +423,7 @@ func (b *BackupService) list(w http.ResponseWriter, r *http.Request) {
 	out := []BackupRecord{}
 	_ = b.app.Store.View(func(s *State) error { out = ListDocs[BackupRecord](s, "backups"); return nil })
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
-	WriteJSON(w, 200, map[string]any{"backups": out})
+	WriteJSON(w, 200, map[string]any{"backups": out, "localDirectory": filepath.Join(b.app.Config.DataDir, "backups"), "deleteScope": "仅本机副本；远程文件不删除，历史记录保留"})
 }
 func (b *BackupService) create(w http.ResponseWriter, r *http.Request) {
 	if !b.admin(w, r) {
@@ -436,6 +444,10 @@ func (b *BackupService) download(w http.ResponseWriter, r *http.Request) {
 	_ = b.app.Store.View(func(s *State) error { record, _ = LoadDoc[BackupRecord](s, "backups", r.PathValue("id")); return nil })
 	if record.ID == "" {
 		Fail(w, 404, "备份不存在")
+		return
+	}
+	if !validBackupID(record.ID) || record.Targets["local"] == "removed" {
+		Fail(w, 404, "本机备份文件不存在")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -472,8 +484,23 @@ func (b *BackupService) preflight(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, err.Error())
 		return
 	}
+	var report RestorePreflight
+	err = b.app.Store.View(func(current *State) error {
+		_, result, e := mergeSafeRestore(current, s)
+		report = result
+		if e == nil {
+			if guardErr := validateRestoreIdle(current); guardErr != nil {
+				report.Blockers = append(report.Blockers, guardErr.Error())
+			}
+		}
+		return e
+	})
+	if err != nil {
+		Fail(w, 409, err.Error())
+		return
+	}
 	hash := sha256.Sum256(raw)
-	WriteJSON(w, 200, map[string]any{"valid": true, "sha256": hex.EncodeToString(hash[:]), "users": len(s.Users), "collections": len(s.Docs), "message": "恢复将覆盖平台数据，退出全部会话、撤销Agent令牌并暂停线路；需维护模式且无运行任务。"})
+	WriteJSON(w, 200, map[string]any{"valid": true, "mode": "safe", "sha256": hex.EncodeToString(hash[:]), "users": len(s.Users), "collections": len(s.Docs), "report": report, "message": "安全恢复只替换站点设置、文章附件、线路和节点定义；保留当前用户、身份关系、财务、流量及用户转发关联。恢复后保持维护、暂停线路并撤销会话和Agent凭据。"})
 }
 func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 	if !b.admin(w, r) {
@@ -498,25 +525,15 @@ func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 	defer b.mu.Unlock()
 	var rollback BackupRecord
 	err = b.app.Store.Update(func(s *State) error {
-		if !boolSetting(s, "maintenance") {
-			return errors.New("请先开启维护模式")
-		}
-		if err := validateFinancialRestore(s, restored); err != nil {
+		if err := validateRestoreIdle(s); err != nil {
 			return err
 		}
-		for _, raw := range s.Docs["tasks"] {
-			var t map[string]any
-			_ = json.Unmarshal(raw, &t)
-			if t["state"] == "running" || t["state"] == "queued" {
-				return errors.New("存在未结束的任务")
-			}
+		merged, report, err := mergeSafeRestore(s, restored)
+		if err != nil {
+			return err
 		}
-		for _, r := range ListDocs[UserRule](s, "user_rules") {
-			for _, seg := range r.Segments {
-				if seg.LastLease > time.Now().UnixMilli() {
-					return errors.New("请先暂停全部本站转发并等待租约失效")
-				}
-			}
+		if r.FormValue("currentSha256") == "" || r.FormValue("currentSha256") != report.CurrentSHA256 {
+			return errors.New("当前设置、线路或用户规则已变化，请重新预检后再恢复")
 		}
 		current, e := b.pack(s)
 		if e != nil {
@@ -526,30 +543,11 @@ func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 		if e != nil {
 			return e
 		}
-		restored.Sessions = map[string]*Session{}
-		restored.Settings["maintenance"] = true
-		for _, name := range []string{"executor_agents", "executors", "relay_agents"} {
-			delete(restored.Docs, name)
-		}
-		if err := prepareRestoredRelay(restored, time.Now().UnixMilli()); err != nil {
+		rollback.Protected = true
+		if err := isolateRestoredState(merged, false); err != nil {
 			return err
 		}
-		for key, raw := range restored.Docs["tasks"] {
-			var task map[string]any
-			if json.Unmarshal(raw, &task) == nil && (task["state"] == "running" || task["state"] == "queued") {
-				task["state"] = "interrupted"
-				task["message"] = "备份恢复后任务不自动重放"
-				if err := SaveDoc(restored, "tasks", key, task); err != nil {
-					return err
-				}
-			}
-		}
-		p, _ := LoadDoc[BackupPlan](restored, "backup_plans", "default")
-		p.Enabled = false
-		if err := SaveDoc(restored, "backup_plans", "default", p); err != nil {
-			return err
-		}
-		*s = *restored
+		*s = *merged
 		if err := SaveDoc(s, "backups", rollback.ID, rollback); err != nil {
 			return err
 		}
@@ -560,62 +558,12 @@ func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 409, err.Error())
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"ok": true, "rollbackId": rollback.ID, "message": "恢复完成。请重新登录，核对支付流水并重新关联Agent后解除维护。"})
-}
-
-// Online restore cannot rewind settled money, issued cards, order idempotency
-// or metered entitlements. A differing snapshot needs an offline reconciliation
-// workflow; silently merging individual financial rows is not safe either.
-func validateFinancialRestore(current, restored *State) error {
-	collections := []string{"orders", "ledger", "cards", "order_requests", "redeem_requests", "payment_trades", "payment_callbacks", "entitlement_versions", "payment_channels", "traffic_cursors", "traffic_months"}
-	for _, name := range collections {
-		if len(current.Docs[name]) == 0 && len(restored.Docs[name]) == 0 {
-			continue
-		}
-		before, err := json.Marshal(current.Docs[name])
-		if err != nil {
-			return err
-		}
-		after, err := json.Marshal(restored.Docs[name])
-		if err != nil {
-			return err
-		}
-		if !bytes.Equal(before, after) {
-			return errors.New("备份与当前财务或流量记录不一致，禁止在线回滚余额、卡密、订单或计量；请保留当前数据并执行离线对账恢复")
-		}
-	}
-	type financialUser struct{ BalanceCents, ExpiresAt, TrafficTotal, TrafficUsed, RateMbps int64 }
-	financialUsers := func(s *State) map[string]financialUser {
-		out := map[string]financialUser{}
-		for id, u := range s.Users {
-			if u != nil && (u.BalanceCents != 0 || u.ExpiresAt != 0 || u.TrafficTotal != 0 || u.TrafficUsed != 0) {
-				out[id] = financialUser{u.BalanceCents, u.ExpiresAt, u.TrafficTotal, u.TrafficUsed, u.RateMbps}
-			}
-		}
-		return out
-	}
-	before, err := json.Marshal(financialUsers(current))
-	if err != nil {
-		return err
-	}
-	after, err := json.Marshal(financialUsers(restored))
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(before, after) {
-		return errors.New("用户余额或套餐权益已变化，旧快照不能在线覆盖，请先离线对账")
-	}
-	return nil
+	WriteJSON(w, 200, map[string]any{"ok": true, "mode": "safe", "rollbackId": rollback.ID, "message": "安全恢复完成；当前用户、财务、流量与转发关联已保留。请重新登录并重新关联Agent，核对线路后解除维护。恢复前的私有回滚副本已保护，不会自动清理。"})
 }
 
 func prepareRestoredRelay(s *State, now int64) error {
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {
 		key := rule.UserID + ":" + rule.RouteID
-		u := s.Users[rule.UserID]
-		if u == nil || u.ExpiresAt <= now || rule.SealedConfig == "" {
-			DeleteDoc(s, "user_rules", key)
-			continue
-		}
 		rule.State = "paused"
 		rule.Segments = nil
 		rule.DeleteAfter = 0
@@ -631,12 +579,6 @@ func prepareRestoredRelay(s *State, now int64) error {
 			return err
 		}
 	}
-	for user := range s.Docs["user_targets"] {
-		u := s.Users[user]
-		if u == nil || u.ExpiresAt <= now {
-			DeleteDoc(s, "user_targets", user)
-		}
-	}
 	return nil
 }
 func (b *BackupService) retention(w http.ResponseWriter, r *http.Request) {
@@ -650,10 +592,13 @@ func (b *BackupService) retention(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "请求无效")
 		return
 	}
-	b.mu.Lock()
+	if !b.mu.TryLock() {
+		Fail(w, 409, "备份或恢复正在进行，请稍后再清理")
+		return
+	}
 	defer b.mu.Unlock()
 	candidates := []string{}
-	err := b.app.Store.Update(func(s *State) error {
+	err := b.app.Store.View(func(s *State) error {
 		p, ok := LoadDoc[BackupPlan](s, "backup_plans", "default")
 		if !ok || p.MinCopies < 1 {
 			return errors.New("请先配置保留策略")
@@ -662,34 +607,24 @@ func (b *BackupService) retention(w http.ResponseWriter, r *http.Request) {
 		sort.Slice(all, func(i, j int) bool { return all[i].CreatedAt > all[j].CreatedAt })
 		protected := 0
 		for _, v := range all {
-			if v.Status != "verified" {
-				continue
-			}
 			if !b.verifiedLocalBackup(v) {
 				continue
 			}
 			protected++
-			if protected <= p.MinCopies || v.CreatedAt > time.Now().AddDate(0, 0, -p.RetentionDays).UnixMilli() {
+			if v.Protected || protected <= p.MinCopies || v.CreatedAt > time.Now().AddDate(0, 0, -p.RetentionDays).UnixMilli() {
 				continue
 			}
 			candidates = append(candidates, v.ID)
-			if in.Confirm {
-				file := filepath.Join(b.app.Config.DataDir, "backups", v.ID+".msb")
-				if filepath.Base(file) != v.ID+".msb" {
-					return errors.New("invalid backup ID")
-				}
-				if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
-					return err
-				}
-				v.Targets["local"] = "removed"
-				v.Status = "local_removed"
-				if err := SaveDoc(s, "backups", v.ID, v); err != nil {
-					return err
-				}
-			}
 		}
 		return nil
 	})
+	if err == nil && in.Confirm {
+		for _, id := range candidates {
+			if err = b.removeLocalBackup(id); err != nil {
+				break
+			}
+		}
+	}
 	if err != nil {
 		Fail(w, 409, err.Error())
 		return
@@ -697,13 +632,8 @@ func (b *BackupService) retention(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, 200, map[string]any{"ids": candidates, "deleted": in.Confirm, "scope": "local"})
 }
 func (b *BackupService) verifiedLocalBackup(record BackupRecord) bool {
-	if record.ID == "" {
+	if !validBackupID(record.ID) || record.Targets["local"] == "removed" {
 		return false
-	}
-	for _, c := range record.ID {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
-			return false
-		}
 	}
 	file := filepath.Join(b.app.Config.DataDir, "backups", record.ID+".msb")
 	info, err := os.Lstat(file)
@@ -723,8 +653,14 @@ func (b *BackupService) verifiedLocalBackup(record BackupRecord) bool {
 	if hex.EncodeToString(sum[:]) != record.SHA256 {
 		return false
 	}
-	_, err = b.unpack(raw)
-	return err == nil
+	snapshot, err := b.unpack(raw)
+	if err != nil {
+		return false
+	}
+	if err = validateRestoreReferences(snapshot); err != nil {
+		return false
+	}
+	return validateOfflineFinancialReferences(snapshot) == nil
 }
 func (b *BackupService) Start(ctx context.Context) {
 	go func() {
