@@ -12,15 +12,15 @@
 apt-get update
 apt-get install -y ca-certificates curl tar
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/mozziexwz/node/v0.1.0/agent.sh \
+  https://raw.githubusercontent.com/mozziexwz/node/v0.1.1/agent.sh \
   -o /root/msboost-agent.sh
 bash /root/msboost-agent.sh \
   --capability executor \
   --server https://panel.example.com \
-  --version v0.1.0
+  --version v0.1.1
 ```
 
-节点将能力改为 `--capability relay`。控制面地址必须是完整 HTTPS 源站，不含路径、查询或用户名密码。`agent.sh` 默认 `v0.1.0`，仅接受稳定的固定 `vX.Y.Z` 版本，不取得开发分支或 `latest` 运行程序。
+节点将能力改为 `--capability relay`。控制面地址必须是完整 HTTPS 源站，不含路径、查询或用户名密码。`agent.sh` 默认 `v0.1.1`，仅接受稳定的固定 `vX.Y.Z` 版本，不取得开发分支或 `latest` 运行程序。
 
 脚本在真实终端显示隐藏输入提示，此时粘贴对应令牌并回车；令牌不会回显或进入命令行参数。节点注册令牌是短时单次用途，过期后在后台重新生成。执行器使用独立执行器令牌，二者不可混用。
 

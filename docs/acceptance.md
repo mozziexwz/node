@@ -1,6 +1,6 @@
 # 本地验收记录 · 2026-09-12
 
-范围：本仓库 0.1 候选实现；Windows 本机隔离数据库与浏览器。没有连接或修改真实客户 VPS，没有真实付款、邮件投递或公网发布。
+范围：下面先记录实现阶段的本机验收，随后补充 VPS 发布测试。没有连接或修改真实客户 VPS，没有真实付款或邮件投递。
 
 ## 已通过
 
@@ -13,7 +13,15 @@
 - Windows 本地服务编译；Linux amd64 与 arm64 的 Server / Agent 交叉编译。
 - 原始节点脚本、固定重装脚本、站点管理与 Agent 安装脚本的 `bash -n`。
 
-自动化浏览器脚本 `apps/web/tests/acceptance.test.mjs` 已提供，但本轮没有声称运行该独立脚本；以上浏览器检查通过实际浏览器操作完成。Linux race 检查已加入 CI，本机未运行 Linux CI。当前机器没有 Docker，因此未声称 Compose 容器启动已验收。
+最初一轮通过实际浏览器操作完成；补充修改后，已另外通过项目无头浏览器脚本验证后台各页、导航、用户单位、弹窗边界、完整编辑器全屏、移动端和权限流程。全屏截图经人工查看。所有自动化用 `scripts/test-http.mjs` 创建全新临时数据，不修改已有预览数据。当前本地机器没有 Docker，容器验证在 GitHub Linux runner 执行。
+
+## VPS 发布验证补充
+
+- 附件正文与 13 张截图逐项核对，修改对应 [补充清单](requirements/supplement.md)。
+- 新增真实 GOST TCP/TLS 双跳、错误证书拒绝，限购并发/跨渠道、邮箱门槛、卡密新请求/幂等重试、入口脱敏和工单/文章排序测试通过。
+- 两套离线部署测试验证安装、修复、回退、保数据卸载、精确范围清理、GHCR/Release 预构建备用来源、SHA/imageID/架构/标签校验及紧凑 JSON 解析；不是实际 VPS 操作。
+- 首轮 GitHub Linux race、静态检查、HTTP/浏览器/GOST/脚本测试通过；双架构镜像构建成功，PostgreSQL 和控制服务健康。Caddy 启动暴露了动态地址池冲突，因此 v0.1.0 的发布被阻止，未生成正式 Release。
+- v0.1.1 已修复地址池和版本解析，发布状态以 [GitHub Actions](https://github.com/mozziexwz/node/actions) 和对应 Release 为准；不将构建或容器健康等同于真实客户业务验收。
 
 ## 尚未验收 / 未完成
 

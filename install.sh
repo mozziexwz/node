@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly REPOSITORY=mozziexwz/node
-readonly INITIAL_VERSION=v0.1.0
+readonly INITIAL_VERSION=v0.1.1
 
 bootstrap_help() {
   printf '%s\n' \
@@ -12,7 +12,7 @@ bootstrap_help() {
     '  bash install.sh                       Interactive menu' \
     '  bash install.sh install --domain panel.example.com --email 12345678@qq.com' \
     '  bash install.sh install --ip 203.0.113.10 --email 12345678@qq.com --allow-insecure-http' \
-    '  bash install.sh upgrade [--version v0.1.0]' \
+    '  bash install.sh upgrade [--version v0.1.1]' \
     '  bash install.sh repair|status|logs|uninstall|purge' \
     'Optional: --build explicitly builds reviewed release source; never an automatic fallback.' \
     'uninstall retains all data. purge is separate and requires two interactive confirmations.'
@@ -57,7 +57,9 @@ bootstrap_main() {
     if [[ $action == install ]]; then version=$INITIAL_VERSION
     else
       tag_json=$(curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 --retry 2 "https://api.github.com/repos/$REPOSITORY/releases/latest") || return
-      version=$(printf '%s\n' "$tag_json" | sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+      # GitHub may return a single compact JSON line; the key is not necessarily
+      # at the start of a line. The extracted value still passes strict tag validation.
+      version=$(printf '%s\n' "$tag_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
     fi
   fi
   [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { printf '%s\n' '版本必须是已发布的 vX.Y.Z（不使用 latest 镜像）' >&2; return 1; }
