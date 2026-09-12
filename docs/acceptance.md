@@ -29,7 +29,12 @@
 
 用户实际 Debian 12 安装日志暴露 v0.1.1 缺陷：`require_platform` 加载 `/etc/os-release` 将发布 `VERSION` 覆盖为 `12 (bookworm)`。上述 v0.1.1 CI 直接运行 Compose，离线测试替换了平台检查，未覆盖这一入口；其通过不能证明 Debian 一键安装成功。
 
-v0.1.2 隔离平台元数据，增加写入/使用发布版本前的校验、仅针对该错误且无业务容器/数据卷的恢复参数、私有配置备份和原子替换。Windows 本地 Go 测试、网页构建、安装器离线回归通过；恢复测试覆盖 Docker 检查失败/已有容器/已有卷/已有网络/缺失密钥/已有 imageID 拒绝、拉取失败不改配置、健康检查失败后 repair、密码与密钥原样保留。新增 CI 在真实 Debian 12 容器读取系统文件并走安装 CLI；真实容器结果以新版本流水线为准。
+v0.1.2 隔离平台元数据，增加写入/使用发布版本前的校验、仅针对该错误且无业务容器/数据卷的恢复参数、私有配置备份和原子替换。Windows 本地 Go 测试、网页构建、安装器离线回归通过；恢复测试覆盖 Docker 检查失败/已有容器/已有卷/已有网络/缺失密钥/已有 imageID 拒绝、拉取失败不改配置、健康检查失败后 repair、密码与密钥原样保留。
+
+- v0.1.2 [发布流水线](https://github.com/mozziexwz/node/actions/runs/34694803871) 全部通过。真实 Debian 12 容器读取原始 `/etc/os-release`，验证平台变量隔离及默认/显式版本的安装 CLI；仅安装动作被安全替换，不在该回归容器内执行 apt 或真实部署。
+- Linux race/HTTP/浏览器/GOST/安装器回归通过；双架构镜像构建、amd64 上实际 Compose 数据库/控制服务/Caddy 健康启动和版本检查通过；两份镜像归档导入及架构校验通过。
+- [Release v0.1.2](https://github.com/mozziexwz/node/releases/tag/v0.1.2) 于 2026-09-12 12:59:06 UTC 发布，源码提交 `c148dfffc1138880e5b7e7d49ea81bf570810c05`。六份载荷均已匿名下载，SHA-256 与清单及 GitHub 资产摘要一致；两架构 Agent ELF 检查通过。GHCR 匿名清单包含 linux/amd64 和 linux/arm64。
+- 公开入口 `install.sh` 与审核源码一致，SHA-256 为 `fbd507692fdb993e8fe31f9210d6856804c97b2682a9f0065ac2868382d375de`。以上不代表已接入用户 VPS 执行恢复或通过该域名的公网 HTTPS 验收。
 
 ## 尚未验收 / 未完成
 
