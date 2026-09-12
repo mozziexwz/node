@@ -6,13 +6,14 @@ umask 077
 INSTALL_ROOT=/opt/msboost
 PROJECT=msboost
 MARKER=MSBOOST_DEPLOY_V1
-VERSION=v0.1.1
+VERSION=v0.1.2
 SOURCE_DIR=
 DOMAIN=
 IP_ADDRESS=
 ADMIN_EMAIL=
 ALLOW_HTTP=0
 BUILD=0
+RECOVER_INCOMPLETE=0
 STAGE=
 SNAPSHOT=
 
@@ -24,6 +25,7 @@ usage() {
     '  msboost install --domain panel.example.com --email 12345678@qq.com' \
     '  msboost install --ip SERVER_IPV4 --email 12345678@qq.com --allow-insecure-http' \
     '  msboost upgrade [--version vX.Y.Z] [--build]' \
+    '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  (failed v0.1.1 first install only)' \
     '  msboost repair|status|logs|uninstall|purge' \
     '  --build is explicit and requires a verified release source bundle.' \
     'uninstall keeps .env, keys, database, application data, certificates and backups.' \
@@ -39,13 +41,16 @@ menu() {
   local choice; choice=$(read_tty '请选择: ')
   case "$choice" in 1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;; 5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 0) printf exit ;; *) die '无效选择' ;; esac
 }
-require_platform() {
+require_platform() (
   [[ $(id -u) == 0 ]] || { die '请在目标服务器以 root 或 sudo 运行'; return 1; }
   [[ $(uname -s) == Linux && -r /etc/os-release ]] || { die '仅支持 Debian 12 Linux'; return 1; }
   local ID VERSION_ID
   . /etc/os-release
   [[ $ID == debian && $VERSION_ID == 12 ]] || { die '仅支持 Debian 12；其他系统请自行审核部署文件'; return 1; }
   case "$(uname -m)" in x86_64|aarch64) ;; *) die '当前只发布 amd64/arm64 镜像'; return 1 ;; esac
+)
+require_release_version() {
+  [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { die '版本格式必须为 vX.Y.Z'; return 2; }
 }
 assert_root_path() {
   [[ $INSTALL_ROOT == /opt/msboost && ! -L /opt && ! -L /opt/msboost ]] || { die '安装路径必须是非符号链接 /opt/msboost'; return 1; }
@@ -99,6 +104,7 @@ collect_install_settings() {
   [[ $ADMIN_EMAIL =~ ^[1-9][0-9]{4,14}@qq\.com$ ]] || { die '请输入纯数字 QQ 邮箱'; return 1; }
 }
 write_initial_environment() {
+  require_release_version || return
   local host=$DOMAIN site=$DOMAIN secure=true public
   if [[ -n $IP_ADDRESS ]]; then host=$IP_ADDRESS; site="http://$IP_ADDRESS"; secure=false; fi
   public="https://$host"; [[ $secure == true ]] || public="http://$host"
@@ -188,6 +194,7 @@ install_launcher() {
   chmod 0755 /usr/local/bin/msboost
 }
 prepare_stage() {
+  require_release_version || return
   STAGE=$(mktemp -d "$INSTALL_ROOT/.stage.XXXXXXXX") || return
   copy_deployment_files "$SOURCE_DIR" "$STAGE" || return
   install -m 0600 "$INSTALL_ROOT/.env" "$STAGE/.env" || return
@@ -281,11 +288,15 @@ load_release_image() {
   env_set "$STAGE/.env" MSBOOST_IMAGE "$local_tag" || return
   env_set "$STAGE/.env" MSBOOST_IMAGE_ID "$image_id"
 }
-snapshot_deployment() {
+snapshot_configuration() {
+  [[ ! -L $INSTALL_ROOT/backups ]] || { die '备份目录不能是符号链接'; return 1; }
   install -d -m 0700 "$INSTALL_ROOT/backups" || return
   SNAPSHOT=$(mktemp -d "$INSTALL_ROOT/backups/deploy-$(date -u +%Y%m%dT%H%M%SZ).XXXXXXXX") || return
   copy_deployment_files "$INSTALL_ROOT" "$SNAPSHOT" || return
   install -m 0600 "$INSTALL_ROOT/.env" "$SNAPSHOT/.env" || return
+}
+snapshot_deployment() {
+  snapshot_configuration || return
   note '升级前保存私有配置副本与 PostgreSQL 一致性快照；这些备份含敏感数据，请另行离机保管。'
   if ! compose_live exec -T database pg_dump --username=msboost --dbname=msboost --format=custom > "$SNAPSHOT/database.dump"; then
     die '数据库备份失败，停止升级。若站点已卸载，请先 repair 恢复服务。'; return 1
@@ -315,15 +326,23 @@ start_live() {
   compose_live up -d --no-build --pull never --wait --wait-timeout 180 || return
   check_frontend
 }
+replace_live_environment() (
+  # Same-directory rename prevents interruption/disk-full from truncating keys.
+  local next_env
+  next_env=$(mktemp "$INSTALL_ROOT/.env.replace.XXXXXXXX") || return
+  trap 'rm -f -- "$next_env"' EXIT
+  install -m 0600 "$1" "$next_env" || return
+  mv -f -- "$next_env" "$INSTALL_ROOT/.env"
+)
 apply_stage() {
   copy_deployment_files "$STAGE" "$INSTALL_ROOT" || return
-  install -m 0600 "$STAGE/.env" "$INSTALL_ROOT/.env" || return
+  replace_live_environment "$STAGE/.env" || return
   start_live
 }
 restore_deployment() {
   [[ -n $SNAPSHOT && -f $SNAPSHOT/.env ]] || return 1
   copy_deployment_files "$SNAPSHOT" "$INSTALL_ROOT" || return
-  install -m 0600 "$SNAPSHOT/.env" "$INSTALL_ROOT/.env" || return
+  replace_live_environment "$SNAPSHOT/.env" || return
   start_live
 }
 cleanup_stage() {
@@ -357,6 +376,7 @@ upgrade_site() {
   assert_managed || return
   validate_source || return
   ensure_docker || return
+  if [[ $RECOVER_INCOMPLETE == 1 ]]; then recover_incomplete_site; return; fi
   prepare_stage || return
   acquire_images || return
   snapshot_deployment || return
@@ -367,6 +387,47 @@ upgrade_site() {
     return 1
   fi
   note "升级完成：$VERSION；旧配置/数据库快照保存在 $SNAPSHOT。请验证业务后再自行归档备份。"
+}
+recover_incomplete_site() {
+  # Narrow recovery for the v0.1.1 os-release collision, not a way to bypass
+  # database backups for an existing or merely stopped deployment.
+  local resources name key
+  [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == '12 (bookworm)' &&
+     $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE) == 'ghcr.io/mozziexwz/node:12 (bookworm)' &&
+     -z $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID) ]] || {
+    die '--recover-incomplete 仅用于版本被写成 12 (bookworm) 且从未启动的失败安装；已有业务请正常 repair/upgrade'; return 1;
+  }
+  [[ $BUILD == 0 ]] || { die '首次安装恢复只使用预构建镜像'; return 1; }
+  for key in ADMIN_EMAIL ADMIN_PASSWORD POSTGRES_PASSWORD MASTER_KEY; do
+    [[ -n $(env_get "$INSTALL_ROOT/.env" "$key") ]] || { die "缺少现有 $key，停止恢复；不会生成替代密钥或密码"; return 1; }
+  done
+  resources=$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT") || return
+  [[ -z $resources ]] || { die '检测到现有 MSBOOST 容器，拒绝首次安装恢复；不会停止或删除业务'; return 1; }
+  resources=$(docker volume ls --format '{{.Name}}') || return
+  while IFS= read -r name; do
+    case "$name" in msboost_app_data|msboost_database_data|msboost_caddy_data|msboost_caddy_config)
+      die "检测到已有数据卷 $name，拒绝跳过数据库备份；不会删除数据"; return 1 ;;
+    esac
+  done <<< "$resources"
+  resources=$(docker network ls --format '{{.Name}}') || return
+  while IFS= read -r name; do
+    [[ $name != msboost_control ]] || { die '检测到已有 MSBOOST 网络，停止首次安装恢复'; return 1; }
+  done <<< "$resources"
+  assert_no_collision || return
+  prepare_stage || return
+  acquire_images || return
+  snapshot_configuration || return
+  note "已保存原始配置与脚本到 $SNAPSHOT；恢复保留域名、管理员密码和主密钥。"
+  if ! apply_stage; then
+    if [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == "$VERSION" && -n $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID) ]]; then
+      die '恢复未通过健康/HTTPS检查；新版本配置及全部密钥已保留。修正 DNS/防火墙后执行 msboost repair；不要彻底清理。'
+    else
+      die '部署文件写入失败；原始配置与备份保留。检查磁盘/权限后重新执行新安装脚本的 --recover-incomplete 命令；不要彻底清理。'
+    fi
+    return 1
+  fi
+  install_launcher || return
+  note "失败的首次安装已恢复到 $VERSION：$(env_get "$INSTALL_ROOT/.env" PUBLIC_URL)；密码仍在 root-only /opt/msboost/.env。"
 }
 repair_site() {
   assert_managed || return
@@ -392,7 +453,8 @@ repair_site() {
   esac
   freeze_images || return
   if [[ -n $expected_id && $(env_get "$STAGE/.env" MSBOOST_IMAGE_ID) != "$expected_id" ]]; then die '修复发现当前镜像与原 imageID 不一致，停止且保留旧配置'; return 1; fi
-  install -m 0600 "$STAGE/.env" "$INSTALL_ROOT/.env" || return
+  snapshot_configuration || return
+  replace_live_environment "$STAGE/.env" || return
   start_live || { die '修复未通过健康检查；未重置任何配置/密钥/数据'; return 1; }
   note '修复完成：重建必要容器，保留现有版本、管理员、密钥与所有数据。'
 }
@@ -444,19 +506,22 @@ manage_main() {
         shift 2 ;;
       --allow-insecure-http) ALLOW_HTTP=1; shift ;;
       --build) BUILD=1; shift ;;
+      --recover-incomplete) RECOVER_INCOMPLETE=1; shift ;;
       *) die "未知参数 $1"; return 2 ;;
     esac
   done
   case "$action" in install|upgrade|repair|status|logs|uninstall|purge) ;; *) usage; return 2 ;; esac
-  [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { die '版本格式必须为 vX.Y.Z'; return 2; }
   require_platform || return
+  require_release_version || return
   assert_root_path || return
+  if [[ $RECOVER_INCOMPLETE == 1 && $action != upgrade ]]; then die '--recover-incomplete 只能用于 upgrade'; return 2; fi
   if [[ $action != install && ( -n $DOMAIN || -n $IP_ADDRESS || -n $ADMIN_EMAIL || $ALLOW_HTTP == 1 ) ]]; then die '域名/IP/邮箱仅用于首次安装；升级修复不会重置配置'; return 2; fi
   if [[ $action == upgrade && -z $SOURCE_DIR ]]; then
     assert_managed || return
     local -a args=(upgrade)
     [[ $version_given == 0 ]] || args+=(--version "$VERSION")
     [[ $BUILD == 0 ]] || args+=(--build)
+    [[ $RECOVER_INCOMPLETE == 0 ]] || args+=(--recover-incomplete)
     exec bash "$INSTALL_ROOT/install.sh" "${args[@]}"
   fi
   # The lock covers every mutation and is retained until this process exits.

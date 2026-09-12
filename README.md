@@ -2,7 +2,7 @@
 
 MSBOOST 自托管控制面板：用户通过网页把 MSBOOST 脚本部署到自己的 VPS，管理员维护执行器、增值中转线路、套餐与余额、付款渠道及平台备份。系统重装使用固定版本的 [bin456789/reinstall](https://github.com/bin456789/reinstall) 脚本。
 
-当前版本 **v0.1.1** 面向 Debian 12 VPS 安装调试，尚未完成真实客户 VPS、真实商户付款、灾难恢复及千人容量的生产验收。网页依据已确认 UI、[v4.1 产品规划](docs/requirements/product-v4.1.md) 和 [补充说明修改清单](docs/requirements/supplement.md) 实现；规划不是全部功能的生产验收证明。已实现的安全边界、测试范围和未交付项见 [安全模型与限制](docs/security-and-limits.md)。
+当前版本 **v0.1.2** 面向 Debian 12 VPS 安装调试，尚未完成真实客户 VPS、真实商户付款、灾难恢复及千人容量的生产验收。网页依据已确认 UI、[v4.1 产品规划](docs/requirements/product-v4.1.md) 和 [补充说明修改清单](docs/requirements/supplement.md) 实现；规划不是全部功能的生产验收证明。已实现的安全边界、测试范围和未交付项见 [安全模型与限制](docs/security-and-limits.md)。
 
 ## Debian 12 一键安装
 
@@ -10,11 +10,11 @@ MSBOOST 自托管控制面板：用户通过网页把 MSBOOST 脚本部署到自
 
 ```sh
 apt-get update && apt-get install -y curl ca-certificates
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.1.1/install.sh -o /root/msboost-install.sh
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.1.2/install.sh -o /root/msboost-install.sh
 bash /root/msboost-install.sh
 ```
 
-选择「安装」，输入已解析到该 VPS 的域名及管理员 QQ 邮箱。默认拉取预构建的 `ghcr.io/mozziexwz/node:v0.1.1`；若镜像仓库无法匿名访问，则从同版本 GitHub Release 下载、校验并导入预构建镜像。无需 VPS 安装 Go / Node 或编译源码。缺少 Docker 时使用官方 Debian 仓库安装 Engine 与 Compose 插件；Caddy 自动 HTTPS 需要域名解析正确、TCP 80/443 可达且未被其他服务占用。随机管理员密码保存在 root 私有的 `/opt/msboost/.env`，不输出到安装日志。仅在自己的私有终端查看：
+选择「安装」，输入已解析到该 VPS 的域名及管理员 QQ 邮箱。默认拉取预构建的 `ghcr.io/mozziexwz/node:v0.1.2`；若镜像仓库无法匿名访问，则从同版本 GitHub Release 下载、校验并导入预构建镜像。无需 VPS 安装 Go / Node 或编译源码。缺少 Docker 时使用官方 Debian 仓库安装 Engine 与 Compose 插件；Caddy 自动 HTTPS 需要域名解析正确、TCP 80/443 可达且未被其他服务占用。随机管理员密码保存在 root 私有的 `/opt/msboost/.env`，不输出到安装日志。仅在自己的私有终端查看：
 
 ```sh
 sed -n '/^ADMIN_EMAIL=/p; /^ADMIN_PASSWORD=/p' /opt/msboost/.env
@@ -33,6 +33,8 @@ msboost purge           # 独立的双重确认彻底清理，谨慎执行
 ```
 
 安装位置固定 `/opt/msboost`。`uninstall` 不删除数据卷、密钥或配置，之后可 `msboost repair` 恢复。`purge` 只删除本安装器拥有的目录和四个站点卷，不卸载 Docker、不清空其他项目、不卸载客户 VPS 或独立 Agent。完整说明见 [部署文档](docs/deployment.md)。
+
+v0.1.1 如果安装报 `ghcr.io/mozziexwz/node:12 (bookworm)`，是安装器版本变量污染，**不要彻底清理**。使用 [保留配置的恢复步骤](docs/deployment.md#v011-首次安装报-12-bookworm-的保留配置恢复)，新版本会检查未产生业务数据后继续安装。
 
 ## 组成与职责
 

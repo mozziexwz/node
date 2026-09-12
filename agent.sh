@@ -3,11 +3,11 @@
 set -Eeuo pipefail
 umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-version=v0.1.1
+version=v0.1.2
 capability=''; server=''; token_file=''
 usage() {
   printf '%s\n' 'MSBOOST Agent bootstrap (Debian 12 amd64/arm64)' \
-    'Usage: bash agent.sh --capability executor|relay --server https://panel.example.com [--version v0.1.1] [--token-file /root/private-token]' \
+    'Usage: bash agent.sh --capability executor|relay --server https://panel.example.com [--version v0.1.2] [--token-file /root/private-token]' \
     'Without --token-file, paste the token at a hidden terminal prompt. HTTPS is required.'
 }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }

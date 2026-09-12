@@ -20,6 +20,10 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
         run: '[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+      - name: Verify platform detection on real Debian 12 without deploying
+        run: |
+          docker pull debian:12
+          docker run --rm --network none --mount "type=bind,source=$PWD,target=/src,readonly" debian:12 bash /src/deploy/platform_test.sh
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'

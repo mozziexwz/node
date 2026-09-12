@@ -25,6 +25,12 @@
 - [公开 Release v0.1.1](https://github.com/mozziexwz/node/releases/tag/v0.1.1) 已发布（源码提交 `cf6d6e8edb7313b0cc0bd32b2ae50b2c6c6dc6dc`）。部署包、安装器、两份 Agent 与两份镜像归档全部匿名下载，SHA-256 与清单及 GitHub 资产摘要一致；Agent ELF 架构正确。公开入口 `install.sh` 与该标签的 Git blob 完全相同。
 - GHCR 匿名清单验证包含 `linux/amd64` 与 `linux/arm64`。实际 Compose 冒烟测试在 Linux amd64 runner 上运行，arm64 完成构建、导入和文件架构校验；没有声称执行过 arm64 真机业务或公网 ACME。
 
+## v0.1.2 Debian 安装故障回归
+
+用户实际 Debian 12 安装日志暴露 v0.1.1 缺陷：`require_platform` 加载 `/etc/os-release` 将发布 `VERSION` 覆盖为 `12 (bookworm)`。上述 v0.1.1 CI 直接运行 Compose，离线测试替换了平台检查，未覆盖这一入口；其通过不能证明 Debian 一键安装成功。
+
+v0.1.2 隔离平台元数据，增加写入/使用发布版本前的校验、仅针对该错误且无业务容器/数据卷的恢复参数、私有配置备份和原子替换。Windows 本地 Go 测试、网页构建、安装器离线回归通过；恢复测试覆盖 Docker 检查失败/已有容器/已有卷/已有网络/缺失密钥/已有 imageID 拒绝、拉取失败不改配置、健康检查失败后 repair、密码与密钥原样保留。新增 CI 在真实 Debian 12 容器读取系统文件并走安装 CLI；真实容器结果以新版本流水线为准。
+
 ## 尚未验收 / 未完成
 
 - 真实 Debian/Ubuntu VPS 的部署与修复；可丢弃 VPS 的 Debian 12 DD；公网前置/中转/游戏认证路径。

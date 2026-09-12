@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly REPOSITORY=mozziexwz/node
-readonly INITIAL_VERSION=v0.1.1
+readonly INITIAL_VERSION=v0.1.2
 
 bootstrap_help() {
   printf '%s\n' \
@@ -12,7 +12,8 @@ bootstrap_help() {
     '  bash install.sh                       Interactive menu' \
     '  bash install.sh install --domain panel.example.com --email 12345678@qq.com' \
     '  bash install.sh install --ip 203.0.113.10 --email 12345678@qq.com --allow-insecure-http' \
-    '  bash install.sh upgrade [--version v0.1.1]' \
+    '  bash install.sh upgrade [--version v0.1.2]' \
+    '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  (failed v0.1.1 first install)' \
     '  bash install.sh repair|status|logs|uninstall|purge' \
     'Optional: --build explicitly builds reviewed release source; never an automatic fallback.' \
     'uninstall retains all data. purge is separate and requires two interactive confirmations.'
