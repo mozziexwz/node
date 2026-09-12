@@ -40,11 +40,13 @@
 - 创建返回 `{agent,enrollmentToken,installArgs}`，一次性注册令牌15分钟有效。installArgs为 `{installer:"deploy/install-agent.sh",args:[...],tokenEnvironment:"MSBOOST_RELAY_ENROLLMENT_TOKEN",instructions}`；args使用安装器支持的 `--token-file`，需替换实际Agent路径和审核后SHA256，令牌单独保存到root私有0600文件，不放进命令行。不是给cmd/agent传入不存在的 `--enrollment-token` 参数，也不从网页自动执行shell。编辑不回显token。缩端口池、改IP、增强前置要求若破坏现有规则则阻止并说明。
 - `DELETE /api/admin/relay-agents/{id}`有路线/规则/租约引用时阻止。删除不卸载远端机器。
 - `POST /api/admin/relay-agents/{id}/enrollment` 重新签发15分钟注册令牌并撤销旧令牌，供令牌丢失或更换安装使用。返回旧租约最迟失效时间；停旧进程、等待旧租约清理后再启动新安装。
-- `GET /api/admin/user-rules` → `{rules}`。
+- `GET /api/admin/user-rules` → `{rules}`，包括 `userEmail` 及脱敏诊断字段；界面支持邮箱/线路/状态筛选。
+- `GET/PATCH/DELETE /api/admin/user-rules/{ruleId}` 提供详情、`{paused:true|false}` 暂停/恢复及撤销。撤销沿用最后租约失效后归档的流程，重复删除不延长租约；管理员不能通过此接口取得用户客户端配置或认证秘密。线路/节点删除冲突给出具体关联与管理入口。
 
 ## 用户配置
 
 - `GET /api/user/rules` → `{rules:UserRule[]}`。关键字段 `{id,routeId,routeName,state,targetHost,targetPort,version,createdAt,hasFront,trafficBytes,trafficMode,trafficMultiplierPermille}`。普通用户响应不含入口IP/端口、segments、配置密文、目标认证hash或TLS材料；规则创建/暂停响应使用相同脱敏。管理员规则接口保留诊断segments但同样去除密钥、目标列表和证书材料。
+- v0.2.0 增加 `effectiveRateMbps,appliedRateMbps,syncState,readySegments,totalSegments`。有效值为用户当前速率与线路上限的较小值；全部规则、每跳新版本 ACK 就绪后才显示已生效。更改用户速率或权益会先使旧 ACK 失效，不能将陈旧 active 显示为新政策已生效。用户线路列表 `rateMbps` 是有效速率，`userRateMbps` 为用户当前速率；套餐卡是购买时授予值。
 - `POST /api/user/routes/{route}/rules` 输入 `{config:<上传的JSON对象>,requestId,front?:{host,port,user,password,fingerprint}}`。严格单profile/server/port/TCP，所有线路的规范化目标、端口、协议和用户名密码身份必须相同。不是只比较文件名。
 - front为可选自备前置；隧道requireFront时必填，节点旧字段不再继承。真实fingerprint从现有executor指纹探测获取。服务器分配本站端口 → Agent真实GOST绑定ACK → executor前置指向本站入口 → 成功后替换最终客户端入口和加密保存。调用可等待约数分钟，请前端显示实际准备状态，勿重复提交。SSH仅存在请求/执行器内存，失败撤销本站规则。
 - state为pending（等待绑定）、awaiting_front（本站准备/前置执行）、active（GOST监听ACK完成）、paused、failed、revoking、suspended、quota_exhausted。active只表示运行时监听准备好，不保证公网路径或游戏登录成功。
@@ -66,6 +68,6 @@ TLS跳使用GOST 3.3.0的tls listener与forward+tls连接器（不是只向UI增
 
 计量停止是5秒同步与45秒离线租约边界内收敛，非精确到最后一字节的分布式硬配额；异常断电可损失Observer最后约1秒尚未产出的样本。当前速率是每条规则双向分别限速；全账户共享速率、UDP、双向客户端证书认证、无损故障迁移没有宣称完成。FLVX未完整迁入或宣称兼容。生产需提供真实服务器、GOST版本、支付商户并完成公网联调。
 
-在线备份恢复先比较订单、卡密、流水、去重记录、支付配置、流量账本与用户权益；不同则拒绝在线回滚，需离线对账恢复。相同数据的恢复保留未过期加密下载配置，但暂停规则、清除旧运行时绑定、停用路线并重置Agent注册。到期配置不恢复。保留文件可重新下载，运行线路须删除旧规则后按新的Agent重新配置。
+v0.2.0 网页安全恢复不回滚商务数据：白名单只恢复站点设置、文章附件、线路与节点定义，完整保留当前用户身份、订单、卡密、流水、请求/支付去重、支付配置、权益、用户规则、计量和未知新集合。当前规则引用的线路节点保留当前拓扑；预检需带当前恢复范围摘要。恢复后保持维护、暂停规则、清除运行绑定并撤销 Agent 凭据；未过期配置可下载，需按新 Agent 重新配置转发。完整快照仅由离线 `msboost-restore` 导入全新库，绝不在线覆写旧库，见 [恢复指南](backup-recovery.md)。
 
 参考一手文档：[GOST转发](https://gost.run/tutorials/port-forwarding/)、[forward连接器](https://gost.run/en/reference/connectors/forward/)、[3.3.0对应TLS实现](https://github.com/go-gost/x/blob/v0.16.0/internal/util/tls/tls.go)、[Observer](https://v3.gost.run/en/concepts/observer/)、[速率限制](https://v3.gost.run/concepts/limiter/)、[准入控制](https://gost.run/en/concepts/admission/)、[易支付RSA签名](https://yzf.yzfpay.com/doc/sign_note.html)、[用户指定支付指南](https://dujiao-next.com/payment/guide)。

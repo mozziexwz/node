@@ -44,7 +44,17 @@ v0.1.2 隔离平台元数据，增加写入/使用发布版本前的校验、仅
 - 网页 v0.2.0 生产构建通过；隔离 HTTP/模型测试 9 项和真实浏览器流程通过，验证默认公告、所有角色导航分组、无页面溢出、清理未预览无执行按钮、安全/离线恢复入口。恢复页与清理页截图已人工查看。
 - 固定 GOST 3.3.0 真实 TCP/TLS 双跳、Observer、撤销、错误节点名与 CA 拒绝再次通过。
 - 三套隔离引导/生命周期脚本回归通过，包括中文阶段、SHA 失败停止、Agent 子进程失败传播、令牌不输出、选定恢复库后的升级快照确实备份该库。无 apt/systemd/真实主机安装动作。
-- 本机为 Windows，Linux UID/符号链接清理 fixture 与真实 PostgreSQL 新库导入测试留给 CI 的隔离 Linux/PostgreSQL 17 服务执行。本机没有 Docker；不能把跳过 Linux/PG 测试称为已经通过。新版本远端 CI/发布证据在完成后追加。
+- 本机为 Windows，Linux UID/符号链接清理 fixture 与真实 PostgreSQL 新库导入测试交给 CI 的隔离 Linux/PostgreSQL 17 服务执行。本机没有 Docker；不能把本机跳过 Linux/PG 测试称为通过，实际远端证据见下节。
+
+### v0.2.0 远端验证
+
+- 发布代码 `3279cfe1e1fc3fef46a993f1a523e0f4cbc241cc` 的 [主分支完整 CI](https://github.com/mozziexwz/node/actions/runs/34713806670) 已通过。Linux race/vet、Debian 12 入口、HTTP/浏览器/GOST 和安装器回归均成功。
+- 日志明确记录 `TestCleanupPythonIsolatedInventoryAndMutation`、`TestCleanupPythonMSBOOSTOwnershipAndRetainedData` 全部通过，含符号链接、未知布局、改动缓存、服务附加钩子、`Also` 和 `PropagatesStopTo` 拒绝；清理仅作用于隔离 fixture，不操作 runner 的真实服务。
+- `TestOfflineRestorePostgresIntegration` 在真实 PostgreSQL 17 服务创建新库、导入并读回校验，同名数据库再次导入拒绝；不是 mock 或 skipped。测试 PostgreSQL 随 CI job 销毁，没有访问用户原库。
+- 公开 v0.2.0 `install.sh` 已匿名下载，与发布标签的 Git blob 一致；SHA-256：`cc851f86f8c3e1198ccfc6e2c6db53479c4b88c1222e0fbcf461336a0aaae93c`。
+- [v0.2.0 正式发布流水线](https://github.com/mozziexwz/node/actions/runs/34714000912) 的 verify、image、release 全部成功。两架构镜像构建完成；Linux amd64 runner 实际启动 PostgreSQL、控制服务及 Caddy，健康 JSON 和 v0.2.0 版本检查通过；两架构归档导入及来源/架构校验通过。没有声称 arm64 真机或公网 ACME 验收。
+- [Release v0.2.0](https://github.com/mozziexwz/node/releases/tag/v0.2.0) 于 2026-09-12 19:31:04 UTC 公开发布，代码标签仍指向 `3279cfe1e1fc3fef46a993f1a523e0f4cbc241cc`，旧标签未覆盖。部署包、安装器、两份 Agent、两份独立恢复工具及两份预构建镜像归档均已匿名下载，8 份载荷 SHA-256 与清单及 GitHub 资产摘要一致；4 份程序 ELF 架构正确，部署包不含私有环境、备份、附件原稿或运行数据。
+- GHCR 匿名清单包含 `linux/amd64` 与 `linux/arm64`，索引摘要为 `sha256:07100bfc472f7a60667621a3733a89ca2546edf42db693261f18bd93b3d16219`。以上均为隔离 CI / 公开分发验证，未操作用户 VPS 或真实付款。
 
 ## 尚未验收 / 未完成
 
