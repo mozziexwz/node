@@ -1,0 +1,152 @@
+name: Test and publish
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: npm ci && npm run build
+        working-directory: apps/web
+      - name: Verify real HTTP workflows against isolated server
+        shell: bash
+        run: |
+          mkdir -p .runtime
+          go build -o .runtime/msboost-server ./cmd/server
+          node scripts/test-http.mjs
+      - name: Install isolated test browser
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: Verify browser workflows and supplementary UI
+        run: node scripts/test-http.mjs --browser
+      - name: Verify pinned GOST two-hop forwarding
+        shell: bash
+        run: |
+          mkdir -p .runtime/gost
+          curl --fail --location --proto '=https' --tlsv1.2 https://github.com/go-gost/gost/releases/download/v3.3.0/gost_3.3.0_linux_amd64.tar.gz -o .runtime/gost/archive.tar.gz
+          printf '%s\n' '676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5  .runtime/gost/archive.tar.gz' | sha256sum --check --strict
+          tar -xzf .runtime/gost/archive.tar.gz -C .runtime/gost gost
+          GOST_TEST_BINARY="$PWD/.runtime/gost/gost" go test -race ./internal/relayruntime -run TestRealGost -count=1 -v
+      - name: Check installers without executing them
+        run: |
+          for script in install.sh agent.sh deploy/*.sh installers/node/msboost.sh installers/reinstall/reinstall.sh; do bash -n "$script"; done
+          bash deploy/manage.sh --help
+          bash install.sh --help
+          bash agent.sh --help
+          bash deploy/manage_test.sh
+          bash deploy/bootstrap_test.sh
+      - run: go build ./cmd/server && go build ./cmd/agent
+  image:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: verify
+    env:
+      MSBOOST_ENV_FILE: /tmp/msboost-ci.env
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest
+          build-args: VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test the published image and Compose configuration
+        env:
+          VERSION: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          export MSBOOST_IMAGE="ghcr.io/${REPOSITORY}:${VERSION}"
+          export ADMIN_EMAIL=12345678@qq.com ADMIN_PASSWORD="$(openssl rand -hex 24)"
+          export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+          export MSBOOST_DOMAIN=localhost MSBOOST_SITE_ADDRESS=http://localhost PUBLIC_URL=http://localhost COOKIE_SECURE=false
+          umask 077
+          printf '%s\n' "ADMIN_EMAIL=$ADMIN_EMAIL" "ADMIN_PASSWORD=$ADMIN_PASSWORD" "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" "PUBLIC_URL=$PUBLIC_URL" "COOKIE_SECURE=$COOKIE_SECURE" > "$MSBOOST_ENV_FILE"
+          docker compose --project-name msboost --file deploy/compose.yml config --quiet
+          docker compose --project-name msboost --file deploy/compose.yml up --detach --wait --wait-timeout 180
+          curl --fail --retry 15 --retry-connrefused --retry-delay 2 --resolve localhost:80:127.0.0.1 http://localhost/api/health | jq --exit-status --arg version "$VERSION" '.status == "ok" and .version == $version'
+          docker compose --project-name msboost --file deploy/compose.yml logs --tail 30
+      - name: Export prebuilt image fallback for anonymous Release downloads
+        env:
+          VERSION: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          mkdir -p .runtime/images
+          for arch in amd64 arm64; do
+            docker buildx build --platform "linux/$arch" --build-arg "VERSION=$VERSION" --tag "ghcr.io/$REPOSITORY:$VERSION" --output "type=docker,dest=.runtime/images/msboost-image-linux-$arch.tar" .
+            gzip -n ".runtime/images/msboost-image-linux-$arch.tar"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt-images
+          path: .runtime/images/*.tar.gz
+          retention-days: 3
+          compression-level: 0
+      - name: Clean isolated CI containers
+        if: always()
+        env:
+          POSTGRES_PASSWORD: ci-cleanup-placeholder
+          ADMIN_EMAIL: 12345678@qq.com
+          ADMIN_PASSWORD: ci-cleanup-placeholder
+          MSBOOST_DOMAIN: localhost
+          MSBOOST_SITE_ADDRESS: http://localhost
+          PUBLIC_URL: http://localhost
+        run: if [ -f "$MSBOOST_ENV_FILE" ]; then docker compose --project-name msboost --file deploy/compose.yml down --volumes; fi
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [verify, image]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: prebuilt-images
+          path: .runtime/release
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Build verified deployment bundle and standalone agents
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: bash scripts/package-release.sh "$VERSION"
+      - name: Publish versioned assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          gh release create "$VERSION" .runtime/release/* --verify-tag --title "MSBOOST $VERSION" --notes-file docs/release-notes.md

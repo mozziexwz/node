@@ -1,0 +1,7 @@
+# Explicit developer/operator fallback only; normal installs never build locally.
+services:
+  server:
+    build:
+      context: ..
+      args:
+        VERSION: ${MSBOOST_VERSION:-v0.1.0}

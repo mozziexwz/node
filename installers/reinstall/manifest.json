@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/bin456789/reinstall",
+  "commit": "b8eadd59123eccc7b591ef921f85f139316b1515",
+  "sourceURL": "https://raw.githubusercontent.com/bin456789/reinstall/b8eadd59123eccc7b591ef921f85f139316b1515/reinstall.sh",
+  "sourceSHA256": "da118210a149ec055aaa9b0c4d48a3c71ec71268976fda27e7cf549113898458",
+  "executionSHA256": "5683838626eeda9236c3d119e497668c25b2db70d586c979100bcb6adc888a1c",
+  "patch": "Pin internal reinstall resource URLs from main to the same immutable upstream commit. No execution of upstream code during import.",
+  "licenseSource": "https://raw.githubusercontent.com/bin456789/reinstall/b8eadd59123eccc7b591ef921f85f139316b1515/LICENSE"
+}

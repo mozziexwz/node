@@ -1,0 +1,11 @@
+.git
+.tools
+.cache
+.runtime
+**/node_modules
+**/dist
+data
+.env
+*.key
+*.pem
+previews

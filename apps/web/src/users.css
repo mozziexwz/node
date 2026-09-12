@@ -1,0 +1,67 @@
+.user-filter {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+.user-filter .field {
+  margin: 0;
+  max-width: 360px;
+  flex: 1;
+}
+.users-table {
+  min-width: 1180px;
+}
+.users-table td {
+  font-variant-numeric: tabular-nums;
+}
+.users-table td > small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted, #777);
+}
+.users-table td > strong {
+  font-size: 14px;
+}
+.user-sort {
+  border: 0;
+  background: none;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.user-sort:hover {
+  color: var(--orange, #df6c21);
+}
+.users-table th[aria-sort="ascending"] .user-sort,
+.users-table th[aria-sort="descending"] .user-sort {
+  color: var(--orange, #df6c21);
+}
+.user-actions {
+  max-width: 220px;
+  flex-wrap: wrap;
+}
+.user-verification {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.user-verification small {
+  color: var(--muted, #777);
+}
+@media (max-width: 640px) {
+  .user-filter {
+    display: block;
+  }
+  .user-filter .muted {
+    display: block;
+    margin-top: 12px;
+  }
+}

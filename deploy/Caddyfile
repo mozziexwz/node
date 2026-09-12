@@ -1,0 +1,4 @@
+{$MSBOOST_SITE_ADDRESS} {
+    encode zstd gzip
+    reverse_proxy server:8080
+}

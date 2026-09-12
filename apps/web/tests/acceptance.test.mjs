@@ -1,0 +1,94 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { chromium, expect } from '@playwright/test';
+
+// Requires scripts/dev-server.mjs. All accounts/data below belong to the
+// isolated local acceptance server, never to a production deployment.
+test('real server: browser permissions, admin pages, content and account flows', {timeout: 120000}, async () => {
+  const base = process.env.MSBOOST_TEST_URL || 'http://127.0.0.1:8080';
+  assert.match(base, /^http:\/\/(127\.0\.0\.1|localhost):\d+$/);
+  const admin = JSON.parse(fs.readFileSync(process.env.MSBOOST_TEST_CREDENTIALS || '../../.runtime/acceptance-credentials.json', 'utf8'));
+  const browser = await chromium.launch({headless:true, ...(process.platform === 'win32' ? {channel:'chrome'} : {})});
+  const ctx = await browser.newContext({baseURL:base, viewport:{width:1440,height:1000}});
+  const page = await ctx.newPage(), errors=[];
+  page.on('pageerror', e=>errors.push(e.message));
+  async function request(path, data, method='POST', context=ctx) {
+    const me = await context.request.get('/api/me');
+    const token = me.ok() ? (await me.json()).csrfToken : '';
+    return context.request.fetch(path,{method,data,headers:{'Origin':base,'X-CSRF-Token':token}});
+  }
+  try {
+    await page.goto(base);
+    await expect(page.getByRole('heading',{level:1})).toContainText('你的服务器');
+    await expect(page.getByLabel('QQ 邮箱')).toHaveValue('');
+    assert.equal(await page.getByRole('checkbox').isChecked(),false);
+    await page.getByLabel('QQ 邮箱').fill(admin.email);
+    await page.getByLabel('密码',{exact:true}).fill(admin.password);
+    await page.getByRole('checkbox').check();
+    await page.locator('form').getByRole('button',{name:'登录',exact:true}).click();
+    await expect(page.locator('.sidebar')).toBeVisible();
+    const me=await (await ctx.request.get('/api/me')).json();
+    assert.equal(me.user.role,'admin');assert.ok(!me.user.passwordHash);
+    assert.equal((await ctx.request.post('/api/admin/plans',{data:{}})).status(),403,'CSRF rejects missing token');
+    for (const label of ['部署 MSBOOST','配置自备中转','DD 系统','节点','隧道']) await expect(page.locator('.sidebar').getByRole('button',{name:label,exact:true})).toBeVisible();
+    for (const hash of ['home','users','tasks','executors','agents','routes','rules','plans','cards','invitations','orders','payments','settings','backups','tickets','account']) {
+      await page.goto(base+'/#'+hash);
+      await expect(page.locator('.sidebar')).toBeVisible();
+      await expect(page.locator('main')).toBeVisible();
+      await expect(page.locator('main')).not.toContainText('正在初始化');
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'desktop overflow '+hash);
+    }
+    await page.goto(base+'/#users');
+    for (const heading of ['邮箱验证','余额（元）','剩余天数','总流量（GB）','已用流量（GB）','规则速率（Mbps）']) await expect(page.getByRole('columnheader',{name:heading})).toBeVisible();
+    await page.getByRole('button',{name:'添加用户',exact:true}).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    const dialogBox=await page.getByRole('dialog').boundingBox();
+    assert.ok(dialogBox.x>0 && dialogBox.y>=0 && dialogBox.y+dialogBox.height<=1000,'dialog remains within viewport');
+    await expect(page.getByLabel('套餐剩余天数')).toBeVisible();
+    await page.getByRole('button',{name:'关闭窗口'}).click();
+    await page.goto(base+'/#tutorials');
+    await page.getByRole('button',{name:'新建文章',exact:true}).click();
+    await page.getByRole('button',{name:'全屏编辑',exact:true}).click();
+    const editor=page.getByRole('region',{name:'Markdown 编辑器'});
+    await expect(editor.getByRole('button',{name:'保存',exact:true})).toBeVisible();
+    await expect(editor.locator('.markdown-toolbar')).toBeVisible();
+    const expandedBox=await editor.boundingBox();
+    assert.ok(expandedBox.width>=1400 && expandedBox.height>=960,'the entire editor fills the viewport');
+    await page.screenshot({path:'../../.runtime/supplement-editor-fullscreen.png',fullPage:true});
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.getByRole('button',{name:'关闭窗口'}).click();
+    const title='验收文章 '+Date.now();
+    const created=await request('/api/admin/articles',{title,category:'教程',body:'# 本地验收\n**真实内容**<script>window.injected=1</script>',published:true,sort:0});
+    assert.ok(created.ok(),await created.text());const article=await created.json();
+    await page.goto(base+'/#tutorials');
+    await page.reload();
+    await expect(page.getByText(title,{exact:true})).toBeVisible();
+    const attach=await ctx.request.post('/api/admin/articles/'+article.id+'/attachments',{headers:{'X-CSRF-Token':me.csrfToken},multipart:{file:{name:'acceptance.txt',mimeType:'text/plain',buffer:Buffer.from('MSBOOST acceptance')}}});
+    assert.ok(attach.ok());const file=await attach.json();
+    assert.equal(await (await ctx.request.get(`/api/articles/${article.id}/attachments/${file.id}`)).text(),'MSBOOST acceptance');
+    assert.ok((await request('/api/admin/articles/'+article.id,undefined,'DELETE')).ok());
+    await page.setViewportSize({width:390,height:844});
+    await page.goto(base+'/#home');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'mobile overflow');
+    await page.screenshot({path:'../../.runtime/mobile.png',fullPage:true});
+    const member=await browser.newContext({baseURL:base});
+    const userEmail=String(Date.now()).slice(-10)+'@qq.com';
+    const signup=await request('/api/auth/register',{email:userEmail,password:'Acceptance-Test-'+Date.now(),agree:true},'POST',member);
+    assert.equal(signup.status(),201,await signup.text());
+    const user=(await signup.json()).user;assert.ok(!user.passwordHash);assert.equal(user.emailVerifiedAt,0);
+    assert.equal((await member.request.get('/api/admin/users')).status(),403);
+    const t=await request('/api/tickets',{title:'本地工单验收',body:'仅本地测试，不会联系外部服务'},'POST',member);
+    assert.equal(t.status(),201);const ticket=await t.json();
+    assert.ok((await request('/api/tickets/'+ticket.id+'/replies',{body:'管理员回复'})).ok());
+    assert.ok((await request('/api/tickets/'+ticket.id,{status:'closed'},'PATCH',member)).ok());
+    const fingerprints=await request('/api/fingerprints',{host:'127.0.0.1',port:22},'POST',member);
+    assert.ok(fingerprints.status()>=400,'private SSH targets must not be probed');
+    const mp=await member.newPage();await mp.goto(base+'/#deploy');
+    await expect(mp.getByRole('heading',{level:1})).toContainText('部署');
+    await expect(mp.locator('input[type=password]')).toHaveValue('');
+    await member.close();
+    assert.deepEqual(errors,[]);
+  } finally {await browser.close();}
+});
