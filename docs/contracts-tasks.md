@@ -1,4 +1,4 @@
-# 任务与执行机 API（v0.2.1）
+# 任务与执行机 API（v0.2.2）
 
 浏览器使用会话 Cookie，写请求需要 `X-CSRF-Token`。JSON 使用 camelCase，响应不缓存，错误为 `{ "error": "中文说明" }`。SSH 密码、免费配置和执行信封仅短期保存在内存，任务审计不存密码或原始远端日志。
 
@@ -109,7 +109,7 @@ GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/
 
 执行机以 `msboost-agent --capability executor` 运行，配置 `MSBOOST_SERVER_URL`、`MSBOOST_EXECUTOR_TOKEN` 和两架构的 `GOST_*_URL` / `GOST_*_SHA256`。控制面要求 HTTPS，仅 loopback 开发允许 HTTP。GOST 使用固定官方 `go-gost/gost` Release，不使用 `latest`。远端免费中转要求 root SSH、systemd 247+ / `LoadCredential`；安装可在 Debian/Ubuntu 补齐 Python 3、curl、tar，其他系统需预先准备。清理预览不安装依赖。
 
-网站升级不会自动更新独立 Agent。v0.2.1 新诊断与清理需要新版执行机，参见 [Agent 安装与升级](agent-installation.md)。
+网站升级不会自动更新独立 Agent。v0.2.2 新诊断与清理需要新版执行机，参见 [Agent 安装与升级](agent-installation.md)。
 
 ## 内部付费前置适配
 

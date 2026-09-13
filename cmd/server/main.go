@@ -20,7 +20,7 @@ import (
 	"github.com/mozziexwz/node/internal/control"
 )
 
-var version = "0.2.1-dev"
+var version = "0.2.2-dev"
 
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -52,7 +52,7 @@ func main() {
 	} else {
 		log.Fatal("required pinned reinstall script cannot be read")
 	}
-	cfg := control.Config{DataDir: env("DATA_DIR", "data"), DatabaseURL: os.Getenv("DATABASE_URL"), PublicURL: env("PUBLIC_URL", "http://127.0.0.1:8080"), MasterKey: os.Getenv("MASTER_KEY"), AdminEmail: os.Getenv("ADMIN_EMAIL"), AdminPassword: os.Getenv("ADMIN_PASSWORD"), NodeScript: env("NODE_SCRIPT", "installers/node/msboost.sh"), ReinstallScript: reinstall, ReinstallSHA256: expected, SecureCookies: os.Getenv("COOKIE_SECURE") == "true"}
+	cfg := control.Config{Version: version, DataDir: env("DATA_DIR", "data"), DatabaseURL: os.Getenv("DATABASE_URL"), PublicURL: env("PUBLIC_URL", "http://127.0.0.1:8080"), MasterKey: os.Getenv("MASTER_KEY"), AdminEmail: os.Getenv("ADMIN_EMAIL"), AdminPassword: os.Getenv("ADMIN_PASSWORD"), NodeScript: env("NODE_SCRIPT", "installers/node/msboost.sh"), ReinstallScript: reinstall, ReinstallSHA256: expected, SecureCookies: os.Getenv("COOKIE_SECURE") == "true"}
 	if cfg.DatabaseURL == "" && os.Getenv("DATABASE_HOST") != "" {
 		databaseURL := url.URL{Scheme: "postgres", User: url.UserPassword(env("DATABASE_USER", "msboost"), os.Getenv("POSTGRES_PASSWORD")), Host: net.JoinHostPort(os.Getenv("DATABASE_HOST"), env("DATABASE_PORT", "5432")), Path: "/" + env("DATABASE_NAME", "msboost"), RawQuery: "sslmode=" + url.QueryEscape(env("DATABASE_SSLMODE", "require"))}
 		cfg.DatabaseURL = databaseURL.String()

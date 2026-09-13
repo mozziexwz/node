@@ -16,6 +16,8 @@ Caddy 给应用的 `X-Forwarded-For` 被覆盖为单个已验证的 `{client_ip}
 
 ## 隔离回归
 
+使用 v0.2.2 或更新的部署管理器：它等待数据库和应用健康后，只强制重建 Caddy，重新挂载并加载当前配置；回退也重新加载旧配置。仅复制 Caddyfile 或普通 `compose up` 不保证运行中代理使用新内容，旧文件 inode 也可能仍被容器绑定。重建代理可能短暂中断连接，应安排维护窗口。
+
 `go test ./deploy -count=1` 检查官方网段快照、严格解析和应用固定可信边界。设置 `CADDY_TEST_BINARY` 为经过校验的 Caddy 二进制，再运行 `go test ./deploy -run TestRealCaddyClientIP -count=1 -v`，会启动临时回环 HTTP 服务，真实验证：直连伪造头被忽略、CF 优先、IPv6、XFF 右侧解析、异常头回退及应用仅收到单值 XFF。
 
 可信 CF 路径测试只在临时配置把 CF 段替换成回环测试地址，不修改生产配置，不冒用公网 CF 地址，不读业务数据、不占用 80/443、不修改运行中的 Caddy。

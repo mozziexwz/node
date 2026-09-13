@@ -12,15 +12,15 @@
 apt-get update
 apt-get install -y ca-certificates curl tar
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/mozziexwz/node/v0.2.1/agent.sh \
+  https://raw.githubusercontent.com/mozziexwz/node/v0.2.2/agent.sh \
   -o /root/msboost-agent.sh
 bash /root/msboost-agent.sh \
   --capability executor \
   --server https://panel.example.com \
-  --version v0.2.1
+  --version v0.2.2
 ```
 
-节点将能力改为 `--capability relay`。控制面地址必须是完整 HTTPS 源站，不含路径、查询或用户名密码。`agent.sh` 默认 `v0.2.1`，仅接受稳定的固定 `vX.Y.Z` 版本，不取得开发分支或 `latest` 运行程序。
+节点将能力改为 `--capability relay`。控制面地址必须是完整 HTTPS 源站，不含路径、查询或用户名密码。`agent.sh` 默认 `v0.2.2`，仅接受稳定的固定 `vX.Y.Z` 版本，不取得开发分支或 `latest` 运行程序。
 
 脚本在真实终端显示隐藏输入提示，此时粘贴对应令牌并回车；令牌不会回显或进入命令行参数。节点注册令牌是短时单次用途，过期后在后台重新生成。执行器使用独立执行器令牌，二者不可混用。
 
@@ -57,13 +57,13 @@ bash /root/msboost-agent.sh \
 
 安装先保存旧文件/服务状态，再更新和重启。服务启动失败时尝试恢复原程序、私有环境、systemd unit、启用状态和之前的运行状态，并保留备份。重跑前应确认使用的匹配令牌仍有效；不要用已消费节点注册令牌进行一次新的注册。
 
-### v0.2.1：升级既有 Agent
+### v0.2.2：升级既有 Agent
 
-**升级网站容器不会自动更新其他 VPS 上的 Agent。** v0.2.1 修复了 Debian `/run` 禁止执行导致的中转失败、GOST 凭据文件名缺少后缀以及 DD 缺少非交互用户名。必须更新执行机才能生效，仅更新网页无效。新诊断和清理对新版 GOST 凭据路径的兼容也需要新版执行机。同机两种能力共享 `/usr/local/bin/msboost-agent`，应在同一维护窗口更新并核验两个服务。
+**升级网站容器不会自动更新其他 VPS 上的 Agent。** v0.2.2 修复了 Debian `/run` 禁止执行导致的中转失败、GOST 凭据文件名缺少后缀以及 DD 缺少非交互用户名。必须更新执行机才能生效，仅更新网页无效。新诊断和清理对新版 GOST 凭据路径的兼容也需要新版执行机。同机两种能力共享 `/usr/local/bin/msboost-agent`，应在同一维护窗口更新并核验两个服务。
 
 1. 网站开启维护模式，暂停新任务和规则。等待所有已接受的 `queued` / `running` 执行任务结束，再操作执行机。**不要在任务仍运行时禁用执行机、重置令牌或重启服务**：可能导致结果无法回传，已交付的 DD/清理不会被撤回。`unknown` / `interrupted` 任务先从 VPS 控制台核实，不能用升级代替结果确认。
 2. 确认控制面域名不变，私密备份 Agent 环境与安装备份；更新节点还需保留整个 `/var/lib/msboost-relay`，特别是 `relay-token.json` 和流量日志。节点更新会中断其连接，需安排维护窗口。
-3. 重新使用上方固定 **`v0.2.1` 入口**安装同一种能力，复用对应的既有凭据。不要删除所有权标记、状态或令牌来强制重装。执行机可复用 `/etc/msboost-executor.env` 中的执行机令牌，以隐藏输入或仅含令牌的 `0600` 私有文件提供；**完整 `.env` 不能直接作为 `--token-file`**，也不要 `source` 或公开打印环境文件。
+3. 重新使用上方固定 **`v0.2.2` 入口**安装同一种能力，复用对应的既有凭据。不要删除所有权标记、状态或令牌来强制重装。执行机可复用 `/etc/msboost-executor.env` 中的执行机令牌，以隐藏输入或仅含令牌的 `0600` 私有文件提供；**完整 `.env` 不能直接作为 `--token-file`**，也不要 `source` 或公开打印环境文件。
 4. 已注册节点更新时保持原控制面和状态目录。运行程序优先读取 `/var/lib/msboost-relay/relay-token.json`，不重新注册。bootstrap 仍要求格式正确的 enrollment 输入，可沿用受保护 `/etc/msboost-relay.env` 的原值作为安装输入；但已消费的注册令牌不能在状态丢失后再次注册。状态缺失、损坏或持久令牌被撤销时，应停止普通升级，检查备份和节点关联，由管理员安排明确重新注册，不能盲目清空目录。
 5. 安装器校验 Release、备份旧程序/环境/unit 并重启本次能力。随后检查本机服务、后台在线与实际同步。同机另一个能力也须在确认无执行任务后重启并核验。最后退出维护，以无破坏性任务验证交付；不要把 DD 或真实清理当作自动升级自测。
 

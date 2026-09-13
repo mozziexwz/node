@@ -82,6 +82,22 @@ func contentUpload(t *testing.T, mux *http.ServeMux, user *User, id, name string
 	mux.ServeHTTP(w, r)
 	return w
 }
+func TestOverviewUsesRuntimeReleaseVersion(t *testing.T) {
+	a, mux, admin, member := contentFixture(t)
+	if a.Config.Version != "dev" {
+		t.Fatal("unversioned development build must not claim a release")
+	}
+	a.Config.Version = "v9.8.7-test"
+	w := contentCall(t, mux, admin, "GET", "/api/admin/overview", nil)
+	var body map[string]any
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil || body["version"] != a.Config.Version {
+		t.Fatal("overview does not use the actual server build version")
+	}
+	if denied := contentCall(t, mux, member, "GET", "/api/admin/overview", nil); denied.Code != 403 {
+		t.Fatal("version reporting bypassed admin authorization")
+	}
+}
+
 func TestContentArticleVisibilityAndAdminMutation(t *testing.T) {
 	a, mux, admin, member := contentFixture(t)
 	contentArticle(t, a, "visible", true)

@@ -25,6 +25,7 @@ import (
 )
 
 type Config struct {
+	Version                                                               string
 	DataDir, DatabaseURL, PublicURL, MasterKey, AdminEmail, AdminPassword string
 	NodeScript, ReinstallScript, ReinstallSHA256                          string
 	SecureCookies                                                         bool
@@ -42,6 +43,9 @@ type App struct {
 }
 
 func New(c Config) (*App, error) {
+	if c.Version == "" {
+		c.Version = "dev"
+	}
 	var trusted []*net.IPNet
 	for _, cidr := range c.TrustedProxyCIDRs {
 		if strings.TrimSpace(cidr) == "" {

@@ -25,7 +25,7 @@ ensure_docker() { :; }
 assert_root_path() { [[ $INSTALL_ROOT == "$TEST_WORK"/* && ! -L $INSTALL_ROOT ]]; }
 assert_managed() { assert_root_path && [[ $(<"$INSTALL_ROOT/.managed-by-msboost") == "$MARKER" && -f $INSTALL_ROOT/.env ]]; }
 install_launcher() { :; }
-check_frontend() { [[ ${MOCK_FRONT_FAIL:-0} == 0 ]]; }
+check_frontend() { printf 'frontend-check\n' >> "$TRACE"; [[ ${MOCK_FRONT_FAIL:-0} == 0 ]]; }
 read_tty() { case "${MOCK_CONFIRM:-cancel}:$1" in yes:*DELETE_MSBOOST*) printf DELETE_MSBOOST ;; yes:*) printf /opt/msboost ;; *) printf CANCEL ;; esac; }
 remove_managed_installation() {
   [[ $INSTALL_ROOT == "$TEST_WORK"/* && -d $INSTALL_ROOT && ! -L $INSTALL_ROOT ]] || return 1
@@ -49,7 +49,13 @@ docker() {
         build) printf built >> "$TEST_WORK/builds" ;;
         exec) printf 'mock-pg-custom-dump' ;;
         up)
+          # Recreating dependencies would interrupt the data service. Every
+          # forced recreation must explicitly isolate the Caddy service.
+          if [[ " $* " == *' --force-recreate '* ]]; then
+            [[ "$*" == 'up -d --no-build --pull never --no-deps --force-recreate --wait --wait-timeout 180 caddy' ]] || fail 'forced recreation was not isolated to Caddy'
+          fi
           if [[ -f $TEST_WORK/fail-next-up ]]; then rm -- "$TEST_WORK/fail-next-up"; return 1; fi
+          if [[ ${*: -1} == caddy && -f $TEST_WORK/fail-next-caddy-up ]]; then rm -- "$TEST_WORK/fail-next-caddy-up"; return 1; fi
           return 0 ;;
         down|ps|logs) return 0 ;;
         *) fail "unexpected compose command: $*" ;;
@@ -103,7 +109,7 @@ fixture() {
   TRACE="$TEST_WORK/trace-$1"
   : > "$TRACE"
   SOURCE_DIR=$TEST_REPO
-  VERSION=v0.2.1
+  VERSION=v0.2.2
   DOMAIN=panel.example.com
   IP_ADDRESS=
   ADMIN_EMAIL=12345678@qq.com
@@ -131,6 +137,15 @@ fixture() {
   [[ ! -f $TEST_WORK/image-loaded ]] || rm -- "$TEST_WORK/image-loaded"
 }
 
+assert_start_sequence() {
+  local operations=()
+  mapfile -t operations < <(grep -E '^(compose .* up |frontend-check$)' "$TRACE")
+  [[ ${#operations[@]} == 3 ]] || fail 'startup must have two bounded Compose calls followed by frontend verification'
+  [[ ${operations[0]} == *' up -d --no-build --pull never --wait --wait-timeout 180 database server' ]] || fail 'database/server health must precede proxy recreation'
+  [[ ${operations[1]} == *' up -d --no-build --pull never --no-deps --force-recreate --wait --wait-timeout 180 caddy' ]] || fail 'Caddy configuration was not explicitly reloaded by isolated recreation'
+  [[ ${operations[2]} == frontend-check ]] || fail 'frontend was checked before new Caddy started'
+}
+
 # Keep dynamically assigned database/server addresses away from Caddy's pinned
 # trusted-proxy address even when Caddy starts after the server becomes healthy.
 grep -Fq 'ip_range: 172.30.86.128/25' "$TEST_REPO/deploy/compose.yml" || fail 'dynamic address pool overlaps reserved proxy address'
@@ -140,6 +155,7 @@ grep -Fq 'TRUSTED_PROXY_CIDRS: 172.30.86.2/32' "$TEST_REPO/deploy/compose.yml" |
 
 fixture normal
 install_site
+assert_start_sequence
 [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE) == ghcr.io/mozziexwz/node@sha256:* ]] || fail 'installed image was not pinned to its pulled digest'
 [[ $(env_get "$INSTALL_ROOT/.env" COOKIE_SECURE) == true ]] || fail 'domain install lacks secure cookie'
 [[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) =~ ^[a-f0-9]{64}$ ]] || fail 'missing random master key'
@@ -156,7 +172,7 @@ uninstall_site
 ! grep -Eq '(^| )(rm|prune|--volumes|-v)( |$)' "$TRACE" || fail 'uninstall deletes data'
 repair_site
 
-VERSION=v0.2.2
+VERSION=v0.2.3
 MOCK_PULL_FAIL=1
 expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/original.env" || fail 'failed pull modified config'
@@ -167,7 +183,7 @@ expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/original.env" || fail 'failed upgrade did not restore prior environment'
 [[ -s $SNAPSHOT/database.dump ]] || fail 'upgrade skipped backup'
 upgrade_site
-[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == v0.2.2 ]] || fail 'successful upgrade wrong version'
+[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == v0.2.3 ]] || fail 'successful upgrade wrong version'
 [[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) == "$(env_get "$TEST_WORK/original.env" MASTER_KEY)" ]] || fail 'upgrade changed master key'
 
 expect_failure purge_site
@@ -271,7 +287,7 @@ expect_failure valid_ipv4 '1.2.3.4$(id)'
 fixture release-fallback
 MOCK_SERVER_PULL_FAIL=1
 install_site
-[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE) == msboost-release:v0.2.1-amd64-* ]] || fail 'release archive was not used after GHCR denial'
+[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE) == msboost-release:v0.2.2-amd64-* ]] || fail 'release archive was not used after GHCR denial'
 [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID) =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'archive imageID was not fixed'
 [[ ! -f $TEST_WORK/builds ]] || fail 'archive fallback compiled source'
 MOCK_MISSING_RELEASE_IMAGE=1
@@ -307,4 +323,53 @@ fixture dependencies-failed
 MOCK_PULL_FAIL=1
 expect_failure install_site
 ! grep -q '^mock-download ' "$TRACE" || fail 'dependency pull failure incorrectly triggered app archive fallback'
-printf '%s\n' 'PASS: offline lifecycle, incomplete recovery, atomic config, GHCR/Release fallback, checksum/tag/architecture/imageID, HTTP and input contracts'
+
+# Config-only changes are invisible to Compose's service hash. A regular
+# install, repair and rollback must all remount/restart just Caddy, preserving
+# database/app containers unless their own normal Compose settings changed.
+fixture proxy-refresh
+install_site
+assert_start_sequence
+cp "$INSTALL_ROOT/.env" "$TEST_WORK/proxy-original.env"
+cp "$INSTALL_ROOT/deploy/Caddyfile" "$TEST_WORK/proxy-original.Caddyfile"
+: > "$TRACE"
+repair_site
+assert_start_sequence
+cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/proxy-original.env" || fail 'proxy refresh reset existing configuration or keys'
+
+: > "$TRACE"
+touch "$TEST_WORK/fail-next-up"
+expect_failure start_live
+[[ $(grep -c '^compose .* up ' "$TRACE") == 1 ]] || fail 'application failure reached proxy startup'
+! grep -q -- '--force-recreate' "$TRACE" || fail 'unhealthy application caused proxy recreation'
+! grep -q '^frontend-check$' "$TRACE" || fail 'unhealthy application reached frontend success check'
+
+: > "$TRACE"
+touch "$TEST_WORK/fail-next-caddy-up"
+expect_failure start_live
+[[ $(grep -c '^compose .* up ' "$TRACE") == 2 ]] || fail 'proxy failure did not follow healthy application'
+! grep -q '^frontend-check$' "$TRACE" || fail 'failed proxy reported frontend success'
+cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/proxy-original.env" || fail 'failed proxy start changed keys'
+
+# Upgrade changes only the bound Caddyfile; its image/env/mount path stay the
+# same. Fail the new proxy once and require a real old-config proxy restart.
+SOURCE_DIR="$TEST_WORK/proxy-upgrade-source"
+copy_deployment_files "$TEST_REPO" "$SOURCE_DIR"
+printf '\n# isolated proxy upgrade fixture\n' >> "$SOURCE_DIR/deploy/Caddyfile"
+: > "$TRACE"
+touch "$TEST_WORK/fail-next-caddy-up"
+expect_failure upgrade_site
+cmp -s "$INSTALL_ROOT/deploy/Caddyfile" "$TEST_WORK/proxy-original.Caddyfile" || fail 'proxy startup failure did not restore previous Caddyfile'
+cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/proxy-original.env" || fail 'proxy startup failure did not restore previous environment'
+[[ -s $SNAPSHOT/database.dump ]] || fail 'proxy upgrade rollback had no database snapshot'
+[[ $(grep -c '^compose .* up .* --force-recreate .* caddy$' "$TRACE") == 2 ]] || fail 'rollback did not recreate Caddy with restored file'
+[[ $(grep -c '^frontend-check$' "$TRACE") == 1 ]] || fail 'only successfully restarted rollback proxy may reach frontend check'
+! grep -Eq '(^| )(prune|--volumes|-v)( |$)' "$TRACE" || fail 'proxy upgrade rollback removed data'
+
+: > "$TRACE"
+upgrade_site
+assert_start_sequence
+cmp -s "$INSTALL_ROOT/deploy/Caddyfile" "$SOURCE_DIR/deploy/Caddyfile" || fail 'successful upgrade did not publish the new Caddyfile'
+[[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) == "$(env_get "$TEST_WORK/proxy-original.env" MASTER_KEY)" ]] || fail 'successful proxy upgrade changed master key'
+
+printf '%s\n' 'PASS: offline lifecycle, proxy-only recreation/rollback, incomplete recovery, atomic config, GHCR/Release fallback, checksum/tag/architecture/imageID, HTTP and input contracts'

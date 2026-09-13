@@ -6,7 +6,7 @@ umask 077
 INSTALL_ROOT=/opt/msboost
 PROJECT=msboost
 MARKER=MSBOOST_DEPLOY_V1
-VERSION=v0.2.1
+VERSION=v0.2.2
 SOURCE_DIR=
 DOMAIN=
 IP_ADDRESS=
@@ -330,7 +330,12 @@ start_live() {
   expected_id=$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID)
   actual_id=$(server_identity "$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE)") || return
   [[ $expected_id =~ ^sha256:[a-f0-9]{64}$ && $actual_id == "$expected_id" ]] || { die '已安装应用 imageID 发生变化或缺失，拒绝启动；请运行 repair 核实原版本'; return 1; }
-  compose_live up -d --no-build --pull never --wait --wait-timeout 180 || return
+  # A bind-mounted Caddyfile can change without changing Compose's service
+  # hash. Start/verify the application first, then recreate only the proxy so
+  # it remounts the current file and actually loads its new (or rolled-back)
+  # configuration. Never force-recreate the database or other dependencies.
+  compose_live up -d --no-build --pull never --wait --wait-timeout 180 database server || return
+  compose_live up -d --no-build --pull never --no-deps --force-recreate --wait --wait-timeout 180 caddy || return
   check_frontend
 }
 replace_live_environment() (
