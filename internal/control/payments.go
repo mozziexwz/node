@@ -36,6 +36,7 @@ type PaymentChannel struct {
 	SealedSecrets     string `json:"sealedSecrets,omitempty"`
 	Configured        bool   `json:"configured"`
 	NotifyURL         string `json:"notifyUrl,omitempty"`
+	ReturnURLTemplate string `json:"returnUrlTemplate,omitempty"`
 }
 type paymentSecrets struct {
 	MerchantKey       string `json:"merchantKey"`
@@ -255,10 +256,12 @@ func (a *App) paymentChannels(w http.ResponseWriter, r *http.Request) {
 			ch.Configured = ch.SealedSecrets != ""
 			ch.SealedSecrets = ""
 			ch.NotifyURL = a.Config.PublicURL + "/api/payments/epay/" + ch.ID + "/notify"
+			ch.ReturnURLTemplate = a.Config.PublicURL + "/?order={orderId}"
 			if !admin {
 				ch.MerchantID = ""
 				ch.Gateway = ""
 				ch.NotifyURL = ""
+				ch.ReturnURLTemplate = ""
 			}
 			out = append(out, ch)
 		}

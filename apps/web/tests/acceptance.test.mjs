@@ -3,6 +3,59 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { chromium, expect } from '@playwright/test';
 
+test('landing title: two intact lines, orange second line, responsive layout', {timeout: 30000}, async () => {
+  const base = process.env.MSBOOST_TEST_URL || 'http://127.0.0.1:8080';
+  assert.match(base, /^http:\/\/(127\.0\.0\.1|localhost):\d+$/);
+  const browser = await chromium.launch({headless:true, ...(process.platform === 'win32' ? {channel:'chrome'} : {})});
+  const page = await browser.newPage({baseURL:base});
+  const errors=[];
+  page.on('pageerror',error=>errors.push(error.message));
+  // Public landing fixture only: no login, credentials, account mutation or
+  // external API calls are needed to verify the complete page composition.
+  await page.route('**/api/**', route=>{
+    const path=new URL(route.request().url()).pathname;
+    return path==='/api/me'
+      ? route.fulfill({status:401,json:{error:'not signed in'}})
+      : route.fulfill({json:path==='/api/health'?{status:'ok'}:{}});
+  });
+  try {
+    await page.goto(base);
+    const title=page.getByRole('heading',{level:1});
+    await expect(title.locator(':scope > span')).toHaveText(['一键部署你的','独立IP游戏节点']);
+    await page.evaluate(()=>document.fonts.ready);
+    for(const width of [1440,1050,900,784,761,760,375,320]) {
+      await page.setViewportSize({width,height:900});
+      const layout=await title.evaluate(element=>{
+        const box=element.getBoundingClientRect();
+        const lines=[...element.children].map(line=>{
+          const range=document.createRange();range.selectNodeContents(line);
+          const rects=[...range.getClientRects()];
+          const rect=rects[0];
+          return {text:line.textContent,count:rects.length,left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,color:getComputedStyle(line).color};
+        });
+        const hero=element.closest('.hero');
+        return {lines,left:box.left,right:box.right,height:box.height,lineHeight:parseFloat(getComputedStyle(element).lineHeight),columns:getComputedStyle(hero).gridTemplateColumns.split(' ').length,overflow:document.documentElement.scrollWidth>innerWidth};
+      });
+      assert.equal(layout.lines.length,2,`two title lines at ${width}px`);
+      for(const line of layout.lines) {
+        assert.equal(line.count,1,`no third line at ${width}px: ${line.text}`);
+        assert.ok(line.left>=layout.left-1 && line.right<=layout.right+1,`title remains inside its column at ${width}px`);
+      }
+      assert.ok(Math.abs(layout.lines[1].top-layout.lines[0].top-layout.lineHeight)<1,`explicit separate line baselines at ${width}px`);
+      assert.ok(Math.abs(layout.height-2*layout.lineHeight)<1,`exactly two line boxes at ${width}px`);
+      assert.equal(layout.lines[0].color,'rgb(38, 38, 38)','first line retains approved ink');
+      assert.equal(layout.lines[1].color,'rgb(231, 101, 39)','entire second line uses approved orange');
+      assert.equal(layout.columns,width>760?2:1,`preserve responsive page columns at ${width}px`);
+      assert.equal(layout.overflow,false,`complete page has no horizontal overflow at ${width}px`);
+      await expect(page.locator('.auth-card')).toBeVisible();
+      await expect(page.locator('.public-tools')).toBeVisible();
+      await expect(page.locator('.public-footer')).toBeVisible();
+      if([1440,784,375].includes(width)) await page.screenshot({path:`../../.runtime/hero-title-${width}.png`,fullPage:true});
+    }
+    assert.deepEqual(errors,[]);
+  } finally {await browser.close();}
+});
+
 // Requires scripts/dev-server.mjs. All accounts/data below belong to the
 // isolated local acceptance server, never to a production deployment.
 test('real server: browser permissions, admin pages, content and account flows', {timeout: 120000}, async () => {
@@ -20,7 +73,7 @@ test('real server: browser permissions, admin pages, content and account flows',
   }
   try {
     await page.goto(base);
-    await expect(page.getByRole('heading',{level:1})).toContainText('你的服务器');
+    await expect(page.getByRole('heading',{level:1})).toContainText('一键部署你的');
     await expect(page.getByLabel('QQ 邮箱')).toHaveValue('');
     assert.equal(await page.getByRole('checkbox').isChecked(),false);
     await page.goto(base+'/#home');

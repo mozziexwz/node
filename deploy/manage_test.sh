@@ -109,7 +109,7 @@ fixture() {
   TRACE="$TEST_WORK/trace-$1"
   : > "$TRACE"
   SOURCE_DIR=$TEST_REPO
-  VERSION=v0.2.2
+  VERSION=v0.2.3
   DOMAIN=panel.example.com
   IP_ADDRESS=
   ADMIN_EMAIL=12345678@qq.com
@@ -172,7 +172,7 @@ uninstall_site
 ! grep -Eq '(^| )(rm|prune|--volumes|-v)( |$)' "$TRACE" || fail 'uninstall deletes data'
 repair_site
 
-VERSION=v0.2.3
+VERSION=v0.2.4
 MOCK_PULL_FAIL=1
 expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/original.env" || fail 'failed pull modified config'
@@ -183,7 +183,7 @@ expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/original.env" || fail 'failed upgrade did not restore prior environment'
 [[ -s $SNAPSHOT/database.dump ]] || fail 'upgrade skipped backup'
 upgrade_site
-[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == v0.2.3 ]] || fail 'successful upgrade wrong version'
+[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == v0.2.4 ]] || fail 'successful upgrade wrong version'
 [[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) == "$(env_get "$TEST_WORK/original.env" MASTER_KEY)" ]] || fail 'upgrade changed master key'
 
 expect_failure purge_site
@@ -287,7 +287,7 @@ expect_failure valid_ipv4 '1.2.3.4$(id)'
 fixture release-fallback
 MOCK_SERVER_PULL_FAIL=1
 install_site
-[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE) == msboost-release:v0.2.2-amd64-* ]] || fail 'release archive was not used after GHCR denial'
+[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE) == msboost-release:v0.2.3-amd64-* ]] || fail 'release archive was not used after GHCR denial'
 [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID) =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'archive imageID was not fixed'
 [[ ! -f $TEST_WORK/builds ]] || fail 'archive fallback compiled source'
 MOCK_MISSING_RELEASE_IMAGE=1

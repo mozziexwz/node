@@ -6,7 +6,7 @@ umask 077
 INSTALL_ROOT=/opt/msboost
 PROJECT=msboost
 MARKER=MSBOOST_DEPLOY_V1
-VERSION=v0.2.2
+VERSION=v0.2.3
 SOURCE_DIR=
 DOMAIN=
 IP_ADDRESS=
@@ -16,6 +16,7 @@ BUILD=0
 RECOVER_INCOMPLETE=0
 STAGE=
 SNAPSHOT=
+DISASTER_ARCHIVE=
 
 die() { printf '错误：%s\n' "$*" >&2; return 1; }
 note() { printf '%s\n' "$*" >&2; }
@@ -27,6 +28,8 @@ usage() {
     '  msboost upgrade [--version vX.Y.Z] [--build]' \
     '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  msboost repair|status|logs|uninstall|purge' \
+    '  msboost disaster-backup|disaster-config|disaster-disable' \
+    '  bash install.sh disaster-restore --archive /root/msboost-backup/整站备份.tar.gz' \
     '  --build 需显式选择，并提供已校验的完整源码包。' \
     'uninstall 保留配置、密钥、数据库、应用数据、证书及备份。' \
     'purge 需要两次终端确认，只删除本站安装及四个站点数据卷。'
@@ -37,9 +40,9 @@ read_tty() {
   printf '%s' "$answer"
 }
 menu() {
-  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  0) 退出' >&2
+  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 一键整站灾难备份' '  9) 设置整站备份目录 / 远程密码 / 每日计划' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  0) 退出' >&2
   local choice; choice=$(read_tty '请选择: ')
-  case "$choice" in 1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;; 5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 0) printf exit ;; *) die '无效选择' ;; esac
+  case "$choice" in 1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;; 5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 8) printf disaster-backup ;; 9) printf disaster-config ;; 10) printf disaster-restore ;; 11) printf disaster-disable ;; 0) printf exit ;; *) die '无效选择' ;; esac
 }
 require_platform() (
   [[ $(id -u) == 0 ]] || { die '请在目标服务器以 root 或 sudo 运行'; return 1; }
@@ -183,6 +186,8 @@ copy_deployment_files() {
   for file in manage.sh compose.yml compose.build.yml Caddyfile; do
     install -m 0600 "$from/deploy/$file" "$to/deploy/$file" || return
   done
+  # Optional only for snapshot/rollback compatibility with pre-disaster releases.
+  if [[ -f $from/deploy/disaster.sh && ! -L $from/deploy/disaster.sh ]]; then install -m 0600 "$from/deploy/disaster.sh" "$to/deploy/disaster.sh" || return; fi
   install -m 0700 "$from/install.sh" "$to/install.sh" || return
   chmod 0700 "$to/deploy/manage.sh"
 }
@@ -325,6 +330,7 @@ check_frontend() {
     --retry 12 --retry-delay 5 --retry-all-errors --resolve "$host:$port:127.0.0.1" "$public/api/health" >/dev/null
 }
 start_live() {
+  [[ ! -e $INSTALL_ROOT/.disaster-incomplete && ! -L $INSTALL_ROOT/.disaster-incomplete ]] || { die '灾难恢复尚未完成，拒绝启动空或部分恢复的站点。请保留数据与私有工作目录，按恢复文档人工核查。'; return 1; }
   note '  → 启动容器并检查应用、反向代理及 HTTPS'
   local expected_id actual_id
   expected_id=$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID)
@@ -386,6 +392,7 @@ install_site() {
 }
 upgrade_site() {
   assert_managed || return
+  [[ ! -e $INSTALL_ROOT/.disaster-incomplete && ! -L $INSTALL_ROOT/.disaster-incomplete ]] || { die '灾难导入未完成，升级不会绕过恢复隔离标记'; return 1; }
   validate_source || return
   ensure_docker || return
   if [[ $RECOVER_INCOMPLETE == 1 ]]; then recover_incomplete_site; return; fi
@@ -443,6 +450,7 @@ recover_incomplete_site() {
 }
 repair_site() {
   assert_managed || return
+  [[ ! -e $INSTALL_ROOT/.disaster-incomplete && ! -L $INSTALL_ROOT/.disaster-incomplete ]] || { die '灾难导入尚未完成，repair 不会绕过恢复隔离标记；请先检查保留的私有恢复目录。'; return 1; }
   [[ $BUILD != 1 ]] || { die 'repair 不编译；请通过 install.sh upgrade --version 指定版本 --build 获取完整源码'; return 1; }
   ensure_docker || return
   compose_live config --quiet || return
@@ -472,6 +480,7 @@ repair_site() {
 }
 uninstall_site() {
   assert_managed || return
+  if declare -F disaster_timer >/dev/null; then disaster_timer off || return; fi
   compose_live down --timeout 30 || return
   note '已卸载本站容器与专用网络；数据库、应用数据、TLS证书、密钥、.env 和备份均保留。恢复请运行 msboost repair。'
   note '未删除 Docker、镜像或其他项目；未操作任何客户 VPS 和独立 Agent。'
@@ -481,6 +490,7 @@ purge_site() {
   note '不可恢复操作：将删除 MSBOOST 的数据库、应用文件、证书、主密钥、配置及本机部署备份。请先完成离机备份。'
   [[ $(read_tty '第一次确认，请输入 DELETE_MSBOOST: ') == DELETE_MSBOOST ]] || { die '清理已取消'; return 1; }
   [[ $(read_tty '第二次确认，请输入完整路径 /opt/msboost: ') == /opt/msboost ]] || { die '清理已取消'; return 1; }
+  if declare -F disaster_timer >/dev/null; then disaster_timer remove || return; fi
   local volume label
   for volume in msboost_app_data msboost_database_data msboost_caddy_data msboost_caddy_config; do
     if docker volume inspect "$volume" >/dev/null 2>&1; then
@@ -512,9 +522,9 @@ manage_main() {
   case "$action" in help|--help|-h) usage; return 0 ;; exit) return 0 ;; stop) action=uninstall ;; esac
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --version|--source-dir|--domain|--ip|--email)
+      --version|--source-dir|--domain|--ip|--email|--archive)
         [[ $# -ge 2 && $2 != --* ]] || { die "缺少 $1 参数"; return 2; }
-        case "$1" in --version) VERSION=$2; version_given=1 ;; --source-dir) SOURCE_DIR=$2 ;; --domain) DOMAIN=$2 ;; --ip) IP_ADDRESS=$2 ;; --email) ADMIN_EMAIL=$2 ;; esac
+        case "$1" in --version) VERSION=$2; version_given=1 ;; --source-dir) SOURCE_DIR=$2 ;; --domain) DOMAIN=$2 ;; --ip) IP_ADDRESS=$2 ;; --email) ADMIN_EMAIL=$2 ;; --archive) DISASTER_ARCHIVE=$2 ;; esac
         shift 2 ;;
       --allow-insecure-http) ALLOW_HTTP=1; shift ;;
       --build) BUILD=1; shift ;;
@@ -522,10 +532,21 @@ manage_main() {
       *) die "未知参数 $1"; return 2 ;;
     esac
   done
-  case "$action" in install|upgrade|repair|status|logs|uninstall|purge) ;; *) usage; return 2 ;; esac
+  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-config|disaster-disable|disaster-restore) ;; *) usage; return 2 ;; esac
   require_platform || return
   require_release_version || return
   assert_root_path || return
+  [[ -z $DISASTER_ARCHIVE || $action == disaster-restore ]] || { die '--archive 仅用于灾难恢复'; return 2; }
+  if [[ $action == disaster-* || $action == uninstall || $action == purge ]]; then
+    local disaster_module
+    disaster_module="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/disaster.sh"
+    if [[ -f $disaster_module && ! -L $disaster_module ]]; then source "$disaster_module"
+    elif [[ $action == disaster-* ]]; then die '本版本尚未包含整站灾难管理模块'; return 1; fi
+  fi
+  if [[ $action == disaster-restore && -z $SOURCE_DIR ]]; then
+    assert_managed || return
+    exec bash "$INSTALL_ROOT/install.sh" disaster-restore --version "$VERSION" --archive "$DISASTER_ARCHIVE"
+  fi
   if [[ $RECOVER_INCOMPLETE == 1 && $action != upgrade ]]; then die '--recover-incomplete 只能用于 upgrade'; return 2; fi
   if [[ $action != install && ( -n $DOMAIN || -n $IP_ADDRESS || -n $ADMIN_EMAIL || $ALLOW_HTTP == 1 ) ]]; then die '域名/IP/邮箱仅用于首次安装；升级修复不会重置配置'; return 2; fi
   if [[ $action == upgrade && -z $SOURCE_DIR ]]; then
@@ -543,11 +564,16 @@ manage_main() {
   exec 9>/run/msboost-deploy.lock
   flock -n 9 || { die '另一个 MSBOOST 部署管理操作正在运行'; return 1; }
   trap cleanup_stage EXIT
+  if [[ $action == disaster-* ]]; then trap disaster_cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; fi
   case "$action" in
     install) install_site ;; upgrade) upgrade_site ;; repair) repair_site ;;
     uninstall) uninstall_site ;; purge) purge_site ;;
     status) assert_managed && compose_live ps ;;
     logs) assert_managed && compose_live logs --tail 200 server caddy database ;;
+    disaster-backup) disaster_backup ;;
+    disaster-config) disaster_configure ;;
+    disaster-disable) assert_managed && disaster_timer off && note '整站自动备份已停用；配置和已保存的本机/远程备份未删除。' ;;
+    disaster-restore) disaster_restore ;;
   esac
 }
 

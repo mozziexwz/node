@@ -11,6 +11,7 @@
 :root{--bg:#fff;--sub:#696765}
 .mb16{margin-bottom:16px}.hero{grid-template-columns:minmax(0,1fr) 390px;gap:66px;padding:60px 0}
 .hero .v4-hero-title{font-size:48px;line-height:1.28;letter-spacing:-1.7px;margin:20px 0 24px;font-weight:850}
+.v4-hero-title>.v4-hero-line{display:block;white-space:nowrap}
 .hero .v4-hero-copy{line-height:2;max-width:none;font-size:13px}.hero-points{display:flex;gap:16px;flex-wrap:wrap;margin:25px 0 28px;color:var(--sub);font-size:10px}.hero-points span{display:flex;align-items:center;gap:4px}.hero-points svg{color:var(--orange)}
 .hero-steps{display:grid;grid-template-columns:1fr 14px 1fr 14px 1fr;gap:12px;align-items:center;border-top:1px solid var(--line);padding-top:23px}.hero-steps>div{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:104px;padding:16px 8px;border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow);background:white}.hero-steps strong{font-size:11px}.hero-steps>span{color:#aaa}.hero-steps .active{background:var(--orange);border-color:var(--orange);color:#fff}.hero-steps .active svg{width:26px;height:28px}
 .public-tools .tool-card{align-items:center;padding:22px 20px;gap:13px;min-height:103px}.public-tools .tool-card p{font-size:10.5px;margin-top:6px;color:var(--sub);line-height:1.7}.public-tools .tool-card .arrow{display:none!important}

@@ -43,6 +43,7 @@ import { UsersPage } from "./users";
 import { RouteBuilder } from "./tunnels";
 import { Backups } from "./backups";
 import { navigationGroups } from "./navigation";
+import { paymentReturnOrder } from "./payment-return";
 import "./app.css";
 const labels: Record<string, [string, typeof Server]> = {
   tutorials: ["公告/教程", BookOpen],
@@ -183,7 +184,9 @@ function App() {
     [settings, setSettings] = useState<RecordData>({}),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
-    [view, setView] = useState(location.hash.slice(1) || "tutorials"),
+    [view, setView] = useState(
+      location.hash.slice(1) || (paymentReturnOrder() ? "orders" : "tutorials"),
+    ),
     [drawer, setDrawer] = useState(false);
   async function refresh() {
     try {
@@ -205,7 +208,11 @@ function App() {
   }
   useEffect(() => {
     void refresh();
-    const h = () => setView(location.hash.slice(1) || "tutorials");
+    const h = () =>
+      setView(
+        location.hash.slice(1) ||
+          (paymentReturnOrder() ? "orders" : "tutorials"),
+      );
     addEventListener("hashchange", h);
     return () => removeEventListener("hashchange", h);
   }, []);
@@ -242,7 +249,7 @@ function App() {
       <AuthPage
         settings={settings}
         onLogin={() => {
-          navigate("tutorials");
+          navigate(paymentReturnOrder() ? "orders" : "tutorials");
           void refresh();
         }}
       />
@@ -285,7 +292,13 @@ function App() {
       page = <Wallet onRefresh={() => void refresh()} />;
       break;
     case "orders":
-      page = <Orders admin={admin} />;
+      page = (
+        <Orders
+          admin={admin}
+          returnOrderID={paymentReturnOrder()}
+          onPaid={() => void refresh()}
+        />
+      );
       break;
     case "tickets":
       page = <Tickets />;

@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly REPOSITORY=mozziexwz/node
-readonly INITIAL_VERSION=v0.2.2
+readonly INITIAL_VERSION=v0.2.3
 
 bootstrap_help() {
   printf '%s\n' \
@@ -12,20 +12,23 @@ bootstrap_help() {
     '  bash install.sh                       中文交互菜单' \
     '  bash install.sh install --domain panel.example.com --email 12345678@qq.com' \
     '  bash install.sh install --ip 203.0.113.10 --email 12345678@qq.com --allow-insecure-http' \
-    '  bash install.sh upgrade [--version v0.2.2]' \
+    '  bash install.sh upgrade [--version v0.2.3]' \
     '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  bash install.sh repair|status|logs|uninstall|purge' \
+    '  bash install.sh disaster-backup|disaster-config|disaster-disable' \
+    '  bash install.sh disaster-restore --archive /root/msboost-backup/整站备份.tar.gz [--version vX.Y.Z]' \
     '默认拉取预构建镜像；只有显式 --build 才在服务器编译源码。' \
     'uninstall 卸载但保留数据；purge 为独立彻底清理，需要两次交互确认。'
 }
 
 bootstrap_menu() {
-  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  0) 退出' >&2
+  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 一键整站灾难备份' '  9) 设置整站备份目录 / 远程密码 / 每日计划' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  0) 退出' >&2
   local choice
   read -r -p '请选择: ' choice </dev/tty
   case "$choice" in
     1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;;
     5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 0) printf exit ;;
+    8) printf disaster-backup ;; 9) printf disaster-config ;; 10) printf disaster-restore ;; 11) printf disaster-disable ;;
     *) printf '%s\n' '无效选择' >&2; return 1 ;;
   esac
 }
@@ -40,7 +43,7 @@ bootstrap_main() {
   elif [[ $1 != --* ]]; then action=$1; shift
   fi
   [[ $action != exit ]] || return 0
-  case "$action" in install|upgrade|repair|status|logs|uninstall|purge) ;; *) bootstrap_help; return 2 ;; esac
+  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-config|disaster-disable|disaster-restore) ;; *) bootstrap_help; return 2 ;; esac
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --version) [[ $# -ge 2 ]] || { printf '%s\n' '缺少 --version 参数' >&2; return 2; }; version=$2; shift 2 ;;
@@ -49,13 +52,13 @@ bootstrap_main() {
     esac
   done
   [[ $(id -u) == 0 && $(uname -s) == Linux ]] || { printf '%s\n' '请在目标 Debian 12 服务器以 root 运行；不会部署到你的本地浏览器。' >&2; return 1; }
-  if [[ $action != install && $action != upgrade ]]; then
+  if [[ $action != install && $action != upgrade && $action != disaster-restore ]]; then
     [[ -f /opt/msboost/.managed-by-msboost && ! -L /opt/msboost && -f /opt/msboost/deploy/manage.sh ]] || { printf '%s\n' '未发现此安装器管理的 /opt/msboost' >&2; return 1; }
     exec bash /opt/msboost/deploy/manage.sh "$action" "${forward[@]}"
   fi
   for entry in curl tar sha256sum sed mktemp; do command -v "$entry" >/dev/null || { printf '缺少必要依赖：%s\n' "$entry" >&2; return 1; }; done
   if [[ -z $version ]]; then
-    if [[ $action == install ]]; then version=$INITIAL_VERSION
+    if [[ $action == install || $action == disaster-restore ]]; then version=$INITIAL_VERSION
     else
       tag_json=$(curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 --retry 2 "https://api.github.com/repos/$REPOSITORY/releases/latest") || return
       # GitHub may return a single compact JSON line; the key is not necessarily

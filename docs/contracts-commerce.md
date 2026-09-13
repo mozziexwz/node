@@ -21,10 +21,11 @@
 ## 易支付
 
 - `GET /api/payment-channels` → `{channels:[{id,name,type,version,enabled,configured}]}`；type是alipay/wxpay。
-- `GET /api/admin/payment-channels` → `{channels:[{id,name,version,type,gateway,merchantId,enabled,configured,notifyUrl}]}`。秘密永不回显。
+- `GET /api/admin/payment-channels` → `{channels:[{id,name,version,type,gateway,merchantId,enabled,configured,notifyUrl,returnUrlTemplate}]}`。秘密永不回显。两个地址由 HTTPS `PUBLIC_URL` 自动生成，后台只读显示并可复制；每笔下单自动传入实际 `notify_url`、`return_url`，无需填写可编辑的通知地址。`returnUrlTemplate` 中 `{orderId}` 会替换为实际订单号，模板本身不是付款链接。普通用户渠道列表不提供这两个管理字段。
 - `POST /api/admin/payment-channels`、`PUT /api/admin/payment-channels/{id}` 输入 `{name,version:"v1"|"v2",type:"alipay"|"wxpay",gateway,merchantId,enabled,merchantKey?,privateKey?,platformPublicKey?}`。v1用merchantKey；v2用后两个RSA PEM/base64字段。留空保留同版本旧秘密；版本切换须补全。网关和PUBLIC_URL必须HTTPS。
 - `DELETE /api/admin/payment-channels/{id}`，有订单引用时阻止删除。
 - `GET/POST /api/payments/epay/{channel}/notify` 仅真实异步签名通知履约。返回纯文本success/fail。v1 MD5，v2 RSA SHA256；核验商户、渠道、订单、交易号、金额、状态和CNY（协议缺currency时绑定订单CNY）。重复幂等，交易号不能跨订单复用，晚到或权益变更转paid_review。
+- 同步返回入口为 `PUBLIC_URL/?order={实际订单号}`。网页保留登录后的订单目标，只通过需认证且校验本人归属的 `GET /api/orders/{id}` 展示状态；不信任返回查询参数中的支付状态或签名，不通过同步回跳入账。在线订单创建弹窗与返回页均支持最多13次、间隔5秒的本地订单查询，单次请求10秒超时；终态、错误或次数耗尽停止自动查询，仍可手动刷新。`paid` 才刷新账户权益，`paid_review`、`expired`、待通知和查询错误明确区分。这里不是向支付平台主动查单。
 - 当前支付交互是已签名的真实网页跳转 `/submit.php` 或 `/api/pay/submit`；二维码API、主动查询、退款自动化尚未接入，不能显示演示二维码或“测试支付成功”。
 
 ## 线路管理

@@ -267,8 +267,11 @@ export function ResourcePage({ kind }: { kind: string }) {
       )}
       {kind === "payments" && (
         <Notice>
-          保存后的密钥不回显。当前使用真实收银台跳转；回调地址须公网 HTTPS
-          可达。
+          通知地址（异步回调）和返回地址（同步跳转）由本站 PUBLIC_URL 自动生成，
+          每次下单自动提交，无需手填。保存渠道后点击“编辑”查看并复制。
+          通知地址须公网 HTTPS
+          可达；若支付商户后台要求域名或通知白名单，请填写对应地址。
+          同步返回仅查询订单，不作为付款凭据。保存后的密钥不回显。
         </Notice>
       )}
       <div className="card flush mt16">
@@ -329,6 +332,45 @@ export function ResourcePage({ kind }: { kind: string }) {
           title={(editing.id ? "编辑" : "新增") + s.title}
           onClose={() => setEditing(null)}
         >
+          {kind === "payments" && editing.id && (
+            <section aria-label="支付通知与返回地址">
+              <Field
+                label="通知地址 / 异步回调地址（自动生成）"
+                value={editing.notifyUrl || ""}
+                readOnly
+              />
+              <Button
+                onClick={() =>
+                  void copyText(editing.notifyUrl || "").catch((e) =>
+                    setMessage(e.message),
+                  )
+                }
+              >
+                复制通知地址
+              </Button>
+              <div className="mt16">
+                <Field
+                  label="返回地址 / 同步跳转入口（模板）"
+                  value={editing.returnUrlTemplate || ""}
+                  readOnly
+                />
+                <Button
+                  onClick={() =>
+                    void copyText(editing.returnUrlTemplate || "").catch((e) =>
+                      setMessage(e.message),
+                    )
+                  }
+                >
+                  复制返回地址模板
+                </Button>
+              </div>
+              <p className="muted mt16">
+                这是本站自动生成的地址，不是支付网关地址。每笔订单会把{" "}
+                {"{orderId}"}{" "}
+                替换为实际订单号；模板不能直接作为测试付款链接。付款结果仅以异步验签后的服务端记录为准。
+              </p>
+            </section>
+          )}
           <AsyncForm
             onSubmit={async () => {
               let body: RecordData = {};
@@ -444,7 +486,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             终端运行下面命令，再粘贴令牌。令牌不会进入命令行历史；不要发给客户。节点注册令牌有有效期，过期可重新生成。
           </Notice>
           <pre className="code-panel mt16">
-            {`curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.2/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`}
+            {`curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.3/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`}
           </pre>
           {location.protocol !== "https:" && (
             <Notice tone="orange">
@@ -455,7 +497,7 @@ export function ResourcePage({ kind }: { kind: string }) {
           <Button
             onClick={() =>
               void copyText(
-                `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.2/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`,
+                `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.3/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`,
               ).catch((e) => setMessage(e.message))
             }
           >

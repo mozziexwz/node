@@ -19,6 +19,7 @@ import {
   gb,
 } from "./ui";
 import { ConfigUpload, SSHFields, SSH, prepareSSH } from "./tools";
+import { PaymentReturn } from "./payment-return";
 
 export function Account({
   user,
@@ -245,15 +246,24 @@ export function Plans({
       )}
       {order && (
         <Modal title="订单已创建" onClose={() => setOrder(null)}>
-          <Notice tone="orange">
-            订单状态：
-            {order.state === "paid"
-              ? "已支付，权益已生效"
-              : order.state === "fulfilled"
+          {order.channelId !== "balance" && order.amountCents > 0 ? (
+            <PaymentReturn
+              key={order.id}
+              orderID={order.id}
+              onPaid={onRefresh}
+              onOrder={setOrder}
+            />
+          ) : (
+            <Notice tone="orange">
+              订单状态：
+              {order.state === "paid"
                 ? "已支付，权益已生效"
-                : "待支付"}
-          </Notice>
-          {order.paymentUrl && (
+                : order.state === "fulfilled"
+                  ? "已支付，权益已生效"
+                  : "待支付"}
+            </Notice>
+          )}
+          {order.paymentUrl && order.state === "pending" && (
             <a
               className="btn primary mt16"
               href={order.paymentUrl}
@@ -271,7 +281,15 @@ export function Plans({
     </>
   );
 }
-export function Orders({ admin = false }: { admin?: boolean }) {
+export function Orders({
+  admin = false,
+  returnOrderID = null,
+  onPaid,
+}: {
+  admin?: boolean;
+  returnOrderID?: string | null;
+  onPaid?: () => void;
+}) {
   const { data, error, reload } = useData(
     admin ? "/api/admin/orders" : "/api/orders",
   );
@@ -284,6 +302,16 @@ export function Orders({ admin = false }: { admin?: boolean }) {
         <Button onClick={reload}>刷新</Button>
       </Header>
       <ErrorNotice error={error} />
+      {returnOrderID && (
+        <PaymentReturn
+          key={returnOrderID}
+          orderID={returnOrderID}
+          onPaid={() => {
+            reload();
+            onPaid?.();
+          }}
+        />
+      )}
       <div className="card flush">
         <Table
           headers={[

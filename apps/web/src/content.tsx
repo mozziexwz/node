@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
   ArrowDown,
+  ArrowUpToLine,
+  ArrowDownToLine,
   Bold,
   Italic,
   Strikethrough,
@@ -40,7 +42,7 @@ import {
 } from "./ui";
 import "./content-extra.css";
 export function Articles({ admin = false }: { admin?: boolean }) {
-  const { data, error, reload } = useData(
+  const { data, error, reload, setData } = useData(
       admin ? "/api/admin/articles" : "/api/articles",
     ),
     [active, setActive] = useState(""),
@@ -48,8 +50,12 @@ export function Articles({ admin = false }: { admin?: boolean }) {
     [tab, setTab] = useState("content"),
     [message, setMessage] = useState(""),
     [expanded, setExpanded] = useState(false),
+    [editingBusy, setEditingBusy] = useState(false),
+    [editorMessage, setEditorMessage] = useState(""),
     [moving, setMoving] = useState(false);
   const editor = useRef<HTMLTextAreaElement>(null),
+    editSession = useRef(0),
+    editMutation = useRef(false),
     history = useRef<string[]>([]),
     redo = useRef<string[]>([]);
   useEffect(() => {
@@ -104,13 +110,30 @@ export function Articles({ admin = false }: { admin?: boolean }) {
       setMessage((e as Error).message);
     }
   }
-  async function move(id: string, direction: "up" | "down") {
+  async function move(id: string, direction: "up" | "down" | "top" | "bottom") {
     if (moving) return;
     setMoving(true);
     setMessage("");
     try {
-      await post(`/api/admin/articles/${id}/move`, { direction });
-      reload();
+      const result = await post(`/api/admin/articles/${id}/move`, {
+        direction,
+      });
+      setData(result);
+    } catch (e) {
+      setMessage((e as Error).message);
+    } finally {
+      setMoving(false);
+    }
+  }
+  async function pin(article: RecordData) {
+    if (moving) return;
+    setMoving(true);
+    setMessage("");
+    try {
+      const result = await post(`/api/admin/articles/${article.id}/pin`, {
+        pinned: !article.pinned,
+      });
+      setData(result);
     } catch (e) {
       setMessage((e as Error).message);
     } finally {
@@ -122,13 +145,18 @@ export function Articles({ admin = false }: { admin?: boolean }) {
       <Header
         title="公告/教程"
         sub={
-          admin ? "编辑正文、附件与发布状态。" : "先了解操作流程，再开始部署。"
+          admin
+            ? "新文章默认在前；置顶文章优先显示，上下排序在各组内调整。"
+            : "先了解操作流程，再开始部署。"
         }
       >
         {admin && (
           <Button
             primary
+            disabled={editingBusy}
             onClick={() => {
+              editSession.current++;
+              setEditorMessage("");
               setEditing({
                 title: "",
                 body: "",
@@ -154,9 +182,26 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                 <div className="article-reorder">
                   <button
                     type="button"
+                    title="移到最顶（当前组）"
+                    aria-label={`移到最顶 ${a.title}`}
+                    disabled={
+                      moving ||
+                      index === 0 ||
+                      !!items[index - 1]?.pinned !== !!a.pinned
+                    }
+                    onClick={() => void move(a.id, "top")}
+                  >
+                    <ArrowUpToLine size={14} />
+                  </button>
+                  <button
+                    type="button"
                     title="上移"
                     aria-label={`上移 ${a.title}`}
-                    disabled={moving || index === 0}
+                    disabled={
+                      moving ||
+                      index === 0 ||
+                      !!items[index - 1]?.pinned !== !!a.pinned
+                    }
                     onClick={() => void move(a.id, "up")}
                   >
                     <ArrowUp size={14} />
@@ -165,13 +210,31 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                     type="button"
                     title="下移"
                     aria-label={`下移 ${a.title}`}
-                    disabled={moving || index === items.length - 1}
+                    disabled={
+                      moving ||
+                      index === items.length - 1 ||
+                      !!items[index + 1]?.pinned !== !!a.pinned
+                    }
                     onClick={() => void move(a.id, "down")}
                   >
                     <ArrowDown size={14} />
                   </button>
+                  <button
+                    type="button"
+                    title="移到最底（当前组）"
+                    aria-label={`移到最底 ${a.title}`}
+                    disabled={
+                      moving ||
+                      index === items.length - 1 ||
+                      !!items[index + 1]?.pinned !== !!a.pinned
+                    }
+                    onClick={() => void move(a.id, "bottom")}
+                  >
+                    <ArrowDownToLine size={14} />
+                  </button>
                 </div>
                 <strong>{a.title}</strong>
+                {a.pinned && <Badge tone="orange">置顶</Badge>}
               </div>,
               a.category,
               <Badge tone={a.published ? "green" : ""}>
@@ -180,13 +243,19 @@ export function Articles({ admin = false }: { admin?: boolean }) {
               date(a.updatedAt),
               <div className="actions">
                 <Button
+                  disabled={editingBusy}
                   onClick={() => {
+                    editSession.current++;
+                    setEditorMessage("");
                     setEditing({ ...a });
                     history.current = [];
                     redo.current = [];
                   }}
                 >
                   编辑
+                </Button>
+                <Button disabled={moving} onClick={() => void pin(a)}>
+                  {a.pinned ? "取消置顶" : "置顶"}
                 </Button>
                 <Button
                   onClick={async () => {
@@ -219,7 +288,10 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                 onClick={() => setActive(a.id)}
               >
                 <strong>{a.title}</strong>
-                <small>{a.category}</small>
+                <small>
+                  {a.pinned ? "置顶 · " : ""}
+                  {a.category}
+                </small>
               </button>
             ))}
           </div>
@@ -265,247 +337,320 @@ export function Articles({ admin = false }: { admin?: boolean }) {
         <Modal
           title={editing.id ? "编辑文章" : "新建文章"}
           onClose={() => {
+            editSession.current++;
             setExpanded(false);
             setEditing(null);
           }}
         >
-          <AsyncForm
-            label={editing.published ? "发布 / 更新" : "保存草稿"}
-            onSubmit={async () => {
-              const result = await post(
-                "/api/admin/articles" + (editing.id ? "/" + editing.id : ""),
-                editing,
-                editing.id ? "PUT" : "POST",
-              );
-              setEditing(result);
-              reload();
-            }}
-          >
-            <div className="form-grid">
-              <Field
-                label="标题"
-                value={editing.title}
-                onChange={(e) =>
-                  setEditing({ ...editing, title: e.target.value })
+          <fieldset className="article-edit-fields" disabled={editingBusy}>
+            <AsyncForm
+              label={editing.published ? "发布 / 更新" : "保存草稿"}
+              onSubmit={async () => {
+                if (editMutation.current) throw new Error("请等待附件操作完成");
+                editMutation.current = true;
+                setEditingBusy(true);
+                const session = editSession.current;
+                try {
+                  const result = await post(
+                    "/api/admin/articles" +
+                      (editing.id ? "/" + editing.id : ""),
+                    editing,
+                    editing.id ? "PUT" : "POST",
+                  );
+                  if (session === editSession.current) setEditing(result);
+                  reload();
+                } finally {
+                  editMutation.current = false;
+                  setEditingBusy(false);
                 }
-                required
-              />
-              <Select
-                label="分类"
-                value={editing.category}
-                onChange={(e) =>
-                  setEditing({ ...editing, category: e.target.value })
-                }
-              >
-                <option>教程</option>
-                <option>公告</option>
-              </Select>
-            </div>
-            <section
-              className={`markdown-workspace ${expanded ? "is-expanded" : ""}`}
-              aria-label="Markdown 编辑器"
+              }}
             >
-              <div className="markdown-modebar">
-                <div
-                  className="markdown-modes"
-                  role="tablist"
-                  aria-label="编辑模式"
+              <div className="form-grid">
+                <Field
+                  label="标题"
+                  value={editing.title}
+                  onChange={(e) =>
+                    setEditing({ ...editing, title: e.target.value })
+                  }
+                  required
+                />
+                <Select
+                  label="分类"
+                  value={editing.category}
+                  onChange={(e) =>
+                    setEditing({ ...editing, category: e.target.value })
+                  }
                 >
-                  {[
-                    ["content", "内容"],
-                    ["preview", "预览"],
-                    ["compare", "对照"],
-                  ].map(([k, t]) => (
+                  <option>教程</option>
+                  <option>公告</option>
+                  <option>资讯</option>
+                  {editing.category &&
+                    !["教程", "公告", "资讯"].includes(editing.category) && (
+                      <option>{editing.category}</option>
+                    )}
+                </Select>
+              </div>
+              <section
+                className={`markdown-workspace ${expanded ? "is-expanded" : ""}`}
+                aria-label="Markdown 编辑器"
+              >
+                <div className="markdown-modebar">
+                  <div
+                    className="markdown-modes"
+                    role="tablist"
+                    aria-label="编辑模式"
+                  >
+                    {[
+                      ["content", "内容"],
+                      ["preview", "预览"],
+                      ["compare", "对照"],
+                    ].map(([k, t]) => (
+                      <button
+                        type="button"
+                        key={k}
+                        role="tab"
+                        aria-selected={tab === k}
+                        className={tab === k ? "active" : ""}
+                        onClick={() => setTab(k)}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="markdown-mode-actions">
+                    <small>支持 Markdown</small>
+                    {expanded && (
+                      <Button type="submit" className="small" primary>
+                        保存
+                      </Button>
+                    )}
                     <button
                       type="button"
-                      key={k}
-                      role="tab"
-                      aria-selected={tab === k}
-                      className={tab === k ? "active" : ""}
-                      onClick={() => setTab(k)}
+                      className="markdown-icon"
+                      title={expanded ? "退出全屏 (Esc)" : "全屏编辑"}
+                      aria-label={expanded ? "退出全屏编辑" : "全屏编辑"}
+                      onClick={() => setExpanded((value) => !value)}
                     >
-                      {t}
+                      {expanded ? (
+                        <Minimize size={18} />
+                      ) : (
+                        <Maximize size={18} />
+                      )}
                     </button>
-                  ))}
+                  </div>
                 </div>
-                <div className="markdown-mode-actions">
-                  <small>支持 Markdown</small>
-                  {expanded && (
-                    <Button type="submit" className="small" primary>
-                      保存
-                    </Button>
-                  )}
+                <div
+                  className="markdown-toolbar"
+                  role="toolbar"
+                  aria-label="Markdown 格式工具"
+                >
+                  {[
+                    ["加粗", "**", "**", Bold],
+                    ["斜体", "_", "_", Italic],
+                    ["删除线", "~~", "~~", Strikethrough],
+                    ["标题", "\n## ", "", Heading],
+                    ["无序列表", "\n- ", "", List],
+                    ["有序列表", "\n1. ", "", ListOrdered],
+                    ["引用", "\n> ", "", Quote],
+                    ["链接", "[", "](https://)", Link],
+                    ["图片", "![", "](https://)", Image],
+                    ["代码", "\n```\n", "\n```", Code],
+                    [
+                      "表格",
+                      "\n| 列1 | 列2 |\n| --- | --- |\n| 内容 | 内容 |\n",
+                      "",
+                      Table2,
+                    ],
+                    ["分隔线", "\n\n---\n\n", "", Minus],
+                  ].map(([t, b, a, Icon]) => {
+                    const ToolIcon = Icon as typeof Bold;
+                    return (
+                      <button
+                        type="button"
+                        key={String(t)}
+                        title={String(t)}
+                        aria-label={String(t)}
+                        className="markdown-icon"
+                        disabled={tab === "preview"}
+                        onClick={() => insert(String(b), String(a))}
+                      >
+                        <ToolIcon size={17} />
+                      </button>
+                    );
+                  })}
+                  <span className="markdown-divider" />
                   <button
                     type="button"
                     className="markdown-icon"
-                    title={expanded ? "退出全屏 (Esc)" : "全屏编辑"}
-                    aria-label={expanded ? "退出全屏编辑" : "全屏编辑"}
-                    onClick={() => setExpanded((value) => !value)}
+                    title="撤销"
+                    aria-label="撤销"
+                    disabled={!history.current.length}
+                    onClick={() => {
+                      const t = history.current.pop();
+                      if (t !== undefined) {
+                        redo.current.push(editing.body);
+                        setEditing({ ...editing, body: t });
+                      }
+                    }}
                   >
-                    {expanded ? <Minimize size={18} /> : <Maximize size={18} />}
+                    <Undo2 size={17} />
+                  </button>
+                  <button
+                    type="button"
+                    className="markdown-icon"
+                    title="重做"
+                    aria-label="重做"
+                    disabled={!redo.current.length}
+                    onClick={() => {
+                      const t = redo.current.pop();
+                      if (t !== undefined) {
+                        history.current.push(editing.body);
+                        setEditing({ ...editing, body: t });
+                      }
+                    }}
+                  >
+                    <Redo2 size={17} />
+                  </button>
+                  <button
+                    type="button"
+                    className="markdown-icon"
+                    title="清空正文"
+                    aria-label="清空正文"
+                    onClick={() => {
+                      if (confirm("清空编辑区正文？")) change("");
+                    }}
+                  >
+                    <Eraser size={17} />
                   </button>
                 </div>
-              </div>
-              <div
-                className="markdown-toolbar"
-                role="toolbar"
-                aria-label="Markdown 格式工具"
-              >
-                {[
-                  ["加粗", "**", "**", Bold],
-                  ["斜体", "_", "_", Italic],
-                  ["删除线", "~~", "~~", Strikethrough],
-                  ["标题", "\n## ", "", Heading],
-                  ["无序列表", "\n- ", "", List],
-                  ["有序列表", "\n1. ", "", ListOrdered],
-                  ["引用", "\n> ", "", Quote],
-                  ["链接", "[", "](https://)", Link],
-                  ["图片", "![", "](https://)", Image],
-                  ["代码", "\n```\n", "\n```", Code],
-                  [
-                    "表格",
-                    "\n| 列1 | 列2 |\n| --- | --- |\n| 内容 | 内容 |\n",
-                    "",
-                    Table2,
-                  ],
-                  ["分隔线", "\n\n---\n\n", "", Minus],
-                ].map(([t, b, a, Icon]) => {
-                  const ToolIcon = Icon as typeof Bold;
-                  return (
-                    <button
-                      type="button"
-                      key={String(t)}
-                      title={String(t)}
-                      aria-label={String(t)}
-                      className="markdown-icon"
-                      disabled={tab === "preview"}
-                      onClick={() => insert(String(b), String(a))}
-                    >
-                      <ToolIcon size={17} />
-                    </button>
-                  );
-                })}
-                <span className="markdown-divider" />
-                <button
-                  type="button"
-                  className="markdown-icon"
-                  title="撤销"
-                  aria-label="撤销"
-                  disabled={!history.current.length}
-                  onClick={() => {
-                    const t = history.current.pop();
-                    if (t !== undefined) {
-                      redo.current.push(editing.body);
-                      setEditing({ ...editing, body: t });
-                    }
-                  }}
+                <div
+                  className={`markdown-panels ${tab === "compare" ? "is-compare" : ""}`}
                 >
-                  <Undo2 size={17} />
-                </button>
-                <button
-                  type="button"
-                  className="markdown-icon"
-                  title="重做"
-                  aria-label="重做"
-                  disabled={!redo.current.length}
-                  onClick={() => {
-                    const t = redo.current.pop();
-                    if (t !== undefined) {
-                      history.current.push(editing.body);
-                      setEditing({ ...editing, body: t });
-                    }
-                  }}
-                >
-                  <Redo2 size={17} />
-                </button>
-                <button
-                  type="button"
-                  className="markdown-icon"
-                  title="清空正文"
-                  aria-label="清空正文"
-                  onClick={() => {
-                    if (confirm("清空编辑区正文？")) change("");
-                  }}
-                >
-                  <Eraser size={17} />
-                </button>
+                  {tab !== "preview" && (
+                    <textarea
+                      className="markdown-source"
+                      aria-label="文章 Markdown 正文"
+                      ref={editor}
+                      value={editing.body}
+                      onChange={(e) => change(e.target.value)}
+                    />
+                  )}{" "}
+                  {tab !== "content" && (
+                    <div className="markdown-preview">
+                      <Markdown text={editing.body} />
+                    </div>
+                  )}
+                </div>
+                <small className="markdown-status">
+                  {editing.body.length} 字 · {editing.body.split("\n").length}{" "}
+                  行
+                </small>
+              </section>
+              <div className="form-grid mt16">
+                <Check
+                  checked={editing.published}
+                  onChange={(e) =>
+                    setEditing({ ...editing, published: e.target.checked })
+                  }
+                  label="发布给用户"
+                />
               </div>
-              <div
-                className={`markdown-panels ${tab === "compare" ? "is-compare" : ""}`}
-              >
-                {tab !== "preview" && (
-                  <textarea
-                    className="markdown-source"
-                    aria-label="文章 Markdown 正文"
-                    ref={editor}
-                    value={editing.body}
-                    onChange={(e) => change(e.target.value)}
-                  />
-                )}{" "}
-                {tab !== "content" && (
-                  <div className="markdown-preview">
-                    <Markdown text={editing.body} />
-                  </div>
-                )}
-              </div>
-              <small className="markdown-status">
-                {editing.body.length} 字 · {editing.body.split("\n").length} 行
-              </small>
-            </section>
-            <div className="form-grid mt16">
-              <Check
-                checked={editing.published}
-                onChange={(e) =>
-                  setEditing({ ...editing, published: e.target.checked })
-                }
-                label="发布给用户"
-              />
-            </div>
-          </AsyncForm>
-          {editing.id && (
+            </AsyncForm>
             <div className="mt16">
               <h3>附件管理</h3>
+              {!editing.id && (
+                <Notice>
+                  选择附件后会自动保存为草稿；只有明确保存发布后才会对用户公开。
+                </Notice>
+              )}
+              <ErrorNotice error={editorMessage} />
               <input
                 type="file"
                 aria-label="上传文章附件"
                 accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.zip,.docx"
                 onChange={async (e) => {
                   const f = e.target.files?.[0];
-                  if (!f) return;
+                  e.target.value = "";
+                  if (!f || editMutation.current) return;
+                  editMutation.current = true;
+                  setEditingBusy(true);
+                  setEditorMessage("");
+                  const session = editSession.current;
                   try {
+                    let article = editing;
+                    if (!article.id) {
+                      const draft = await post("/api/admin/articles", {
+                        ...article,
+                        title: article.title.trim() || "未命名草稿",
+                        published: false,
+                      });
+                      article = {
+                        ...article,
+                        id: draft.id,
+                        published: false,
+                        attachments: draft.attachments || [],
+                      };
+                      // Keep the draft identity even if the subsequent upload fails.
+                      if (session === editSession.current) setEditing(article);
+                      reload();
+                    }
                     const form = new FormData();
                     form.append("file", f);
                     const file = await api(
-                      "/api/admin/articles/" + editing.id + "/attachments",
+                      "/api/admin/articles/" + article.id + "/attachments",
                       { method: "POST", body: form },
                     );
-                    setEditing({
-                      ...editing,
-                      attachments: [...(editing.attachments || []), file],
-                    });
+                    if (session === editSession.current)
+                      setEditing({
+                        ...article,
+                        attachments: [...(article.attachments || []), file],
+                      });
                     reload();
                   } catch (e) {
-                    setMessage((e as Error).message);
+                    if (session === editSession.current)
+                      setEditorMessage((e as Error).message);
+                  } finally {
+                    editMutation.current = false;
+                    setEditingBusy(false);
                   }
                 }}
               />
+              {editing.id && !editing.published && (
+                <small className="article-draft-note">
+                  当前为草稿，文章及附件仅管理员可访问。关闭窗口会保留已自动保存的草稿。
+                </small>
+              )}
               {editing.attachments?.map((f: RecordData) => (
                 <div className="attachment" key={f.id}>
                   <span>{f.name}</span>
                   <Button
                     onClick={async () => {
                       if (!confirm("删除这个附件？")) return;
-                      await api(
-                        `/api/admin/articles/${editing.id}/attachments/${f.id}`,
-                        { method: "DELETE" },
-                      );
-                      setEditing({
-                        ...editing,
-                        attachments: editing.attachments.filter(
-                          (x: RecordData) => x.id !== f.id,
-                        ),
-                      });
-                      reload();
+                      if (editMutation.current) return;
+                      editMutation.current = true;
+                      setEditingBusy(true);
+                      setEditorMessage("");
+                      const session = editSession.current;
+                      try {
+                        await api(
+                          `/api/admin/articles/${editing.id}/attachments/${f.id}`,
+                          { method: "DELETE" },
+                        );
+                        if (session === editSession.current)
+                          setEditing({
+                            ...editing,
+                            attachments: editing.attachments.filter(
+                              (x: RecordData) => x.id !== f.id,
+                            ),
+                          });
+                        reload();
+                      } catch (e) {
+                        if (session === editSession.current)
+                          setEditorMessage((e as Error).message);
+                      } finally {
+                        editMutation.current = false;
+                        setEditingBusy(false);
+                      }
                     }}
                   >
                     删除
@@ -513,7 +658,7 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                 </div>
               ))}
             </div>
-          )}
+          </fieldset>
         </Modal>
       )}
     </>

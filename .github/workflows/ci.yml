@@ -102,8 +102,13 @@ jobs:
           bash agent.sh --help
           bash deploy/manage_test.sh
           bash deploy/bootstrap_test.sh
+          bash deploy/disaster_test.sh
           bash deploy/agent_bootstrap_test.sh
       - run: go build ./cmd/server && go build ./cmd/agent && go build ./cmd/restore
+      - name: Verify whole-site disaster backup and clean-host restore with real Docker
+        env:
+          MSBOOST_CI_DISASTER: '1'
+        run: sudo env GITHUB_ACTIONS=true MSBOOST_CI_DISASTER=1 PATH="$PATH" bash deploy/disaster_integration_test.sh
   image:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest

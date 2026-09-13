@@ -129,9 +129,8 @@ export function AuthPage({
         <div>
           <div className="eyebrow">SELF-HOSTED · MAPLESTORY</div>
           <h1 className="v4-hero-title">
-            你的服务器，
-            <br />
-            你的<span className="orange">专属游戏线路。</span>
+            <span className="v4-hero-line">一键部署你的</span>
+            <span className="v4-hero-line orange">独立IP游戏节点</span>
           </h1>
           <p className="v4-hero-copy">
             部署节点、配置中转、重装系统。

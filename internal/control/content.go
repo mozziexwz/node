@@ -22,7 +22,9 @@ type Article struct {
 	Category    string       `json:"category"`
 	Body        string       `json:"body"`
 	Published   bool         `json:"published"`
+	Pinned      bool         `json:"pinned"`
 	Sort        int          `json:"sort"`
+	CreatedAt   int64        `json:"createdAt"`
 	UpdatedAt   int64        `json:"updatedAt"`
 	Attachments []Attachment `json:"attachments"`
 }
@@ -65,6 +67,7 @@ func (a *App) RegisterContent(m *http.ServeMux) {
 	m.HandleFunc("POST /api/admin/articles", a.saveArticle)
 	m.HandleFunc("PUT /api/admin/articles/{id}", a.saveArticle)
 	m.HandleFunc("POST /api/admin/articles/{id}/move", a.moveArticle)
+	m.HandleFunc("POST /api/admin/articles/{id}/pin", a.pinArticle)
 	m.HandleFunc("DELETE /api/admin/articles/{id}", a.deleteArticle)
 	m.HandleFunc("POST /api/admin/articles/{id}/attachments", a.uploadAttachment)
 	m.HandleFunc("GET /api/articles/{article}/attachments/{id}", a.downloadAttachment)
@@ -131,16 +134,26 @@ func (a *App) saveArticle(w http.ResponseWriter, r *http.Request) {
 		if ok {
 			// An unrelated edit or stale editor must not undo a newer reordering.
 			v.Sort = old.Sort
+			v.Pinned = old.Pinned
+			v.CreatedAt = old.CreatedAt
 		} else {
+			v.Pinned = false // Pinning is an explicit, independent operation.
+			v.CreatedAt = v.UpdatedAt
 			articles := ListDocs[Article](s, "articles")
 			sortArticles(articles)
-			for i := range articles {
-				articles[i].Sort = i
-				if err := SaveDoc(s, "articles", articles[i].ID, articles[i]); err != nil {
-					return err
-				}
+			// Preserve existing manual/legacy order, but put every new article at
+			// the beginning of the unpinned group (newest first by default).
+			index := 0
+			for index < len(articles) && articles[index].Pinned {
+				index++
 			}
-			v.Sort = len(articles)
+			articles = append(articles, Article{})
+			copy(articles[index+1:], articles[index:])
+			articles[index] = v
+			if err := saveArticleOrder(s, articles); err != nil {
+				return err
+			}
+			v = articles[index]
 		}
 		contentAudit(s, u.ID, "article.save", v.ID)
 		return SaveDoc(s, "articles", v.ID, v)
@@ -154,14 +167,34 @@ func (a *App) saveArticle(w http.ResponseWriter, r *http.Request) {
 
 func sortArticles(articles []Article) {
 	sort.Slice(articles, func(i, j int) bool {
+		if articles[i].Pinned != articles[j].Pinned {
+			return articles[i].Pinned
+		}
 		if articles[i].Sort != articles[j].Sort {
 			return articles[i].Sort < articles[j].Sort
 		}
-		if articles[i].UpdatedAt != articles[j].UpdatedAt {
-			return articles[i].UpdatedAt > articles[j].UpdatedAt
+		if articleCreationTime(articles[i]) != articleCreationTime(articles[j]) {
+			return articleCreationTime(articles[i]) > articleCreationTime(articles[j])
 		}
 		return articles[i].ID < articles[j].ID
 	})
+}
+
+func articleCreationTime(article Article) int64 {
+	if article.CreatedAt != 0 {
+		return article.CreatedAt
+	}
+	return article.UpdatedAt // Old backups do not contain createdAt.
+}
+
+func saveArticleOrder(s *State, articles []Article) error {
+	for i := range articles {
+		articles[i].Sort = i
+		if err := SaveDoc(s, "articles", articles[i].ID, articles[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *App) moveArticle(w http.ResponseWriter, r *http.Request) {
@@ -173,8 +206,8 @@ func (a *App) moveArticle(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Direction string `json:"direction"`
 	}
-	if Decode(r, &in) != nil || (in.Direction != "up" && in.Direction != "down") {
-		Fail(w, 400, "请选择上移或下移")
+	if Decode(r, &in) != nil || (in.Direction != "up" && in.Direction != "down" && in.Direction != "top" && in.Direction != "bottom") {
+		Fail(w, 400, "请选择上移、下移、移到最顶或移到最底")
 		return
 	}
 	var out []Article
@@ -191,20 +224,94 @@ func (a *App) moveArticle(w http.ResponseWriter, r *http.Request) {
 		if index < 0 {
 			return errors.New("文章不存在")
 		}
-		neighbor := index - 1
-		if in.Direction == "down" {
-			neighbor = index + 1
+		first, last := index, index
+		for first > 0 && out[first-1].Pinned == out[index].Pinned {
+			first--
 		}
-		if neighbor >= 0 && neighbor < len(out) {
-			out[index], out[neighbor] = out[neighbor], out[index]
+		for last+1 < len(out) && out[last+1].Pinned == out[index].Pinned {
+			last++
 		}
-		for i := range out {
-			out[i].Sort = i
-			if err := SaveDoc(s, "articles", out[i].ID, out[i]); err != nil {
-				return err
-			}
+		target := index
+		switch in.Direction {
+		case "up":
+			target = max(first, index-1)
+		case "down":
+			target = min(last, index+1)
+		case "top":
+			target = first
+		case "bottom":
+			target = last
+		}
+		moveArticleIndex(out, index, target)
+		if err := saveArticleOrder(s, out); err != nil {
+			return err
 		}
 		contentAudit(s, u.ID, "article.move."+in.Direction, r.PathValue("id"))
+		return nil
+	})
+	if err != nil {
+		Fail(w, 409, err.Error())
+		return
+	}
+	WriteJSON(w, 200, map[string]any{"articles": out})
+}
+
+// Shifting (rather than swapping endpoints) retains every other article's order.
+func moveArticleIndex(articles []Article, from, to int) {
+	article := articles[from]
+	if from < to {
+		copy(articles[from:to], articles[from+1:to+1])
+	} else if from > to {
+		copy(articles[to+1:from+1], articles[to:from])
+	}
+	articles[to] = article
+}
+
+func (a *App) pinArticle(w http.ResponseWriter, r *http.Request) {
+	u, err := a.Admin(r)
+	if err != nil {
+		Fail(w, 403, err.Error())
+		return
+	}
+	var in struct {
+		Pinned *bool `json:"pinned"`
+	}
+	if Decode(r, &in) != nil || in.Pinned == nil {
+		Fail(w, 400, "请选择是否置顶")
+		return
+	}
+	var out []Article
+	err = a.Store.Update(func(s *State) error {
+		out = ListDocs[Article](s, "articles")
+		sortArticles(out)
+		index := -1
+		for i := range out {
+			if out[i].ID == r.PathValue("id") {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return errors.New("文章不存在")
+		}
+		if out[index].Pinned != *in.Pinned {
+			out[index].Pinned = *in.Pinned
+			// A changed pin status enters the top of its new group. Repeated
+			// identical requests are idempotent and do not reorder that group.
+			target := 0
+			if !*in.Pinned {
+				for _, article := range out {
+					if article.Pinned {
+						target++
+					}
+				}
+			}
+			moveArticleIndex(out, index, target)
+		}
+		if err := saveArticleOrder(s, out); err != nil {
+			return err
+		}
+		contentAudit(s, u.ID, "article.pin", r.PathValue("id"))
 		return nil
 	})
 	if err != nil {

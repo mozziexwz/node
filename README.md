@@ -2,7 +2,9 @@
 
 MSBOOST 自托管控制面板：用户通过网页把 MSBOOST 脚本部署到自己的 VPS，管理员维护执行器、增值中转线路、套餐与余额、付款渠道及平台备份。系统重装使用固定版本的 [bin456789/reinstall](https://github.com/bin456789/reinstall) 脚本。
 
-当前版本 **v0.2.2** 面向 Debian 12 VPS 安装调试。已在授权临时 VPS 验证节点部署/修复、真实认证直连、自备中转与前置多跳，以及受管卸载；完整范围和待验收项目见 [真实 VPS 排查记录](docs/acceptance-vps-20260913.md)。尚未完成真实商户付款、真实游戏登录及千人容量的生产验收。网页依据已确认 UI、[v4.1 产品规划](docs/requirements/product-v4.1.md) 和 [补充说明修改清单](docs/requirements/supplement.md) 实现；规划不是全部功能的生产验收证明。安全边界和未交付项见 [安全模型与限制](docs/security-and-limits.md)。
+当前版本 **v0.2.3** 面向 Debian 12 VPS 安装调试。已在授权临时 VPS 验证节点部署/修复、真实认证直连、自备中转与前置多跳，以及受管卸载；完整范围和待验收项目见 [真实 VPS 排查记录](docs/acceptance-vps-20260913.md)。尚未完成真实商户付款、真实游戏登录及千人容量的生产验收。网页依据已确认 UI、[v4.1 产品规划](docs/requirements/product-v4.1.md) 和 [补充说明修改清单](docs/requirements/supplement.md) 实现；规划不是全部功能的生产验收证明。安全边界和未交付项见 [安全模型与限制](docs/security-and-limits.md)。
+
+v0.2.3 按[补充说明 2.2](docs/supplement-2.2-changes.md) 增加资讯、置顶/排序、新建草稿附件，补齐支付回跳反馈与回调地址说明，支持远程 SSH 密码备份和[一键整站灾难备份/全新目标恢复](docs/disaster-backup.md)。历史 VPS 验收记录对应之前版本，不替代本轮新增功能的独立回归。
 
 ## Debian 12 一键安装
 
@@ -10,11 +12,11 @@ MSBOOST 自托管控制面板：用户通过网页把 MSBOOST 脚本部署到自
 
 ```sh
 apt-get update && apt-get install -y curl ca-certificates
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.2/install.sh -o /root/msboost-install.sh
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.3/install.sh -o /root/msboost-install.sh
 bash /root/msboost-install.sh
 ```
 
-选择「安装」，输入已解析到该 VPS 的域名及管理员 QQ 邮箱。默认拉取预构建的 `ghcr.io/mozziexwz/node:v0.2.2`；若镜像仓库无法匿名访问，则从同版本 GitHub Release 下载、校验并导入预构建镜像。无需 VPS 安装 Go / Node 或编译源码。缺少 Docker 时使用官方 Debian 仓库安装 Engine 与 Compose 插件；Caddy 自动 HTTPS 需要域名解析正确、TCP 80/443 可达且未被其他服务占用。随机管理员密码保存在 root 私有的 `/opt/msboost/.env`，不输出到安装日志。仅在自己的私有终端查看：
+选择「安装」，输入已解析到该 VPS 的域名及管理员 QQ 邮箱。默认拉取预构建的 `ghcr.io/mozziexwz/node:v0.2.3`；若镜像仓库无法匿名访问，则从同版本 GitHub Release 下载、校验并导入预构建镜像。无需 VPS 安装 Go / Node 或编译源码。缺少 Docker 时使用官方 Debian 仓库安装 Engine 与 Compose 插件；Caddy 自动 HTTPS 需要域名解析正确、TCP 80/443 可达且未被其他服务占用。随机管理员密码保存在 root 私有的 `/opt/msboost/.env`，不输出到安装日志。仅在自己的私有终端查看：
 
 ```sh
 sed -n '/^ADMIN_EMAIL=/p; /^ADMIN_PASSWORD=/p' /opt/msboost/.env
@@ -30,13 +32,16 @@ msboost status
 msboost logs
 msboost uninstall       # 停止网站并移除容器，保留全部数据
 msboost purge           # 独立的双重确认彻底清理，谨慎执行
+msboost disaster-config # 目录、保留天数、远端 SSH 密码与每日计划
+msboost disaster-backup # 一键完整快照，默认 /root/msboost-backup
+msboost disaster-disable # 停用整站自动备份，不删除备份
 ```
 
 安装位置固定 `/opt/msboost`。`uninstall` 不删除数据卷、密钥或配置，之后可 `msboost repair` 恢复。`purge` 只删除本安装器拥有的目录和四个站点卷，不卸载 Docker、不清空其他项目、不卸载客户 VPS 或独立 Agent。完整说明见 [部署文档](docs/deployment.md)。
 
 v0.1.1 如果安装报 `ghcr.io/mozziexwz/node:12 (bookworm)`，是安装器版本变量污染，**不要彻底清理**。使用 [保留配置的恢复步骤](docs/deployment.md#v011-首次安装报-12-bookworm-的保留配置恢复)，新版本会检查未产生业务数据后继续安装。
 
-既有健康站点可执行 `msboost upgrade --version v0.2.2`。网站升级不会自动更新独立执行机或节点，请按 [Agent 安装与更新](docs/agent-installation.md) 在相应 VPS 更新；新版清理和诊断需要新版执行机。原库损坏时不要强行普通升级，按 [完整灾难恢复](docs/backup-recovery.md) 校验快照并导入新库。旧库、密钥及备份保留，恢复后保持维护并人工对账。
+既有健康站点可执行 `msboost upgrade --version v0.2.3`。网站升级不会自动更新独立执行机或节点，请按 [Agent 安装与更新](docs/agent-installation.md) 在相应 VPS 更新；新版清理和诊断需要新版执行机。原库损坏时不要强行普通升级，按 [完整灾难恢复](docs/backup-recovery.md) 校验快照并导入新库。旧库、密钥及备份保留，恢复后保持维护并人工对账。
 
 ## 组成与职责
 
@@ -46,7 +51,7 @@ v0.1.1 如果安装报 `ghcr.io/mozziexwz/node:12 (bookworm)`，是安装器版�
 | 控制服务 | `cmd/server`、`internal/control` | 会话、权限、任务调度、余额账本、套餐、支付通知、线路、内容及备份 |
 | Executor | `cmd/agent --capability executor`、`internal/executor` | 在被授权的任务内通过 SSH 操作客户 VPS；不保存客户一次性 SSH 密码 |
 | Relay Agent | `cmd/agent --capability relay`、`internal/relayruntime` | 在本站中转服务器管理固定 GOST 子进程、监听 ACK、租约与流量；没有 SSH / DD 执行能力 |
-| 离线恢复 | `cmd/restore` | 使用原密钥校验完整快照，仅导入全新隔离数据库，不覆盖或自动切换旧库 |
+| 离线恢复 | `cmd/restore`、`internal/disaster` | 使用原密钥导入全新隔离数据库；整站工具处理私有归档/异地备份，全新站点切换需明确确认 |
 | 数据与密钥 | SQLite 或 PostgreSQL、`DATA_DIR` | 事务业务状态、加密配置和备份；主密钥需单独保护 |
 | 部署 | `deploy`、`Dockerfile` | Caddy HTTPS、控制服务、PostgreSQL；Agent 在选定机器上另行安装 |
 

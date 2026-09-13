@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -38,16 +39,19 @@ type BackupPlan struct {
 	LastAt        int64    `json:"lastAt"`
 }
 type BackupTarget struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	User        string `json:"user"`
-	Path        string `json:"path"`
-	Fingerprint string `json:"fingerprint"`
-	PrivateKey  string `json:"privateKey,omitempty"`
-	SealedKey   string `json:"sealedKey,omitempty"`
-	Enabled     bool   `json:"enabled"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	User           string `json:"user"`
+	Path           string `json:"path"`
+	Fingerprint    string `json:"fingerprint"`
+	AuthMode       string `json:"authMode"`
+	PrivateKey     string `json:"privateKey,omitempty"`
+	SealedKey      string `json:"sealedKey,omitempty"`
+	Password       string `json:"password,omitempty"`
+	SealedPassword string `json:"sealedPassword,omitempty"`
+	Enabled        bool   `json:"enabled"`
 }
 type BackupRecord struct {
 	ID        string            `json:"id"`
@@ -68,6 +72,9 @@ type BackupEnvelope struct {
 type BackupService struct {
 	app *App
 	mu  sync.Mutex
+	// Tests can redirect the already-validated public address to a loopback SSH
+	// fixture. Production always uses the standard context-aware TCP dialer.
+	dialContext func(context.Context, string, string) (net.Conn, error)
 }
 
 func NewBackupService(a *App) *BackupService { return &BackupService{app: a} }
@@ -172,8 +179,7 @@ func (b *BackupService) targets(w http.ResponseWriter, r *http.Request) {
 	out := []BackupTarget{}
 	_ = b.app.Store.View(func(s *State) error { out = ListDocs[BackupTarget](s, "backup_targets"); return nil })
 	for i := range out {
-		out[i].SealedKey = ""
-		out[i].PrivateKey = ""
+		out[i] = publicBackupTarget(out[i])
 	}
 	WriteJSON(w, 200, map[string]any{"targets": out})
 }
@@ -182,7 +188,18 @@ func (b *BackupService) saveTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var v BackupTarget
-	if Decode(r, &v) != nil || executor.PublicIP(v.Host) != nil || v.Port < 1 || v.Port > 65535 || v.User == "" || !strings.HasPrefix(v.Fingerprint, "SHA256:") || !path.IsAbs(v.Path) || path.Clean(v.Path) == "/" || len(v.Name) > 100 {
+	if Decode(r, &v) != nil {
+		Fail(w, 400, "SFTP 目标字段无效")
+		return
+	}
+	if v.User == "" {
+		v.User = "root"
+	}
+	if v.Path == "" {
+		v.Path = "/root/msboost-backup"
+	}
+	v.AuthMode = backupAuthMode(v.AuthMode)
+	if validateBackupTarget(v) != nil {
 		Fail(w, 400, "SFTP 目标、目录或指纹格式无效")
 		return
 	}
@@ -196,29 +213,96 @@ func (b *BackupService) saveTarget(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "PUT" && !exists {
 			return errors.New("目标不存在")
 		}
-		v.SealedKey = old.SealedKey
-		if v.PrivateKey != "" {
-			if _, err := ssh.ParsePrivateKey([]byte(v.PrivateKey)); err != nil {
-				return errors.New("SSH 私钥格式无效（请使用备份专用密钥）")
+		// Encrypted values from the request are never accepted as credentials.
+		v.SealedKey, v.SealedPassword = "", ""
+		sameMode := exists && backupAuthMode(old.AuthMode) == v.AuthMode
+		switch v.AuthMode {
+		case "private_key":
+			if v.Password != "" {
+				return errors.New("私钥认证不能同时提交 SSH 密码")
 			}
-			sealed, err := b.app.Seal([]byte(v.PrivateKey))
-			if err != nil {
-				return err
+			if v.PrivateKey != "" {
+				if len(v.PrivateKey) > 100<<10 {
+					return errors.New("SSH 私钥过大")
+				}
+				if _, err := ssh.ParsePrivateKey([]byte(v.PrivateKey)); err != nil {
+					return errors.New("SSH 私钥格式无效（请使用备份专用密钥）")
+				}
+				sealed, err := b.app.Seal([]byte(v.PrivateKey))
+				if err != nil {
+					return errors.New("SSH 凭据加密失败")
+				}
+				v.SealedKey = sealed
+			} else if sameMode {
+				v.SealedKey = old.SealedKey
 			}
-			v.SealedKey = sealed
+			if v.SealedKey == "" {
+				return errors.New("新增或切换私钥认证时，请填写备份专用 SSH 私钥")
+			}
+		case "password":
+			if v.PrivateKey != "" {
+				return errors.New("密码认证不能同时提交 SSH 私钥")
+			}
+			if v.Password != "" {
+				if len(v.Password) > 512 || strings.ContainsAny(v.Password, "\x00\r\n") {
+					return errors.New("SSH 密码格式无效")
+				}
+				sealed, err := b.app.Seal([]byte(v.Password))
+				if err != nil {
+					return errors.New("SSH 凭据加密失败")
+				}
+				v.SealedPassword = sealed
+			} else if sameMode {
+				v.SealedPassword = old.SealedPassword
+			}
+			if v.SealedPassword == "" {
+				return errors.New("新增或切换密码认证时，请填写 SSH 密码")
+			}
 		}
-		if v.SealedKey == "" {
-			return errors.New("请填写备份专用 SSH 私钥")
-		}
-		v.PrivateKey = ""
+		v.PrivateKey, v.Password = "", ""
 		return SaveDoc(s, "backup_targets", v.ID, v)
 	})
 	if err != nil {
 		Fail(w, 400, err.Error())
 		return
 	}
-	v.SealedKey = ""
-	WriteJSON(w, 200, v)
+	WriteJSON(w, 200, publicBackupTarget(v))
+}
+
+func backupAuthMode(mode string) string {
+	if mode == "" {
+		return "private_key"
+	}
+	return mode
+}
+
+func publicBackupTarget(v BackupTarget) BackupTarget {
+	v.AuthMode = backupAuthMode(v.AuthMode)
+	v.PrivateKey, v.Password, v.SealedKey, v.SealedPassword = "", "", "", ""
+	return v
+}
+
+func validateBackupTarget(v BackupTarget) error {
+	if executor.PublicIP(v.Host) != nil || v.Port < 1 || v.Port > 65535 || v.User == "" || len(v.User) > 64 || strings.ContainsAny(v.User, " \t\r\n\x00/") || len(v.Name) > 100 {
+		return errors.New("SFTP 目标无效")
+	}
+	if mode := backupAuthMode(v.AuthMode); mode != "private_key" && mode != "password" {
+		return errors.New("SSH 认证方式无效")
+	}
+	encoded := strings.TrimPrefix(v.Fingerprint, "SHA256:")
+	decoded, err := base64.RawStdEncoding.Strict().DecodeString(encoded)
+	if !strings.HasPrefix(v.Fingerprint, "SHA256:") || err != nil || len(decoded) != sha256.Size || base64.RawStdEncoding.EncodeToString(decoded) != encoded {
+		return errors.New("SSH 主机指纹必须是完整 SHA256 指纹")
+	}
+	if !path.IsAbs(v.Path) || path.Clean(v.Path) == "/" || len(v.Path) > 4096 || strings.ContainsAny(v.Path, "\x00\r\n\\") {
+		return errors.New("远程备份目录无效")
+	}
+	for _, part := range strings.Split(v.Path, "/") {
+		if part == "." || part == ".." {
+			return errors.New("远程备份目录不能包含相对路径")
+		}
+	}
+	return nil
 }
 func (b *BackupService) deleteTarget(w http.ResponseWriter, r *http.Request) {
 	if !b.admin(w, r) {
@@ -352,33 +436,49 @@ func (b *BackupService) run(ctx context.Context) (BackupRecord, error) {
 	return record, err
 }
 func (b *BackupService) upload(ctx context.Context, t BackupTarget, id string, raw []byte) error {
-	if err := executor.PublicIP(t.Host); err != nil {
+	if err := validateBackupTarget(t); err != nil {
 		return err
 	}
-	plain, err := b.app.Open(t.SealedKey)
-	if err != nil {
-		return err
+	if !validBackupID(id) {
+		return errors.New("备份标识无效")
 	}
-	signer, err := ssh.ParsePrivateKey(plain)
-	if err != nil {
-		return err
+	var auth ssh.AuthMethod
+	if backupAuthMode(t.AuthMode) == "password" {
+		plain, err := b.app.Open(t.SealedPassword)
+		if err != nil || len(plain) == 0 {
+			return errors.New("SSH 密码解密失败")
+		}
+		auth = ssh.Password(string(plain))
+		clear(plain)
+	} else {
+		plain, err := b.app.Open(t.SealedKey)
+		if err != nil {
+			return errors.New("SSH 私钥解密失败")
+		}
+		signer, err := ssh.ParsePrivateKey(plain)
+		clear(plain)
+		if err != nil {
+			return errors.New("SSH 私钥格式无效")
+		}
+		auth = ssh.PublicKeys(signer)
 	}
 	addr := net.JoinHostPort(t.Host, fmt.Sprint(t.Port))
-	cfg := &ssh.ClientConfig{User: t.User, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, Timeout: 15 * time.Second, HostKeyCallback: func(_ string, _ net.Addr, k ssh.PublicKey) error {
-		if ssh.FingerprintSHA256(k) != t.Fingerprint {
-			return errors.New("SFTP host key changed")
-		}
-		return nil
-	}}
-	conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", addr)
+	cfg := &ssh.ClientConfig{User: t.User, Auth: []ssh.AuthMethod{auth}, Timeout: 15 * time.Second, HostKeyCallback: executor.PinnedHostKey(t.Fingerprint)}
+	dial := (&net.Dialer{Timeout: 15 * time.Second}).DialContext
+	if b.dialContext != nil {
+		dial = b.dialContext
+	}
+	conn, err := dial(ctx, "tcp", addr)
 	if err != nil {
-		return err
+		return errors.New("SFTP 连接失败")
 	}
 	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Minute))
 	cc, ch, rq, err := ssh.NewClientConn(conn, addr, cfg)
 	if err != nil {
-		return err
+		return errors.New("SFTP 主机指纹核对或 SSH 认证失败")
 	}
 	client := ssh.NewClient(cc, ch, rq)
 	defer client.Close()
@@ -387,21 +487,59 @@ func (b *BackupService) upload(ctx context.Context, t BackupTarget, id string, r
 		return err
 	}
 	defer sf.Close()
-	info, err := sf.Stat(t.Path)
-	if err != nil || !info.IsDir() {
-		return errors.New("remote backup directory unavailable")
+	var selfUID *uint32
+	if t.User == "root" {
+		uid := uint32(0)
+		selfUID = &uid
+	}
+	if err := ensureBackupDirectory(sf, t.Path, selfUID); err != nil {
+		return err
+	}
+	final := path.Join(t.Path, "msboost-"+id+".msb")
+	if _, err := sf.Lstat(final); !os.IsNotExist(err) {
+		return errors.New("remote backup destination already exists or is unavailable")
 	}
 	temporary := path.Join(t.Path, "msboost-"+id+".partial")
 	f, err := sf.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
 	if err != nil {
 		return err
 	}
-	if _, err = f.Write(raw); err != nil {
-		f.Close()
+	// Remove only this exclusively created partial file on failure. Existing
+	// backup files and directories never enter the cleanup scope.
+	published := false
+	defer func() {
+		if !published && selfUID != nil && ensureBackupDirectory(sf, t.Path, selfUID) == nil {
+			_ = sf.Remove(temporary)
+		}
+	}()
+	if err = f.Chmod(0600); err != nil {
+		_ = f.Close()
+		return errors.New("remote backup file permissions unavailable")
+	}
+	info, statErr := f.Stat()
+	if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() != 0 {
+		_ = f.Close()
+		return errors.New("remote backup file permissions not private")
+	}
+	uid, ownerErr := executor.SFTPFileUID(info)
+	if ownerErr != nil || selfUID != nil && *selfUID != uid {
+		_ = f.Close()
+		return errors.New("remote backup account ownership unavailable")
+	}
+	selfUID = &uid
+	if err := ensureBackupDirectory(sf, t.Path, selfUID); err != nil {
+		_ = f.Close()
 		return err
+	}
+	if n, writeErr := f.Write(raw); writeErr != nil || n != len(raw) {
+		_ = f.Close()
+		return errors.New("remote backup write failed")
 	}
 	if err = f.Close(); err != nil {
 		return err
+	}
+	if info, err := sf.Lstat(temporary); err != nil || !info.Mode().IsRegular() || executor.CheckSFTPOwner(info, uid, true) != nil {
+		return errors.New("remote backup file changed")
 	}
 	read, err := sf.Open(temporary)
 	if err != nil {
@@ -409,12 +547,66 @@ func (b *BackupService) upload(ctx context.Context, t BackupTarget, id string, r
 	}
 	h := sha256.New()
 	_, err = io.Copy(h, io.LimitReader(read, int64(len(raw))+1))
-	read.Close()
+	closeErr := read.Close()
 	sum := sha256.Sum256(raw)
-	if err != nil || hex.EncodeToString(h.Sum(nil)) != hex.EncodeToString(sum[:]) {
+	if err != nil || closeErr != nil || hex.EncodeToString(h.Sum(nil)) != hex.EncodeToString(sum[:]) {
 		return errors.New("remote checksum mismatch")
 	}
-	return sf.Rename(temporary, path.Join(t.Path, "msboost-"+id+".msb"))
+	if err := ensureBackupDirectory(sf, t.Path, selfUID); err != nil {
+		return err
+	}
+	if err = sf.Rename(temporary, final); err != nil {
+		return err
+	}
+	published = true
+	return nil
+}
+
+// SFTP paths are walked with Lstat: MkdirAll/Stat would follow symlinks in
+// intermediate components. Only missing directories are chmod'd; an existing
+// shared parent is never modified. Reject writable parents to prevent other
+// accounts from swapping our destination after the checks.
+func ensureBackupDirectory(sf *sftp.Client, directory string, selfUID *uint32) error {
+	current := "/"
+	if selfUID != nil {
+		root, err := sf.Lstat(current)
+		if err != nil {
+			return errors.New("remote root directory unavailable")
+		}
+		if err := executor.CheckSFTPOwner(root, *selfUID, false); err != nil {
+			return err
+		}
+	}
+	for _, component := range strings.Split(path.Clean(directory), "/") {
+		if component == "" {
+			continue
+		}
+		current = path.Join(current, component)
+		info, err := sf.Lstat(current)
+		created := false
+		if os.IsNotExist(err) {
+			if err = sf.Mkdir(current); err != nil {
+				return errors.New("remote backup directory creation failed")
+			}
+			if err = sf.Chmod(current, 0700); err != nil {
+				return errors.New("remote backup directory permissions unavailable")
+			}
+			info, err = sf.Lstat(current)
+			created = true
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0022 != 0 {
+			return errors.New("remote backup path must contain real directories not writable by other accounts")
+		}
+		if created && info.Mode().Perm() != 0700 {
+			return errors.New("remote backup directory permissions not private")
+		}
+		if selfUID != nil {
+			if err := executor.CheckSFTPOwner(info, *selfUID, current == directory); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 func (b *BackupService) list(w http.ResponseWriter, r *http.Request) {
 	if !b.admin(w, r) {

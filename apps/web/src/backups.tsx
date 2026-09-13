@@ -25,6 +25,7 @@ export function Backups() {
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(""),
     [target, setTarget] = useState<RecordData | null>(null),
+    [targetAuthMode, setTargetAuthMode] = useState("password"),
     [file, setFile] = useState<File | null>(null),
     [preflight, setPreflight] = useState<RecordData | null>(null);
   const targets = array(targetData, "targets");
@@ -283,29 +284,35 @@ export function Backups() {
             <h3>SFTP 异地备份</h3>
             <Button
               primary
-              onClick={() =>
+              onClick={() => {
+                setTargetAuthMode("password");
                 setTarget({
                   name: "",
                   host: "",
                   port: 22,
-                  user: "backup",
-                  path: "/srv/msboost-backups",
+                  user: "root",
+                  path: "/root/msboost-backup",
+                  authMode: "password",
                   fingerprint: "",
                   enabled: true,
-                })
-              }
+                });
+              }}
             >
               新增目标
             </Button>
           </div>
           <Table
-            headers={["目标", "服务器", "目录", "操作"]}
+            headers={["目标", "服务器", "认证方式", "目录", "操作"]}
             rows={targets.map((t) => [
               t.name,
               t.host,
+              t.authMode === "password" ? "SSH 密码" : "SSH 私钥",
               t.path,
               <div className="actions">
-                <Button onClick={() => setTarget(t)}>编辑</Button>
+                <Button onClick={() => {
+                  setTargetAuthMode(t.authMode || "private_key");
+                  setTarget(t);
+                }}>编辑</Button>
                 <Button
                   onClick={async () => {
                     if (
@@ -475,7 +482,9 @@ export function Backups() {
                   user: f.get("user"),
                   path: f.get("path"),
                   fingerprint: f.get("fingerprint"),
+                  authMode: targetAuthMode,
                   privateKey: f.get("privateKey") || "",
+                  password: f.get("password") || "",
                   enabled: f.get("enabled") === "on",
                 },
                 target.id ? "PUT" : "POST",
@@ -489,7 +498,7 @@ export function Backups() {
                 ["name", "名称"],
                 ["host", "公网 IP"],
                 ["port", "SSH 端口"],
-                ["user", "备份专用用户"],
+                ["user", "SSH 用户名"],
                 ["path", "远程目录"],
                 ["fingerprint", "SSH 主机指纹（SHA256:…）"],
               ].map(([k, n]) => (
@@ -503,18 +512,37 @@ export function Backups() {
                 />
               ))}
             </div>
-            <label className="field">
-              <span>备份专用 SSH 私钥（留空保留）</span>
-              <textarea name="privateKey" rows={6} />
-            </label>
+            <Select label="SSH 认证方式" value={targetAuthMode} onChange={(e) => setTargetAuthMode(e.target.value)}>
+              <option value="password">SSH 密码</option>
+              <option value="private_key">SSH 私钥</option>
+            </Select>
+            {targetAuthMode === "password" ? (
+              <Field key="password" label="SSH 密码" name="password" type="password" autoComplete="new-password" maxLength={512}
+                required={!target.id || targetAuthMode !== (target.authMode || "private_key")}
+                placeholder={target.id && targetAuthMode === target.authMode ? "留空保留已保存的密码" : "请输入 SSH 登录密码"} />
+            ) : (
+              <label className="field" key="private_key">
+                <span>备份专用 SSH 私钥</span>
+                <textarea name="privateKey" rows={6} autoComplete="off"
+                  required={!target.id || targetAuthMode !== (target.authMode || "private_key")}
+                  placeholder={target.id && targetAuthMode === (target.authMode || "private_key") ? "留空保留已保存的私钥" : "请输入备份专用 SSH 私钥"} />
+              </label>
+            )}
             <Check
               label="启用"
               name="enabled"
               defaultChecked={target.enabled}
             />
             <Notice>
-              请预先创建目录并授予此备份账号权限。上传使用临时文件，远端重新读取校验后才记为成功。
+              可使用 root 或备份专用账号。凭据加密保存，不会回显；编辑时留空仅保留同一认证方式的凭据，切换方式必须重新填写。
+              缺失目录会以 0700 权限创建，备份文件权限为 0600；路径不能包含符号链接或其他账号可写的目录，账号须有相应权限。远端重新读取校验后才记为成功。
             </Notice>
+            <details className="mt16">
+              <summary>如何核对 SSH 主机指纹？</summary>
+              <p className="mt8">请通过 VPS 服务商控制台等可信通道，在目标服务器查看主机公钥指纹。常见 Debian 12 的 ECDSA 主机公钥可使用：</p>
+              <pre className="code-panel mt8">ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub -E sha256</pre>
+              <p className="mt8">复制输出中的完整 SHA256:…，不是私钥。若服务器使用其他主机密钥，请核对实际协商密钥对应的指纹。指纹不符会在发送密码前中止连接；不要未经独立核对就信任网络扫描结果。</p>
+            </details>
           </AsyncForm>
         </Modal>
       )}
