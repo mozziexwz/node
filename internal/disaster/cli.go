@@ -127,9 +127,23 @@ func Run(args []string, input io.Reader, output io.Writer) error {
 		return errArguments
 	}
 	if err := run(); err != nil {
-		// An archive member, filesystem path or SSH server error may contain
-		// attacker-controlled text. Keep command-line diagnostics credential-safe.
-		return errors.New("整站备份操作失败：请检查参数、私有权限、文件完整性或远程连接；本工具不会输出凭据")
+		return safeCommandError(args[0], err)
 	}
 	return nil
+}
+
+func safeCommandError(command string, err error) error {
+	// Only exact, locally generated config-save stages may cross the CLI
+	// boundary. Do not unwrap errors or trust text resembling a diagnostic code.
+	if command == "config-save" {
+		if stage, ok := err.(configSaveError); ok {
+			switch stage {
+			case errConfigValidate, errConfigParent, errConfigExisting, errConfigLocalDir, errConfigWrite:
+				return errors.New(stage.Error())
+			}
+		}
+	}
+	// Archive members, paths, arguments and SSH server errors can contain
+	// attacker-controlled text. All other diagnostics remain generic.
+	return errors.New("整站备份操作失败：请检查参数、私有权限、文件完整性或远程连接；本工具不会输出凭据")
 }

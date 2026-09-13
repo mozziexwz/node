@@ -103,27 +103,67 @@ func ReadConfig(filename string) (Config, error) {
 	return c, c.Validate()
 }
 
+// Config-save diagnostics deliberately contain only a fixed stage. Never retain
+// a filesystem error here: it may include credentials or a caller-supplied path.
+type configSaveError uint8
+
+const (
+	errConfigValidate configSaveError = iota + 1
+	errConfigParent
+	errConfigExisting
+	errConfigLocalDir
+	errConfigWrite
+)
+
+func (stage configSaveError) Error() string {
+	switch stage {
+	case errConfigValidate:
+		return "整站备份配置保存失败 [config-save/validate]：配置校验未通过"
+	case errConfigParent:
+		return "整站备份配置保存失败 [config-save/config-parent]：配置上级目录私有权限校验未通过"
+	case errConfigExisting:
+		return "整站备份配置保存失败 [config-save/existing-config]：已有配置检查未通过"
+	case errConfigLocalDir:
+		return "整站备份配置保存失败 [config-save/local-dir]：本地备份目录创建或私有权限校验未通过"
+	case errConfigWrite:
+		return "整站备份配置保存失败 [config-save/write-config]：私有配置原子写入未完成"
+	default:
+		return "整站备份配置保存失败"
+	}
+}
+
 func SaveConfig(filename string, c Config) error {
+	return saveConfig(filename, c, writeConfig)
+}
+
+func saveConfig(filename string, c Config, write func(string, []byte) error) error {
 	if err := c.Validate(); err != nil {
-		return err
+		return errConfigValidate
 	}
 	if err := privateDir(filepath.Dir(filename), false); err != nil {
-		return err
+		return errConfigParent
 	}
 	if _, err := os.Lstat(filename); err == nil {
 		if _, err = ReadConfig(filename); err != nil {
-			return err
+			return errConfigExisting
 		}
 	} else if !os.IsNotExist(err) {
-		return err
+		return errConfigExisting
 	}
 	if err := privateDir(c.LocalDir, true); err != nil {
-		return err
+		return errConfigLocalDir
 	}
 	raw, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
-		return err
+		return errConfigWrite
 	}
+	if err := write(filename, raw); err != nil {
+		return errConfigWrite
+	}
+	return nil
+}
+
+func writeConfig(filename string, raw []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(filename), ".disaster-config-*")
 	if err != nil {
 		return err

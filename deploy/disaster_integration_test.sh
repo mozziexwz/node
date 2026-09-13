@@ -10,7 +10,9 @@ umask 077
   exit 2
 }
 CI_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
-for dependency in docker curl jq tar sha256sum flock; do command -v "$dependency" >/dev/null || { printf 'Missing dependency: %s\n' "$dependency" >&2; exit 1; }; done
+for dependency in docker curl jq tar sha256sum flock stat; do command -v "$dependency" >/dev/null || { printf 'Missing dependency: %s\n' "$dependency" >&2; exit 1; }; done
+printf '%s\n' 'CI_DISASTER_STAGE=initial-directory-metadata'
+stat --printf='CI_DISASTER_PATH %n %u:%g:%a\n' -- / /opt /root
 source "$CI_REPO/deploy/manage.sh"
 source "$CI_REPO/deploy/disaster.sh"
 [[ $INSTALL_ROOT == /opt/msboost && ! -e $INSTALL_ROOT && ! -L $INSTALL_ROOT && ! -L /opt && $(realpath -m /opt) == /opt ]] || { die 'CI refuses an existing or redirected installation'; exit 1; }
@@ -211,7 +213,15 @@ for volume in app_data caddy_data caddy_config; do
     -c 'umask 077; printf "%s\n" "MSBOOST isolated volume proof" > /proof/ci-proof.txt; chmod 600 /proof/ci-proof.txt; chown 10001:10001 /proof/ci-proof.txt'
 done
 disaster_resume_services caddy server >/dev/null
+printf '%s\n' 'CI_DISASTER_STAGE=config-directory-metadata'
+stat --printf='CI_DISASTER_PATH %n %u:%g:%a\n' -- "$INSTALL_ROOT" "$CI_ROOT"
+printf '%s\n' 'CI_DISASTER_STAGE=prepare-install-directory'
+"$CI_TOOL" disaster prepare-dir --dir "$INSTALL_ROOT"
+printf '%s\n' 'CI_DISASTER_STAGE=prepare-archive-directory'
+"$CI_TOOL" disaster prepare-dir --dir "$CI_ARCHIVES"
+printf '%s\n' 'CI_DISASTER_STAGE=config-save'
 "$CI_TOOL" disaster config-save --file "$INSTALL_ROOT/disaster.json" --local-dir "$CI_ARCHIVES" --retention-days 30 --time 02:30 </dev/null
+printf '%s\n' 'CI_DISASTER_STAGE=config-saved'
 note 'CI: real stop, pg_dump, encrypted export, volume archives, pack and verification.'
 disaster_backup
 CI_WORKS+=("$DISASTER_WORK")
