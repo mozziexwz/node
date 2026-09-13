@@ -85,6 +85,15 @@ jobs:
           tar -xzf .runtime/gost/archive.tar.gz -C .runtime/gost gost
           GOST_TEST_BINARY="$PWD/.runtime/gost/gost" go test -race ./internal/relayruntime -run TestRealGost -count=1 -v
           GOST_TEST_BINARY="$PWD/.runtime/gost/gost" go test -race ./internal/executor -run TestRealGostCredentialConfigFileName -count=1 -v
+      - name: Verify lease expiry closes existing GOST connections
+        shell: bash
+        run: |
+          go test -c -race -o .runtime/relay-lease.test ./internal/relayruntime
+          sudo unshare --net -- bash -c '
+            set -Eeuo pipefail
+            ip link set lo up
+            exec env MSBOOST_TEST_LOOPBACK_NETNS=1 GOST_TEST_BINARY="$1" "$2" -test.run "^TestRealGostLeaseExpiryClosesExistingConnection$" -test.count=1 -test.v -test.timeout=30s
+          ' msboost-isolated-test "$PWD/.runtime/gost/gost" "$PWD/.runtime/relay-lease.test"
       - name: Check installers without executing them
         run: |
           for script in install.sh agent.sh deploy/*.sh installers/node/msboost.sh installers/reinstall/reinstall.sh; do bash -n "$script"; done

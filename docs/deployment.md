@@ -104,9 +104,9 @@ msboost upgrade --version v0.2.2 --build
 
 该路径使用校验过的完整 Release 源码，叠加 `deploy/compose.build.yml`，为本次构建生成唯一的 `msboost-local:版本-随机后缀` 标签，会占用更多资源。GHCR/Release 镜像下载失败都不会自动触发编译。`repair` 不执行构建；本地构建镜像丢失时需明确重新构建该版本。
 
-### 卸载和彻底清理
-
 v0.2.2 起，启动先等待数据库和应用健康，再只强制重建 Caddy，使绑定的 Caddyfile 与进程实际配置一致；安装、修复和失败回退均使用相同流程，不强制重建数据库。仅文件内容变化不会触发 Compose 自动重建代理，因此旧版本单纯 `up` 可能仍运行旧配置。升级或修复会短暂中断代理连接，请安排维护窗口。
+
+### 卸载和彻底清理
 
 ```sh
 msboost uninstall
