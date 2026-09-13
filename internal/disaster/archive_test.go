@@ -209,6 +209,57 @@ func TestArchiveAtomicPublicationNeverReplaces(t *testing.T) {
 	}
 }
 
+func TestArchiveCaddyStickyDirectoriesRoundTrip(t *testing.T) {
+	dir := testPrivateDirectory(t)
+	input := filepath.Join(dir, "input")
+	if err := os.Mkdir(input, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Official Caddy images create /data/caddy and /config/caddy as 01777.
+	// Preserve that directory deletion protection; never chmod a live volume.
+	caddy := testTar(t, []archiveEntry{
+		{tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0755}, nil},
+		{tar.Header{Name: "./caddy/", Typeflag: tar.TypeDir, Mode: 01777}, nil},
+		{tar.Header{Name: "./caddy/private.json", Typeflag: tar.TypeReg, Mode: 0600}, []byte("synthetic Caddy data")},
+	})
+	files := testFiles(t)
+	files["caddy_data.tar"], files["caddy_config.tar"] = caddy, caddy
+	for name, data := range files {
+		testWrite(t, filepath.Join(input, name), data)
+	}
+	if err := ValidateVolume(filepath.Join(input, "caddy_data.tar")); err != nil {
+		t.Fatal("standard Caddy directory rejected", err)
+	}
+	output := filepath.Join(dir, "msboost-disaster-20260914T010203Z-0123456789abcdef.tar.gz")
+	if err := Pack(input, output); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(output); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(dir, "recovered")
+	if err := Unpack(output, destination); err != nil {
+		t.Fatal(err)
+	}
+	for name, expected := range files {
+		actual, err := os.ReadFile(filepath.Join(destination, name))
+		if err != nil || !bytes.Equal(actual, expected) {
+			t.Fatal("roundtrip changed member or permissions", name, err)
+		}
+	}
+	restored, err := os.ReadFile(filepath.Join(destination, "caddy_data.tar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := tar.NewReader(bytes.NewReader(restored))
+	for _, mode := range []int64{0755, 01777, 0600} {
+		h, err := r.Next()
+		if err != nil || h.Mode != mode {
+			t.Fatal("nested archive mode not preserved", err)
+		}
+	}
+}
+
 func TestArchiveRejectsCorruptionExtraDataAndManifestMismatch(t *testing.T) {
 	files := testFiles(t)
 	now := time.Now().Unix()
@@ -299,9 +350,14 @@ func TestArchiveNestedTarSafetyAndVerifyIntegration(t *testing.T) {
 			testInvalidNested(t, testTar(t, []archiveEntry{{tar.Header{Name: "bad", Typeflag: kind, Linkname: "/outside", Mode: 0600}, nil}}))
 		})
 	}
-	for _, mode := range []int64{04000, 02000, 01000, 07777, -1} {
+	for _, mode := range []int64{04000, 02000, 01000, 01777, 07777, 010000, -1} {
 		t.Run(fmt.Sprintf("mode-%d", mode), func(t *testing.T) {
 			testInvalidNested(t, testTar(t, []archiveEntry{{tar.Header{Name: "bad", Typeflag: tar.TypeReg, Mode: mode}, nil}}))
+		})
+	}
+	for _, mode := range []int64{02777, 04777, 06777, 07777, 010000, -1} {
+		t.Run(fmt.Sprintf("directory-mode-%o", mode), func(t *testing.T) {
+			testInvalidNested(t, testTar(t, []archiveEntry{{tar.Header{Name: "bad/", Typeflag: tar.TypeDir, Mode: mode}, nil}}))
 		})
 	}
 	entry := archiveEntry{tar.Header{Name: "same", Typeflag: tar.TypeReg, Mode: 0600}, []byte("x")}

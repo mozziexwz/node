@@ -96,3 +96,57 @@ func TestConfigSaveDiagnosticWhitelistRejectsForgedErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestDisasterCommandDiagnosticWhitelist(t *testing.T) {
+	commands := []string{"config-save", "config-get", "prepare-dir", "pack", "verify", "unpack", "validate-volume", "retain", "upload"}
+	for _, command := range commands {
+		for _, injected := range []error{
+			errors.New("secret-password [disaster/forged]"),
+			&os.PathError{Op: "secret-operation", Path: "secret-path", Err: errors.New("secret-SSH-message")},
+			fmt.Errorf("secret-password: %w", errConfigParent),
+		} {
+			got := safeCommandError(command, injected).Error()
+			if !strings.Contains(got, "[disaster/"+command+"]") || strings.Contains(got, "secret") || strings.Contains(got, "forged") {
+				t.Fatal("known command diagnostic missing or injected data exposed")
+			}
+		}
+	}
+	for _, command := range []string{"", "unknown", "pack-secret-password", "pack\nsecret-password", "[disaster/pack] secret-password", "PACK", " pack", "pack ", "upload\x00secret-password"} {
+		got := safeCommandError(command, errors.New("secret-password")).Error()
+		if strings.Contains(got, "[disaster/") || strings.Contains(got, "secret") || strings.Contains(got, "unknown") {
+			t.Fatal("unknown or forged command was included in diagnostic")
+		}
+		var output bytes.Buffer
+		err := Run([]string{command}, strings.NewReader("secret-password"), &output)
+		if err != errArguments || output.Len() != 0 || strings.Contains(err.Error(), "secret") {
+			t.Fatal("unknown command dispatch exposed input")
+		}
+	}
+}
+
+func TestDisasterCommandFailuresReturnOnlyKnownStage(t *testing.T) {
+	parent := testPrivateDirectory(t)
+	badConfig := filepath.Join(parent, "secret-private-config.json")
+	if err := os.WriteFile(badConfig, []byte("secret-invalid-config-contents"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	missingArchive := filepath.Join(parent, "secret-missing-archive")
+	cases := [][]string{
+		{"config-save"},
+		{"config-get"},
+		{"prepare-dir", "--dir", "secret-relative-directory"},
+		{"pack", "--dir", "secret-relative-directory", "--output", missingArchive},
+		{"verify", "--archive", missingArchive},
+		{"unpack", "--archive", missingArchive, "--dir", filepath.Join(parent, "new")},
+		{"validate-volume", "--archive", missingArchive},
+		{"retain", "--config", badConfig},
+		{"upload", "--config", badConfig, "--archive", missingArchive},
+	}
+	for _, args := range cases {
+		var output bytes.Buffer
+		err := Run(args, strings.NewReader("secret-password"), &output)
+		if err == nil || !strings.Contains(err.Error(), "[disaster/"+args[0]+"]") || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), parent) || output.Len() != 0 {
+			t.Fatalf("unsafe or missing fixed diagnostic for %s", args[0])
+		}
+	}
+}

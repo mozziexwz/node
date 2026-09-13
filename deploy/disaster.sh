@@ -140,22 +140,29 @@ disaster_backup() {
     DISASTER_RESUME=1
     compose_live stop --timeout 60 "${DISASTER_RUNNING[@]}" || return
   fi
+  note '  → 导出 PostgreSQL 原始快照'
   compose_live exec -T database pg_dump --username=msboost --dbname="$database_name" --format=custom > "$DISASTER_WORK/database.dump" || return
   [[ -s $DISASTER_WORK/database.dump ]] || { die '数据库导出为空'; return 1; }
   # The helper is read-only and does not start the application or any worker.
   local -a key_args=()
   [[ -n $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) ]] || key_args=(--master-key-file /app/data/master.key)
+  note '  → 只读导出加密业务快照'
   compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server export "${key_args[@]}" > "$DISASTER_WORK/state.msb" || return
   for volume in app_data caddy_data caddy_config; do
+    note "  → 导出数据卷：$volume"
     docker run --rm --network none --read-only --user 0:0 --entrypoint tar \
       --mount "type=volume,source=msboost_$volume,target=/snapshot,readonly" "$image" -cf - -C /snapshot . > "$DISASTER_WORK/$volume.tar" || return
+    note "  → 校验数据卷归档：$volume"
     "$DISASTER_TOOL" disaster validate-volume --archive "$DISASTER_WORK/$volume.tar" || return
   done
+  note '  → 恢复备份前正在运行的服务并检查健康'
   if [[ ${#DISASTER_RUNNING[@]} -gt 0 ]]; then disaster_resume_services "${DISASTER_RUNNING[@]}" || return; fi
   DISASTER_RESUME=0
+  note '  → 打包并校验整站备份'
   "$DISASTER_TOOL" disaster pack --dir "$DISASTER_WORK" --output "$directory/$filename" || return
   note "整站快照已完成并校验：$directory/$filename（含主密钥与密码，勿公开上传）。"
   # Remote failure preserves the verified local bundle and does not prune.
+  note '  → 按已保存配置处理异地上传与保留策略'
   "$DISASTER_TOOL" disaster upload --config "$INSTALL_ROOT/disaster.json" --archive "$directory/$filename" || return
   "$DISASTER_TOOL" disaster retain --config "$INSTALL_ROOT/disaster.json" || return
 }

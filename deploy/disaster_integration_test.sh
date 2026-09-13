@@ -37,6 +37,7 @@ CI_BUILD_TAG="msboost-local:$VERSION"
 CI_IMAGE= CI_IMAGE_ID= CI_TOOL_CONTAINER=
 CI_OPT_IDENTITY= CI_OPT_ORIGINAL_MODE= CI_OPT_CHANGED=0
 CI_WORKS=()
+declare -A CI_CADDY_METADATA=()
 DISASTER_WORK= DISASTER_TOOL_DIR= DISASTER_TOOL_CONTAINER= DISASTER_RESUME=0
 DISASTER_RUNNING=()
 
@@ -255,6 +256,12 @@ for volume in app_data caddy_data caddy_config; do
   docker run --rm --network none --read-only --user 0:0 --entrypoint sh --mount "type=volume,source=msboost_$volume,target=/proof" "$POSTGRES_TEST_IMAGE" \
     -c 'umask 077; printf "%s\n" "MSBOOST isolated volume proof" > /proof/ci-proof.txt; chmod 600 /proof/ci-proof.txt; chown 10001:10001 /proof/ci-proof.txt'
 done
+for volume in caddy_data caddy_config; do
+  metadata=$(docker run --rm --network none --read-only --user 0:0 --entrypoint stat --mount "type=volume,source=msboost_$volume,target=/proof,readonly" "$POSTGRES_TEST_IMAGE" -c '%u:%g:%a' -- /proof/caddy)
+  [[ $metadata =~ ^[0-9]+:[0-9]+:[0-7]{3,4}$ ]]
+  CI_CADDY_METADATA[$volume]=$metadata
+  printf 'CI_DISASTER_CADDY_METADATA_BEFORE %s %s\n' "$volume" "$metadata"
+done
 disaster_resume_services caddy server >/dev/null
 printf '%s\n' 'CI_DISASTER_STAGE=config-directory-metadata'
 stat --printf='CI_DISASTER_PATH %n %u:%g:%a\n' -- "$INSTALL_ROOT" "$CI_ROOT"
@@ -316,6 +323,11 @@ SQL
 for volume in app_data caddy_data caddy_config; do
   proof=$(docker run --rm --network none --read-only --user 0:0 --entrypoint sh --mount "type=volume,source=msboost_$volume,target=/proof,readonly" "$POSTGRES_TEST_IMAGE" -c 'cat /proof/ci-proof.txt; stat -c "%u:%g:%a" /proof/ci-proof.txt')
   [[ $proof == $'MSBOOST isolated volume proof\n10001:10001:600' ]]
+done
+for volume in caddy_data caddy_config; do
+  metadata=$(docker run --rm --network none --read-only --user 0:0 --entrypoint stat --mount "type=volume,source=msboost_$volume,target=/proof,readonly" "$POSTGRES_TEST_IMAGE" -c '%u:%g:%a' -- /proof/caddy)
+  [[ $metadata == "${CI_CADDY_METADATA[$volume]}" ]]
+  printf 'CI_DISASTER_CADDY_METADATA_RESTORED %s %s\n' "$volume" "$metadata"
 done
 check_frontend
 bound=$(compose_live port caddy 80)

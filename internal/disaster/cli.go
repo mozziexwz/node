@@ -143,7 +143,28 @@ func safeCommandError(command string, err error) error {
 			}
 		}
 	}
-	// Archive members, paths, arguments and SSH server errors can contain
-	// attacker-controlled text. All other diagnostics remain generic.
-	return errors.New("整站备份操作失败：请检查参数、私有权限、文件完整性或远程连接；本工具不会输出凭据")
+	// Select complete literal codes, never interpolate a caller-supplied command.
+	// Archive members, paths, arguments and SSH errors remain discarded.
+	var code string
+	switch command {
+	case "config-save":
+		code = " [disaster/config-save]"
+	case "config-get":
+		code = " [disaster/config-get]"
+	case "prepare-dir":
+		code = " [disaster/prepare-dir]"
+	case "pack":
+		code = " [disaster/pack]"
+	case "verify":
+		code = " [disaster/verify]"
+	case "unpack":
+		code = " [disaster/unpack]"
+	case "validate-volume":
+		code = " [disaster/validate-volume]"
+	case "retain":
+		code = " [disaster/retain]"
+	case "upload":
+		code = " [disaster/upload]"
+	}
+	return errors.New("整站备份操作失败" + code + "：请检查参数、私有权限、文件完整性或远程连接；本工具不会输出凭据")
 }

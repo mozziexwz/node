@@ -85,7 +85,14 @@ func validateVolumeReader(input io.Reader) error {
 		}
 		seen[clean] = true
 		total += h.Size
-		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeDir || clean == "." && h.Typeflag != tar.TypeDir || h.Mode < 0 || h.Mode & ^int64(0777) != 0 || h.Typeflag == tar.TypeDir && h.Size != 0 {
+		allowedMode := int64(0777)
+		if h.Typeflag == tar.TypeDir {
+			// Caddy's official image uses 01777 directories. The sticky bit
+			// restricts deletion there; unlike setuid/setgid it is not a
+			// privilege elevation bit. Preserve it only on directories.
+			allowedMode |= 01000
+		}
+		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeDir || clean == "." && h.Typeflag != tar.TypeDir || h.Mode < 0 || h.Mode & ^allowedMode != 0 || h.Typeflag == tar.TypeDir && h.Size != 0 {
 			return errors.New("数据卷归档不允许链接、设备或特权权限")
 		}
 		for key := range h.PAXRecords {
