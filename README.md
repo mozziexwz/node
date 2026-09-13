@@ -41,7 +41,7 @@ msboost disaster-disable # 停用整站自动备份，不删除备份
 
 v0.1.1 如果安装报 `ghcr.io/mozziexwz/node:12 (bookworm)`，是安装器版本变量污染，**不要彻底清理**。使用 [保留配置的恢复步骤](docs/deployment.md#v011-首次安装报-12-bookworm-的保留配置恢复)，新版本会检查未产生业务数据后继续安装。
 
-既有健康站点可执行 `msboost upgrade --version v0.2.3`。网站升级不会自动更新独立执行机或节点，请按 [Agent 安装与更新](docs/agent-installation.md) 在相应 VPS 更新；新版清理和诊断需要新版执行机。原库损坏时不要强行普通升级，按 [完整灾难恢复](docs/backup-recovery.md) 校验快照并导入新库。旧库、密钥及备份保留，恢复后保持维护并人工对账。
+既有健康站点可执行 `msboost upgrade --version v0.2.3`，升级保留原 `.env`、管理员和主密钥，并在切换前备份当前选定数据库；已卸载保数据的站点先 `msboost repair` 再升级。网站升级不会自动更新独立执行机或节点，请按 [Agent 安装与更新](docs/agent-installation.md) 在相应 VPS 更新；新版清理和诊断需要新版执行机。原库损坏时不要强行普通升级，按 [独立新数据库恢复](docs/backup-recovery.md) 校验快照并导入新库；持有整站包且使用全新 VPS 时，走[整站恢复入口](docs/disaster-backup.md#全新-vps-一键恢复)，不要先安装空站点。旧库、密钥及备份保留，恢复后保持维护并人工对账。
 
 ## 组成与职责
 

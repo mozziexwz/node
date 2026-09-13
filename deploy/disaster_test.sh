@@ -51,10 +51,37 @@ apt-get() { fail 'contract attempted package installation'; }
 systemctl() { fail 'contract attempted real systemd management'; }
 disaster_tool() { DISASTER_TOOL=mock_disaster_tool; }
 load_release_image() { trace fallback-image; [[ $1 == "$(env_get "$STAGE/.env" MSBOOST_IMAGE_ID)" && $MOCK_FAIL != fallback ]] || return 1; }
+disaster_resume_clock() { printf '%s' "$MOCK_RESUME_ELAPSED"; }
+sleep() {
+  [[ $1 == 1 || $1 == 2 ]] || fail 'resume sleep exceeded deadline granularity'
+  MOCK_RESUME_ELAPSED=$((MOCK_RESUME_ELAPSED + $1))
+  trace "resume-elapsed $MOCK_RESUME_ELAPSED"
+}
 
 docker() {
   trace "docker $*"
   case "$1:$2" in
+    inspect:--type)
+      local container=${*: -1} service=server
+      [[ $container == "$(printf '%064d' 1)" || $container == "$(printf '%064d' 2)" ]] || fail 'inspected a replacement/unexpected container'
+      [[ $container != "$(printf '%064d' 1)" ]] || service=caddy
+      if [[ $* == *'com.docker.compose.project'* ]]; then
+        if [[ $MOCK_RESUME == foreign ]]; then printf 'other|%s' "$service"; else printf 'msboost|%s' "$service"; fi
+      else
+        case "$MOCK_RESUME" in
+          vanished) return 1 ;;
+          exited|dead) printf '%s|none|required' "$MOCK_RESUME" ;;
+          unhealthy) printf 'running|unhealthy|required' ;;
+          invalid) printf 'unknown|none|none' ;;
+          timeout|missing-health) printf 'running|none|required' ;;
+          shared-deadline)
+            if [[ $service == caddy && $MOCK_RESUME_ELAPSED -ge 176 ]]; then printf 'running|healthy|required'; else printf 'running|starting|required'; fi ;;
+          *)
+            if [[ $service == caddy ]]; then printf 'running|none|none'
+            elif [[ $MOCK_RESUME == delayed && $MOCK_RESUME_ELAPSED -lt 4 ]]; then printf 'running|starting|required'
+            else printf 'running|healthy|required'; fi ;;
+        esac
+      fi ;;
     ps:-aq) [[ $MOCK_COLLISION == 0 ]] || printf occupied ;;
     network:inspect) return 1 ;;
     volume:inspect)
@@ -86,13 +113,20 @@ docker() {
 compose_live() {
   trace "compose $*"
   case "$1" in
-    ps) printf '%s\n' "$MOCK_RUNNING" ;;
+    ps)
+      if [[ $* == 'ps --status running --services' ]]; then printf '%s\n' "$MOCK_RUNNING"
+      else
+        [[ $* == 'ps --all --quiet caddy' || $* == 'ps --all --quiet server' ]] || fail 'unexpected resume discovery'
+        [[ $MOCK_RESUME != missing ]] || return 0
+        [[ $MOCK_RESUME != duplicate ]] || { printf '%064d\n%064d\n' 1 2; return; }
+        if [[ ${*: -1} == caddy ]]; then printf '%064d' 1; else printf '%064d' 2; fi
+      fi ;;
     stop)
       [[ $* == 'stop --timeout 60 caddy server' || $* == 'stop --timeout 60 server' || $* == 'stop --timeout 60 caddy' ]] || fail 'stopped unexpected services'
       : > "$CASE_ROOT/paused"
       [[ $MOCK_FAIL != stop ]] ;;
     start)
-      [[ $* == 'start --wait --wait-timeout 180 caddy server' || $* == 'start --wait --wait-timeout 180 server' || $* == 'start --wait --wait-timeout 180 caddy' ]] || fail 'resume lacks wait or includes previously stopped service'
+      [[ $* == 'start caddy server' || $* == 'start server' || $* == 'start caddy' ]] || fail 'resume uses unsupported flags or includes a previously stopped service'
       [[ $MOCK_FAIL != resume ]] || return 1
       rm -f -- "$CASE_ROOT/paused" ;;
     exec)
@@ -171,7 +205,7 @@ fixture() {
   VERSION=v0.2.3
   CASE_KIND=backup
   MOCK_RUNNING=$'caddy\nserver\ndatabase'
-  MOCK_FAIL= MOCK_COLLISION=0 MOCK_CONFIRM=RESTORE_NEW_MSBOOST
+  MOCK_FAIL= MOCK_COLLISION=0 MOCK_CONFIRM=RESTORE_NEW_MSBOOST MOCK_RESUME=healthy MOCK_RESUME_ELAPSED=0
   DISASTER_TOOL= DISASTER_TOOL_DIR= DISASTER_TOOL_CONTAINER= DISASTER_WORK= DISASTER_RESUME=0
   DISASTER_RUNNING=() STAGE= SNAPSHOT= BUILD=0
   DISASTER_ARCHIVE="$CASE_ROOT/source.tar.gz"; printf fixture-archive > "$DISASTER_ARCHIVE"
@@ -198,8 +232,8 @@ for fault in none stop dump empty-dump state-export volume-export archive-member
   [[ $fault == none ]] || MOCK_FAIL=$fault
   if [[ $fault == none ]]; then run_backup; else expect_failure run_backup; fi
   assert_has "$TRACE" 'compose stop --timeout 60 caddy server'
-  assert_has "$TRACE" 'compose start --wait --wait-timeout 180 caddy server'
-  assert_absent "$TRACE" 'compose start --wait --wait-timeout 180 database'
+  assert_has "$TRACE" 'compose start caddy server'
+  assert_absent "$TRACE" 'compose start database'
   if [[ $fault == resume ]]; then
     [[ $(grep -c '^compose start ' "$TRACE") == 2 ]] || fail 'resume failure was not retried by real EXIT cleanup'
     assert_absent "$TRACE" 'helper pack'
@@ -212,8 +246,8 @@ done
 installed_fixture backup-server-only
 MOCK_RUNNING=$'server\ndatabase'
 run_backup
-assert_has "$TRACE" 'compose start --wait --wait-timeout 180 server'
-assert_absent "$TRACE" 'start --wait --wait-timeout 180 caddy'
+assert_has "$TRACE" 'compose start server'
+assert_absent "$TRACE" 'compose start caddy'
 installed_fixture backup-database-only
 MOCK_RUNNING=database
 run_backup
@@ -225,6 +259,35 @@ for fault in database-missing volume-owner; do
   expect_failure run_backup
   assert_absent "$TRACE" 'compose stop'
 done
+
+# Run the real compatibility helper, not a mocked health wrapper. The Compose
+# stub above rejects every start flag, modelling the older installed CLI.
+installed_fixture resume-delayed
+MOCK_RESUME=delayed
+disaster_resume_services caddy server
+[[ $MOCK_RESUME_ELAPSED == 4 ]] || fail 'returned before checked service became healthy'
+assert_has "$TRACE" 'compose start caddy server'
+assert_absent "$TRACE" 'compose up'
+for fault in missing duplicate foreign vanished exited dead unhealthy invalid timeout missing-health shared-deadline; do
+  installed_fixture "resume-$fault"
+  MOCK_RESUME=$fault
+  expect_failure disaster_resume_services caddy server
+  case "$fault" in
+    missing|duplicate|foreign) assert_absent "$TRACE" 'compose start' ;;
+    timeout|missing-health|shared-deadline) [[ $MOCK_RESUME_ELAPSED == 180 ]] || fail 'resume deadline is not one shared 180-second bound' ;;
+    *) [[ $MOCK_RESUME_ELAPSED == 0 ]] || fail 'terminal service failure did not fail immediately' ;;
+  esac
+  assert_absent "$TRACE" 'compose up'
+done
+installed_fixture resume-invalid-service
+expect_failure disaster_resume_services database
+expect_failure disaster_resume_services server server
+assert_absent "$TRACE" 'compose start'
+installed_fixture backup-unhealthy-retry
+MOCK_RESUME=unhealthy
+expect_failure run_backup
+[[ $(grep -c '^compose start ' "$TRACE") == 2 ]] || fail 'health failure was not retried by EXIT cleanup'
+assert_absent "$TRACE" 'helper pack'
 
 for fault in none archive-verify unpack archive-member config dependencies volume-import database-start state-import frontend; do
   fixture "restore-$fault"; CASE_KIND=restore

@@ -39,6 +39,53 @@ disaster_tool() {
   chmod 700 "$tool_dir/$asset" || return
   DISASTER_TOOL="$tool_dir/$asset"
 }
+# Bash's elapsed clock avoids wall-clock/NTP changes during the shared deadline.
+disaster_resume_clock() { printf '%s' "$SECONDS"; }
+
+disaster_resume_services() {
+  # Older Compose v2 supports up --wait but not start --wait. Never substitute
+  # up here: only the exact existing services paused by this snapshot may start.
+  # All services share one health-polling deadline. Docker CLI calls use the
+  # local daemon, but are not forcibly interrupted if the daemon itself stalls.
+  local service container identity state health required all_ready now remaining
+  local deadline=$(( $(disaster_resume_clock) + 180 ))
+  local -a containers=() services=()
+  [[ $# -gt 0 && $# -le 2 ]] || { die '需要明确的原有备份服务集合'; return 1; }
+  for service in "$@"; do
+    [[ $service == caddy || $service == server ]] || { die '备份恢复不能启动其他服务'; return 1; }
+    [[ " ${services[*]} " != *" $service "* ]] || { die '备份恢复服务重复'; return 1; }
+    container=$(compose_live ps --all --quiet "$service") || return
+    [[ $container =~ ^[a-f0-9]{64}$ ]] || { die "原有 $service 容器缺失或不唯一，未创建替代容器"; return 1; }
+    identity=$(docker inspect --type container --format '{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$container") || return
+    [[ $identity == "$PROJECT|$service" ]] || { die "原有 $service 容器归属不符"; return 1; }
+    containers+=("$container"); services+=("$service")
+  done
+  compose_live start "${services[@]}" || return
+  while :; do
+    now=$(disaster_resume_clock)
+    [[ $now -lt $deadline ]] || { die '原有服务在 180 秒内未全部恢复健康'; return 1; }
+    all_ready=1
+    for container in "${containers[@]}"; do
+      # Only state flags are read, never service environment or health output.
+      identity=$(docker inspect --type container --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{if .Config.Healthcheck}}{{if .Config.Healthcheck.Test}}{{if eq (index .Config.Healthcheck.Test 0) "NONE"}}none{{else}}required{{end}}{{else}}none{{end}}{{else}}none{{end}}' "$container") || { die '原有服务容器在恢复期间消失'; return 1; }
+      IFS='|' read -r state health required <<< "$identity"
+      case "$state" in
+        exited|dead|removing) die '原有服务启动后退出，未通过恢复检查'; return 1 ;;
+        running|created|restarting|paused) ;;
+        *) die '原有服务运行状态无效'; return 1 ;;
+      esac
+      [[ $health != unhealthy ]] || { die '原有服务健康检查失败'; return 1; }
+      [[ $required == none || $required == required ]] || { die '原有服务健康检查状态无效'; return 1; }
+      if [[ $state != running || ( $required == required && $health != healthy ) ]]; then all_ready=0; fi
+    done
+    now=$(disaster_resume_clock)
+    [[ $now -lt $deadline ]] || { die '原有服务在 180 秒内未全部恢复健康'; return 1; }
+    [[ $all_ready == 0 ]] || return 0
+    remaining=$((deadline - now)); [[ $remaining -le 2 ]] || remaining=2
+    sleep "$remaining" || return
+  done
+}
+
 disaster_cleanup() {
   local code=$?
   trap - EXIT
@@ -46,7 +93,7 @@ disaster_cleanup() {
   # A scheduled snapshot may pause only these two known containers. Resume the
   # exact services that were running, even if export/pack/disk/upload failed.
   if [[ ${DISASTER_RESUME:-0} == 1 && ${#DISASTER_RUNNING[@]} -gt 0 ]]; then
-    if ! compose_live start --wait --wait-timeout 180 "${DISASTER_RUNNING[@]}"; then
+    if ! disaster_resume_services "${DISASTER_RUNNING[@]}"; then
       note '备份后服务重新启动失败，请立即检查 msboost status/logs。'; code=1
     fi
   fi
@@ -104,7 +151,7 @@ disaster_backup() {
       --mount "type=volume,source=msboost_$volume,target=/snapshot,readonly" "$image" -cf - -C /snapshot . > "$DISASTER_WORK/$volume.tar" || return
     "$DISASTER_TOOL" disaster validate-volume --archive "$DISASTER_WORK/$volume.tar" || return
   done
-  if [[ ${#DISASTER_RUNNING[@]} -gt 0 ]]; then compose_live start --wait --wait-timeout 180 "${DISASTER_RUNNING[@]}" || return; fi
+  if [[ ${#DISASTER_RUNNING[@]} -gt 0 ]]; then disaster_resume_services "${DISASTER_RUNNING[@]}" || return; fi
   DISASTER_RESUME=0
   "$DISASTER_TOOL" disaster pack --dir "$DISASTER_WORK" --output "$directory/$filename" || return
   note "整站快照已完成并校验：$directory/$filename（含主密钥与密码，勿公开上传）。"

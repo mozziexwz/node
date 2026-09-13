@@ -11,9 +11,9 @@ msboost disaster-config
 msboost disaster-backup
 ```
 
-配置向导设置本地目录（默认 `/root/msboost-backup`）、保留天数（默认 30）、每日时间（默认 02:30，按 VPS 本地时区），可选远程公网 IP、SSH 端口、root 用户、目标目录与密码。密码从不回显的终端读入；本机 `/opt/msboost/disaster.json` 为 0600，仅 root 可读。不要把该文件公开发送。
+配置向导设置本地目录（默认 `/root/msboost-backup`）、保留天数（默认 30）、每日时间（默认 02:30，按 VPS 本地时区），可选远程公网 IP、SSH 端口、用户名（默认 root）、目标目录与密码。密码从不回显的终端读入；本机 `/opt/msboost/disaster.json` 为 0600，仅 root 可读。不要把该文件公开发送。重新运行此向导会重设计划；选择远端时需重新输入密码，密码留空不会沿用旧凭据；远程 IP 留空则改为仅本机备份。
 
-整站远程 SSH 使用 Ed25519 主机密钥，指纹必须在目标服务器可信控制台核对，例如运行 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`，不要仅因网络扫描看到了某个指纹就信任它。只有 ECDSA/RSA 的远端需管理员先配置 Ed25519；安装器不修改远端 sshd。远端专用目录应为 0700，已有目录不安全时先由管理员检查权限。
+整站远程 SSH 使用 Ed25519 主机密钥，指纹必须在目标服务器可信控制台核对，例如运行 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`，不要仅因网络扫描看到了某个指纹就信任它。只有 ECDSA/RSA 的远端需管理员先配置 Ed25519；安装器不修改远端 sshd。远端专用目录须由 SSH 登录用户所有、权限为 0700；所有上级目录须由 root 或该用户所有，且不可被组或其他用户写入。已有目录不安全时拒绝上传，不自动放宽权限或修改归属。非 root 用户应选择其可管理的专用目录，不能直接沿用 `/root/msboost-backup`。
 
 只有配置最后明确输入 `YES`，才启用 systemd 每日自动备份。停用：
 
@@ -34,7 +34,7 @@ journalctl -u msboost-disaster-backup.service --since today
 - `app_data.tar`、`caddy_data.tar`、`caddy_config.tar`：应用文件、历史业务备份、证书及代理数据。
 - `manifest.json`：版本、时间与逐文件大小/SHA256。
 
-单个整站包上限 64 GiB，业务加密快照仍受现有 100 MB 上限限制；超限会失败并保留私有工作目录，不生成被当作成功的最终包。数据卷不接受链接、设备、特权文件或危险归档路径。GitHub/GHCR 不可用时，已安装站点从本机已固定镜像提取工具，正常备份不依赖再次下载程序。
+单个整站包上限 64 GiB，业务快照及其解密状态仍受现有 100 MiB 上限限制；超限会失败并保留私有工作目录，不生成被当作成功的最终包。数据卷不接受链接、设备、特权文件或危险归档路径。GitHub/GHCR 不可用时，已安装站点从本机已固定镜像提取工具，正常备份不依赖再次下载程序。
 
 本机保留策略只清理专用目录里命名和内容均验证通过的本站整站包，按天数保留，始终至少保留两份有效副本。损坏文件、临时文件和不相关文件不用于凑够份数。异地上传失败时本机有效副本保留，不执行后续清理。
 
@@ -46,17 +46,20 @@ journalctl -u msboost-disaster-backup.service --since today
 
 ## 全新 VPS 一键恢复
 
-先停止旧站点并保留旧磁盘，不要让新旧控制面同时运行。准备**同架构 Debian 12 全新目标**、原域名 DNS/防火墙和可信的整站 `.tar.gz` 包。将包安全上传到新 VPS；没有要求先安装一个空白 MSBOOST 站点。
+先停止旧站点并保留旧磁盘，不要让新旧控制面同时运行。准备**同架构 Debian 12 全新目标**、原域名 DNS/防火墙和可信的整站 `.tar.gz` 包。将包安全上传到新 VPS，保持仅 root 可读；**不要先执行普通安装**，它创建的 `/opt/msboost` 和数据卷会使整站恢复拒绝继续。已有站点或损坏库应使用[独立新数据库恢复](backup-recovery.md)，不要为了满足“全新目标”而清理原数据。
 
-使用与备份 `MSBOOST_VERSION` 一致、经核验的正式安装入口：
+使用与备份 `MSBOOST_VERSION` 一致、经核验的正式安装入口。以下以 v0.2.3 备份为例；先把版本和包路径改成自己的实际值，再在新 VPS 的 root 终端执行：
 
 ```bash
-bash msboost-install.sh disaster-restore --archive /root/msboost-backup/你的整站备份.tar.gz --version vX.Y.Z
+backup_version=v0.2.3
+apt-get update && apt-get install -y curl ca-certificates
+curl -fsSL --proto '=https' --tlsv1.2 "https://raw.githubusercontent.com/mozziexwz/node/${backup_version}/install.sh" -o /root/msboost-install.sh
+bash /root/msboost-install.sh disaster-restore --archive /root/msboost-backup/你的整站备份.tar.gz --version "$backup_version"
 ```
 
-`msboost-install.sh` 是下载后的 `install.sh` 文件名，与已有安装用法一致。请把 `vX.Y.Z` 替换为实际备份版本；不要为了恢复而升级到另一个版本。也可从新安装入口菜单选择“一键灾难恢复”。
+安装入口会下载指定版本的部署包和恢复工具，并用该 Release 的 `SHA256SUMS` 校验。不要为了恢复而升级到另一个版本。也可从新安装入口菜单选择“一键灾难恢复”，但必须使用与备份同版本的入口；新 VPS 尚无 `msboost` 命令。
 
-恢复校验整站包、检查全新目录/卷/网络/端口，要求输入 `RESTORE_NEW_MSBOOST` 才继续。`/opt/msboost` 或同名卷/网络已有内容时拒绝接管。镜像从官方固定摘要或同版本 Release 备用归档取得，并核对原 imageID；自构建镜像、自定义 Compose/环境及跨架构迁移需要人工恢复。
+恢复校验整站包、检查全新目录/卷/网络/端口，要求输入 `RESTORE_NEW_MSBOOST` 才继续。`/opt/msboost` 或同名卷/网络已有内容时拒绝接管。镜像从官方固定摘要或同版本 Release 备用归档取得，并核对原 imageID；自构建镜像、自定义 Compose/环境及跨架构迁移需要人工恢复。恢复保留原 `PUBLIC_URL` 和站点地址，不自动改域名或 IP：域名站点需将原域名解析到新 VPS；原先使用 HTTP IP 调试地址且新机 IP 不同的情况，需要人工审核地址迁移，不属于此一键恢复的地址变更功能。
 
 恢复器使用原主密钥，只创建全新 `msboost_restore_...` 数据库，校验全部数据后再导入并读回；不会直接回放原 SQL dump。维护开启、支付/购买关闭、会话失效、Agent 令牌撤销、运行中任务中止而不重放。镜像恢复、后台业务与前台开放是不同阶段。
 

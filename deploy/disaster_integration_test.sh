@@ -210,7 +210,7 @@ for volume in app_data caddy_data caddy_config; do
   docker run --rm --network none --read-only --user 0:0 --entrypoint sh --mount "type=volume,source=msboost_$volume,target=/proof" "$POSTGRES_TEST_IMAGE" \
     -c 'umask 077; printf "%s\n" "MSBOOST isolated volume proof" > /proof/ci-proof.txt; chmod 600 /proof/ci-proof.txt; chown 10001:10001 /proof/ci-proof.txt'
 done
-compose_live start --wait --wait-timeout 180 caddy server >/dev/null
+disaster_resume_services caddy server >/dev/null
 "$CI_TOOL" disaster config-save --file "$INSTALL_ROOT/disaster.json" --local-dir "$CI_ARCHIVES" --retention-days 30 --time 02:30 </dev/null
 note 'CI: real stop, pg_dump, encrypted export, volume archives, pack and verification.'
 disaster_backup
