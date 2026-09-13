@@ -35,6 +35,7 @@ CI_TOOL="$CI_ROOT/msboost-restore"
 CI_ARCHIVES="$CI_ROOT/archives"
 CI_BUILD_TAG="msboost-local:$VERSION"
 CI_IMAGE= CI_IMAGE_ID= CI_TOOL_CONTAINER=
+CI_OPT_IDENTITY= CI_OPT_ORIGINAL_MODE= CI_OPT_CHANGED=0
 CI_WORKS=()
 DISASTER_WORK= DISASTER_TOOL_DIR= DISASTER_TOOL_CONTAINER= DISASTER_RESUME=0
 DISASTER_RUNNING=()
@@ -77,11 +78,52 @@ ci_remove_site() {
   done
   if [[ -d $INSTALL_ROOT ]]; then ci_assert_owner || return; rm -rf -- /opt/msboost || return; fi
 }
+ci_prepare_opt() {
+  local mode identity
+  [[ -d /opt && ! -L /opt && $(stat -c '%u:%g' -- /opt) == 0:0 ]] || { die 'CI refuses an unexpected /opt directory owner or type'; return 1; }
+  identity=$(stat -c '%d:%i' -- /opt) || return
+  mode=$(stat -c '%a' -- /opt) || return
+  [[ $identity =~ ^[0-9]+:[0-9]+$ && $mode =~ ^[0-7]{3}$ ]] || { die 'CI refuses unknown /opt metadata'; return 1; }
+  CI_OPT_IDENTITY=$identity; CI_OPT_ORIGINAL_MODE=$mode
+  if [[ $mode == 777 ]]; then
+    # This exact runner-image condition is known and verified above. Record
+    # intent before chmod so an ordinary signal cannot lose the restore state.
+    CI_OPT_CHANGED=1
+    chmod 0755 -- /opt || return
+    [[ ! -L /opt && $(stat -c '%d:%i:%u:%g:%a' -- /opt) == "$CI_OPT_IDENTITY:0:0:755" ]] || { die 'CI /opt metadata changed during preparation'; return 1; }
+    printf '%s\n' 'CI_DISASTER_STAGE=temporary-opt-mode-755'
+  else
+    (( (8#$mode & 0022) == 0 )) || { die 'CI refuses an unknown writable /opt state'; return 1; }
+    printf '%s\n' 'CI_DISASTER_STAGE=opt-mode-already-safe'
+  fi
+  stat --printf='CI_DISASTER_PATH %n %u:%g:%a\n' -- /opt
+}
+ci_restore_opt() {
+  [[ $CI_OPT_CHANGED == 1 ]] || return 0
+  local mode
+  [[ $CI_OPT_ORIGINAL_MODE == 777 && -d /opt && ! -L /opt && $(stat -c '%d:%i:%u:%g' -- /opt) == "$CI_OPT_IDENTITY:0:0" ]] || { die 'CI refuses to restore externally replaced /opt metadata'; return 1; }
+  mode=$(stat -c '%a' -- /opt) || return
+  if [[ $mode == 755 ]]; then
+    chmod 0777 -- /opt || return
+  elif [[ $mode != 777 ]]; then
+    die 'CI refuses to overwrite an external /opt permission change'; return 1
+  fi
+  # 777 already means no mutation happened (e.g. an interrupt before chmod),
+  # or the original mode was restored. Never change a third-party mode.
+  [[ ! -L /opt && $(stat -c '%d:%i:%u:%g:%a' -- /opt) == "$CI_OPT_IDENTITY:0:0:777" ]] || { die 'CI could not verify restored /opt metadata'; return 1; }
+  CI_OPT_CHANGED=0
+  printf '%s\n' 'CI_DISASTER_OPT_MODE_RESTORED=1'
+  stat --printf='CI_DISASTER_PATH %n %u:%g:%a\n' -- /opt
+}
 ci_cleanup() {
   local status=$? work
   trap - EXIT
-  [[ -f $CI_ROOT/.ci-owner && ! -L $CI_ROOT/.ci-owner && $(<"$CI_ROOT/.ci-owner") == "$CI_MARKER" ]] || exit 1
+  # Finish the narrow permission rollback during ordinary signals. SIGKILL or
+  # runner loss cannot be recovered by a shell trap; this is a disposable CI VM.
+  trap '' HUP INT TERM
+  [[ -f $CI_ROOT/.ci-owner && ! -L $CI_ROOT/.ci-owner && $(<"$CI_ROOT/.ci-owner") == "$CI_MARKER" ]] || { ci_restore_opt || true; exit 1; }
   ci_remove_site || status=1
+  ci_restore_opt || status=1
   if [[ $CI_TOOL_CONTAINER =~ ^[a-f0-9]{64}$ ]] && docker inspect "$CI_TOOL_CONTAINER" >/dev/null 2>&1; then
     [[ $(docker inspect --format '{{index .Config.Labels "msboost.ci.disaster"}}' "$CI_TOOL_CONTAINER") == "$CI_TOKEN" ]] && docker rm -f "$CI_TOOL_CONTAINER" >/dev/null || status=1
   fi
@@ -106,6 +148,7 @@ ci_cleanup() {
 }
 trap ci_cleanup EXIT
 trap 'exit 143' HUP INT TERM
+ci_prepare_opt
 
 # Attach the test marker immediately when the real restore creates its root,
 # including failures before it manages to copy Compose or the environment.
