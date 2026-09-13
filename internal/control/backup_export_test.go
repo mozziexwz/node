@@ -94,16 +94,27 @@ func TestBackupExportPostgresReadOnlyIntegration(t *testing.T) {
 	if err = db.QueryRowContext(context.Background(), "SELECT count(*) FROM pg_tables WHERE schemaname='public'").Scan(&count); err != nil || count != 0 {
 		t.Fatal("failed export changed schema", err, count)
 	}
-	store, err := openStore(Config{DatabaseURL: target})
+	app, err := New(Config{
+		DatabaseURL: target, DataDir: t.TempDir(), MasterKey: key,
+		AdminEmail: "11223344@qq.com", AdminPassword: "Export-Test-Password-123!",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer app.Close()
+	var beforeRevision int64
+	if err = db.QueryRow("SELECT revision FROM control_state WHERE id=1").Scan(&beforeRevision); err != nil {
+		t.Fatal(err)
+	}
 	if err = ExportPostgresBackup(target, key, "", &output); err != nil {
 		t.Fatal(err)
 	}
-	var revision int
-	if err = db.QueryRow("SELECT revision FROM control_state WHERE id=1").Scan(&revision); err != nil || revision != 0 {
-		t.Fatal("export changed original revision", err)
+	state, err := NewBackupService(app).unpack(output.Bytes())
+	if err != nil || len(state.Users) != 1 {
+		t.Fatal("export did not preserve the initialized administrator", err)
+	}
+	var afterRevision int64
+	if err = db.QueryRow("SELECT revision FROM control_state WHERE id=1").Scan(&afterRevision); err != nil || afterRevision != beforeRevision {
+		t.Fatal("export changed original revision", err, beforeRevision, afterRevision)
 	}
 }
