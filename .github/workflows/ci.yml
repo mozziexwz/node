@@ -56,6 +56,13 @@ jobs:
           go test -race -count=1 -v ./internal/executor -run '^TestCleanupPython(IsolatedInventoryAndMutation|MSBOOSTOwnershipAndRetainedData)$'
           go test -race -count=1 -v ./internal/control -run '^TestOfflineRestorePostgresIntegration$'
       - run: go vet ./...
+      - name: Verify Cloudflare trusted proxy boundaries with real Caddy
+        run: |
+          mkdir -p .runtime/caddy
+          curl --fail --location --proto '=https' --tlsv1.2 https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz -o .runtime/caddy/archive.tar.gz
+          printf '%s\n' '8220d1f013b6f27510247b2360c9e0ca9f018feebd82515f07635318b34ff9777ccc8fd0b6e6f2486ce3a33fe389fbb7db12d05baa474f4587509fb4f5ebf1c9  .runtime/caddy/archive.tar.gz' | sha512sum --check --strict
+          tar -xzf .runtime/caddy/archive.tar.gz -C .runtime/caddy caddy
+          CADDY_TEST_BINARY="$PWD/.runtime/caddy/caddy" go test -race ./deploy -count=1 -v
       - run: npm ci && npm run build
         working-directory: apps/web
       - name: Verify real HTTP workflows against isolated server
@@ -77,6 +84,7 @@ jobs:
           printf '%s\n' '676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5  .runtime/gost/archive.tar.gz' | sha256sum --check --strict
           tar -xzf .runtime/gost/archive.tar.gz -C .runtime/gost gost
           GOST_TEST_BINARY="$PWD/.runtime/gost/gost" go test -race ./internal/relayruntime -run TestRealGost -count=1 -v
+          GOST_TEST_BINARY="$PWD/.runtime/gost/gost" go test -race ./internal/executor -run TestRealGostCredentialConfigFileName -count=1 -v
       - name: Check installers without executing them
         run: |
           for script in install.sh agent.sh deploy/*.sh installers/node/msboost.sh installers/reinstall/reinstall.sh; do bash -n "$script"; done

@@ -101,10 +101,75 @@ test('real server: browser permissions, admin pages, content and account flows',
     for (const field of await mp.locator('input[type=password]').all()) await expect(field).toHaveValue('');
     await expect(mp.locator('.side-nav').getByRole('heading',{name:'免费部署工具',exact:true})).toBeVisible();
     await expect(mp.locator('.side-nav').getByRole('heading',{name:'增值服务',exact:true})).toBeVisible();
-    await mp.locator('summary').filter({hasText:'清理 VPS 上的 MSBOOST'}).click();
-    await expect(mp.getByRole('button',{name:'只预览清理范围',exact:true})).toBeVisible();
-    await expect(mp.getByRole('button',{name:'确认停止服务并清理清单',exact:true})).toHaveCount(0);
+    const cleanup=mp.getByTestId('cleanup-panel');
+    await cleanup.locator('summary').filter({hasText:'卸载 MSBOOST'}).click();
+    await expect(cleanup.getByRole('button',{name:'继续',exact:true})).toBeVisible();
+    await expect(cleanup.getByRole('button',{name:'确认删除',exact:true})).toHaveCount(0);
+    await expect(cleanup.getByPlaceholder('输入：确认清理')).toHaveCount(0);
+    await expect(cleanup.getByText('清理会停止相关服务并删除清单内配置。',{exact:true})).toBeVisible();
+    await expect(cleanup.locator('.notice:visible')).toHaveCount(1);
+    const deploymentBox=await mp.locator('.tool-layout > div > .card').first().boundingBox();
+    const cleanupBox=await cleanup.boundingBox();
+    assert.ok(Math.abs(deploymentBox.x-cleanupBox.x)<1 && Math.abs(deploymentBox.width-cleanupBox.width)<1,'uninstall panel aligns with deployment form');
+    await expect(mp.getByText('填写服务器信息即可，提交时会自动核对服务器身份。首次连接会记住这台服务器，以后身份变化会暂停操作。密码会在连接时验证。').first()).toBeVisible();
     await mp.screenshot({path:'../../.runtime/remediation-deploy.png',fullPage:true});
+
+    // UI-only transport fixture. Documentation IPs are never sent to the real
+    // task service; both fingerprint requests and cleanup operations are mocked.
+    let previews=0, removals=0;
+    const previewResults=new Map();
+    await mp.route('**/api/fingerprints',async route=>{
+      await route.fulfill({json:{fingerprint:'SHA256:'+'A'.repeat(43),rememberedFingerprint:'',authenticationChecked:false}});
+    });
+    await mp.route('**/api/tasks',async route=>{
+      if(route.request().method()!=='POST')return route.continue();
+      const input=route.request().postDataJSON();
+      if(input.kind==='cleanup-preview'){
+        previews++;
+        assert.equal(input.cleanup.confirm,false);
+        assert.equal(input.cleanup.scope,'msboost');
+        const id='ui-preview-'+previews;
+        const result={id,kind:'cleanup-preview',host:input.ssh.host,userId:user.id,state:'succeeded',createdAt:Date.now(),cleanup:{scope:'msboost',digest:String(previews).repeat(64),items:[{path:'/etc/msboost',kind:'directory'}],removed:false}};
+        previewResults.set(id,result);
+        await route.fulfill({json:{...result,state:'queued',cleanup:undefined}});
+      }else if(input.kind==='cleanup'){
+        removals++;
+        assert.equal(previews,2,'editing the host must require another server-side preview');
+        assert.equal(input.ssh.host,'203.0.113.11');
+        assert.deepEqual(input.cleanup,{scope:'msboost',previewId:'ui-preview-2',digest:'2'.repeat(64),confirm:true});
+        await route.fulfill({json:{id:'ui-cleanup-done',kind:'cleanup',host:input.ssh.host,userId:user.id,state:'succeeded',createdAt:Date.now(),cleanup:{...previewResults.get('ui-preview-2').cleanup,removed:true}}});
+      }else{
+        throw new Error('Unexpected task in isolated cleanup UI fixture');
+      }
+    });
+    await mp.route('**/api/tasks/**',async route=>{
+      const id=new URL(route.request().url()).pathname.split('/').pop();
+      assert.ok(previewResults.has(id),'only synthetic previews may be polled');
+      await route.fulfill({json:previewResults.get(id)});
+    });
+    await cleanup.getByLabel('服务器 IP 地址',{exact:true}).fill('203.0.113.10');
+    await cleanup.getByLabel('SSH 密码').fill('ui-only-password');
+    await cleanup.getByRole('button',{name:'继续',exact:true}).click();
+    await expect(cleanup.getByRole('button',{name:'确认删除',exact:true})).toBeVisible();
+    assert.equal(removals,0,'automatic preflight must not delete anything');
+    await expect(cleanup.getByRole('table')).toHaveCount(0);
+    await expect(cleanup.getByText('/etc/msboost',{exact:true})).toHaveCount(0);
+    await cleanup.getByLabel('服务器 IP 地址',{exact:true}).fill('203.0.113.11');
+    await expect(cleanup.getByRole('button',{name:'确认删除',exact:true})).toHaveCount(0);
+    await cleanup.getByRole('button',{name:'继续',exact:true}).click();
+    await expect(cleanup.getByRole('button',{name:'确认删除',exact:true})).toBeVisible();
+    assert.equal(removals,0);
+    await cleanup.getByRole('button',{name:'确认删除',exact:true}).click();
+    await expect(mp.getByRole('dialog')).toBeVisible();
+    assert.equal(removals,1,'exactly one final destructive task follows explicit click');
+    await expect(cleanup.getByRole('button',{name:'确认删除',exact:true})).toHaveCount(0);
+    await mp.getByRole('button',{name:'关闭窗口'}).click();
+
+    await page.route('**/api/admin/tasks',route=>route.fulfill({json:{tasks:[{id:'ui-fingerprint',kind:'fingerprint',host:'203.0.113.10',state:'succeeded',phase:'fingerprint',createdAt:Date.now()}]}}));
+    await page.goto(base+'/#tasks');
+    await page.getByRole('button',{name:'刷新',exact:true}).click();
+    await expect(page.getByRole('cell').filter({hasText:'验证指纹'})).toBeVisible();
+    await expect(page.getByRole('cell',{name:'不生成配置',exact:true})).toBeVisible();
     await member.close();
     assert.deepEqual(errors,[]);
   } finally {await browser.close();}

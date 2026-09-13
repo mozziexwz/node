@@ -11,11 +11,11 @@ exec 8>/run/msboost-customer-cleanup.lock
 flock -n 8
 systemd_version=$(systemctl --version | awk 'NR==1 {print $2}')
 [ "$systemd_version" -ge 247 ]
-work=$(mktemp -d /run/msboost-relay.XXXXXX)
 unit="msboost-free-${task_id}.service"
 confdir="/etc/msboost-free/${task_id}"
 [ ! -e "$confdir" ]
 [ ! -e "/etc/systemd/system/$unit" ]
+` + relayStageScript + `
 installed=0
 ufw_owned=0
 firewalld_runtime_owned=0
@@ -50,12 +50,7 @@ with socket.create_connection((sys.argv[1],int(sys.argv[2])),timeout=10): pass
 PY
 msboost_phase=download
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-time 180 "$gost_url" -o "$work/gost.tar.gz"
-msboost_phase=integrity
-printf '%s  %s\n' "$gost_sha" "$work/gost.tar.gz" | sha256sum -c - >/dev/null
-tar -xzf "$work/gost.tar.gz" -C "$work" gost
-"$work/gost" -V >/dev/null
-install -d -m 0755 /usr/local/libexec/msboost-free
-install -m 0755 "$work/gost" "/usr/local/libexec/msboost-free/gost-${gost_sha}"
+` + relayBinaryScript + `
 install -d -m 0700 "$confdir"
 printf '%s\n' msboost-free-v1 > "$confdir/managed-by"
 cat > "/etc/systemd/system/$unit" <<EOF
@@ -66,8 +61,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 DynamicUser=true
-LoadCredential=config:${confdir}/config.json
-ExecStart=/usr/local/libexec/msboost-free/gost-${gost_sha} -C %d/config
+LoadCredential=config.json:${confdir}/config.json
+ExecStart=/usr/local/libexec/msboost-free/gost-${gost_sha} -C %d/config.json
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -154,7 +149,7 @@ PY
   fi
   systemctl stop "$unit" >/dev/null 2>&1 || true
 done
-exit 1
+relay_fail service_failed
 `
 
 const relayCleanupScript = `

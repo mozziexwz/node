@@ -2,7 +2,7 @@
 
 MSBOOST 自托管控制面板：用户通过网页把 MSBOOST 脚本部署到自己的 VPS，管理员维护执行器、增值中转线路、套餐与余额、付款渠道及平台备份。系统重装使用固定版本的 [bin456789/reinstall](https://github.com/bin456789/reinstall) 脚本。
 
-当前版本 **v0.2.0** 面向 Debian 12 VPS 安装调试，尚未完成真实客户 VPS、真实商户付款、灾难恢复及千人容量的生产验收。网页依据已确认 UI、[v4.1 产品规划](docs/requirements/product-v4.1.md) 和 [补充说明修改清单](docs/requirements/supplement.md) 实现；规划不是全部功能的生产验收证明。已实现的安全边界、测试范围和未交付项见 [安全模型与限制](docs/security-and-limits.md)。
+当前版本 **v0.2.1** 面向 Debian 12 VPS 安装调试。已在授权临时 VPS 验证节点部署/修复、真实认证直连、自备中转与前置多跳，以及受管卸载；完整范围和待验收项目见 [真实 VPS 排查记录](docs/acceptance-vps-20260913.md)。尚未完成真实商户付款、真实游戏登录及千人容量的生产验收。网页依据已确认 UI、[v4.1 产品规划](docs/requirements/product-v4.1.md) 和 [补充说明修改清单](docs/requirements/supplement.md) 实现；规划不是全部功能的生产验收证明。安全边界和未交付项见 [安全模型与限制](docs/security-and-limits.md)。
 
 ## Debian 12 一键安装
 
@@ -10,11 +10,11 @@ MSBOOST 自托管控制面板：用户通过网页把 MSBOOST 脚本部署到自
 
 ```sh
 apt-get update && apt-get install -y curl ca-certificates
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.0/install.sh -o /root/msboost-install.sh
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.1/install.sh -o /root/msboost-install.sh
 bash /root/msboost-install.sh
 ```
 
-选择「安装」，输入已解析到该 VPS 的域名及管理员 QQ 邮箱。默认拉取预构建的 `ghcr.io/mozziexwz/node:v0.2.0`；若镜像仓库无法匿名访问，则从同版本 GitHub Release 下载、校验并导入预构建镜像。无需 VPS 安装 Go / Node 或编译源码。缺少 Docker 时使用官方 Debian 仓库安装 Engine 与 Compose 插件；Caddy 自动 HTTPS 需要域名解析正确、TCP 80/443 可达且未被其他服务占用。随机管理员密码保存在 root 私有的 `/opt/msboost/.env`，不输出到安装日志。仅在自己的私有终端查看：
+选择「安装」，输入已解析到该 VPS 的域名及管理员 QQ 邮箱。默认拉取预构建的 `ghcr.io/mozziexwz/node:v0.2.1`；若镜像仓库无法匿名访问，则从同版本 GitHub Release 下载、校验并导入预构建镜像。无需 VPS 安装 Go / Node 或编译源码。缺少 Docker 时使用官方 Debian 仓库安装 Engine 与 Compose 插件；Caddy 自动 HTTPS 需要域名解析正确、TCP 80/443 可达且未被其他服务占用。随机管理员密码保存在 root 私有的 `/opt/msboost/.env`，不输出到安装日志。仅在自己的私有终端查看：
 
 ```sh
 sed -n '/^ADMIN_EMAIL=/p; /^ADMIN_PASSWORD=/p' /opt/msboost/.env
@@ -36,7 +36,7 @@ msboost purge           # 独立的双重确认彻底清理，谨慎执行
 
 v0.1.1 如果安装报 `ghcr.io/mozziexwz/node:12 (bookworm)`，是安装器版本变量污染，**不要彻底清理**。使用 [保留配置的恢复步骤](docs/deployment.md#v011-首次安装报-12-bookworm-的保留配置恢复)，新版本会检查未产生业务数据后继续安装。
 
-既有健康站点可执行 `msboost upgrade --version v0.2.0`。网站升级不会自动更新独立执行机或节点，请按 [Agent 安装与更新](docs/agent-installation.md) 在相应 VPS 更新；新版清理和诊断需要新版执行机。原库损坏时不要强行普通升级，按 [完整灾难恢复](docs/backup-recovery.md) 校验快照并导入新库。旧库、密钥及备份保留，恢复后保持维护并人工对账。
+既有健康站点可执行 `msboost upgrade --version v0.2.1`。网站升级不会自动更新独立执行机或节点，请按 [Agent 安装与更新](docs/agent-installation.md) 在相应 VPS 更新；新版清理和诊断需要新版执行机。原库损坏时不要强行普通升级，按 [完整灾难恢复](docs/backup-recovery.md) 校验快照并导入新库。旧库、密钥及备份保留，恢复后保持维护并人工对账。
 
 ## 组成与职责
 

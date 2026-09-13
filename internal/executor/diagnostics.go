@@ -26,6 +26,9 @@ var diagnostics = map[string]Diagnostic{
 	"missing_dependency":     {"missing_dependency", "dependencies", "必需的系统依赖不可用", "检查 apt 软件源、网络和磁盘空间，再安装缺失的依赖。"},
 	"download_failed":        {"download_failed", "download", "远端下载失败", "检查 VPS 到 GitHub 和软件源的 DNS、HTTPS 网络及代理设置。"},
 	"integrity_failed":       {"integrity_failed", "integrity", "安装资源完整性校验失败", "停止使用该资源，检查下载是否完整并联系管理员核对固定版本校验值。"},
+	"archive_failed":         {"archive_failed", "extract", "安装资源解压失败或归档内容无效", "检查磁盘可用空间及 tar 支持；不要删除 SHA256 校验或执行未验证的资源。"},
+	"binary_unusable":        {"binary_unusable", "binary", "已校验程序无法通过架构或启动检查", "检查程序架构与可执行目录的挂载选项；不要将 /run 改为可执行，也不要跳过资源校验。"},
+	"install_failed":         {"install_failed", "install", "写入受管组件失败", "检查 /usr/local/libexec 的磁盘空间、文件权限和只读挂载；不要覆盖未知或使用中的共享文件。"},
 	"target_unreachable":     {"target_unreachable", "target", "转发目标 TCP 连接失败", "检查目标节点地址、监听端口及节点安全组。"},
 	"service_failed":         {"service_failed", "service", "远端服务启动或监听检查失败", "检查服务监听端口是否被占用，以及 VPS 的 systemd 和资源限制。"},
 	"executor_configuration": {"executor_configuration", "executor", "执行机缺少固定版本下载配置", "请管理员升级执行机，确认当前架构的 GOST 地址和 SHA256 已配置。"},
@@ -50,7 +53,7 @@ func PublicDiagnostic(code, phase string) Diagnostic {
 }
 func ValidPhase(phase string) bool {
 	switch phase {
-	case "queued", "executing", "complete", "fingerprint", "validate", "install", "config", "prepare", "submitted", "submission_unknown", "preflight", "target", "relay", "front", "integrity", "dependencies", "download", "service", "self_test", "execution", "ssh_connect", "ssh_host_key", "ssh_auth", "ssh_handshake", "ssh_session", "executor", "ownership", "cleanup":
+	case "queued", "executing", "complete", "fingerprint", "validate", "install", "config", "prepare", "submitted", "submission_unknown", "preflight", "target", "relay", "front", "integrity", "extract", "binary", "dependencies", "download", "service", "self_test", "execution", "ssh_connect", "ssh_host_key", "ssh_auth", "ssh_handshake", "ssh_session", "executor", "ownership", "cleanup":
 		return true
 	}
 	return false
@@ -78,6 +81,10 @@ func remoteDiagnostic(err error, out []byte, phase string) Diagnostic {
 			code = "missing_dependency"
 		case "service":
 			code = "service_failed"
+		case "extract":
+			code = "archive_failed"
+		case "binary":
+			code = "binary_unusable"
 		}
 	}
 	if _, ok := diagnostics[code]; ok {

@@ -201,9 +201,11 @@ try:
             if not set(os.listdir(conf)).issubset(allowed) or not os.path.isfile(conf+'/config.json'): reject()
             if os.path.exists(conf+'/managed-by') and read(conf+'/managed-by').strip()!='msboost-free-v1': reject()
             validate(unitpath)
-            match=re.search(r'^ExecStart=/usr/local/libexec/msboost-free/gost-([a-f0-9]{64}) -C %d/config$',read(unitpath),re.M)
+            match=re.search(r'^ExecStart=/usr/local/libexec/msboost-free/gost-([a-f0-9]{64}) -C %d/(config(?:\.json)?)$',read(unitpath),re.M)
             if not match: reject()
-            check_unit(unit,unitpath,['Description=MSBOOST customer TCP forwarding','DynamicUser=true','LoadCredential=config:'+conf+'/config.json',match.group(0)])
+            # Accept only the exact legacy pair or exact fixed JSON pair. The
+            # credential ID must equal the filename used by ExecStart.
+            check_unit(unit,unitpath,['Description=MSBOOST customer TCP forwarding','DynamicUser=true','LoadCredential='+match.group(2)+':'+conf+'/config.json',match.group(0)])
             binary='/usr/local/libexec/msboost-free/gost-'+match.group(1)
             validate(binary)
             if not os.path.isfile(binary): reject()

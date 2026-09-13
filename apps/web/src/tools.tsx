@@ -42,7 +42,7 @@ export async function prepareSSH(
   const { _rememberedFingerprint: _unused, ...input } = value;
   if (value.trustMode === "strict") {
     if (!value.fingerprint)
-      throw new Error("请在高级 SSH 设置中检查并核对主机指纹");
+      throw new Error("请展开高级设置，核对这台服务器的身份后再继续。");
     return input;
   }
   const probe = await post("/api/fingerprints", {
@@ -63,7 +63,7 @@ export async function prepareSSH(
       _rememberedFingerprint: previous,
     });
     throw new Error(
-      "SSH 主机指纹发生变化，未提交操作。请从 VPS 控制台核实后，在高级 SSH 设置中明确确认新指纹。",
+      "这台服务器的身份与上次不同，操作已暂停。若刚重装过服务器，请到服务商控制台核对，再在高级设置中确认；没有重装过请先联系服务商。",
     );
   }
   return {
@@ -91,10 +91,12 @@ export function SSHFields({
   value,
   onChange,
   title,
+  showHelp = true,
 }: {
   value: SSH;
   onChange: (s: SSH) => void;
   title: string;
+  showHelp?: boolean;
 }) {
   const [checking, setChecking] = useState(false),
     [observed, setObserved] = useState(""),
@@ -150,11 +152,11 @@ export function SSHFields({
           required
         />
       </div>
-      <Notice>
-        点击提交时会自动检查
-        SSH：首次连接信任并记住主机指纹，后续变化会拦截。首次信任不能代替 VPS
-        控制台独立核对；需要严格核对时展开高级设置。密码仅在实际任务连接时验证。
-      </Notice>
+      {showHelp && (
+        <Notice>
+          填写服务器信息即可，提交时会自动核对服务器身份。首次连接会记住这台服务器，以后身份变化会暂停操作。密码会在连接时验证。
+        </Notice>
+      )}
       <details
         className="mt8"
         open={
@@ -162,9 +164,12 @@ export function SSHFields({
           value._rememberedFingerprint !== value.fingerprint
         }
       >
-        <summary>高级 SSH 设置 / 重新确认主机</summary>
+        <summary>高级设置：核对服务器身份</summary>
+        <p className="muted mt8">
+          “指纹”是服务器的身份标记，不是密码。首次自动记住的身份还未经过服务商确认；需要更严格的检查时，可与服务商控制台提供的指纹核对。重装后指纹可能变化，没有重装却发生变化时请停止操作。
+        </p>
         <Select
-          label="主机信任策略"
+          label="验证方式"
           value={value.trustMode || "tofu"}
           onChange={(e) =>
             onChange({
@@ -175,8 +180,8 @@ export function SSHFields({
             })
           }
         >
-          <option value="tofu">首次信任，后续自动核对</option>
-          <option value="strict">每次手动核对 VPS 控制台指纹</option>
+          <option value="tofu">自动记住服务器，之后自动核对</option>
+          <option value="strict">与服务商控制台的指纹手动核对</option>
         </Select>
         <Button
           disabled={checking || !value.host}
@@ -203,10 +208,10 @@ export function SSHFields({
           }}
         >
           <ShieldCheck size={16} />
-          {checking ? "正在检查…" : "检查 SSH 主机指纹"}
+          {checking ? "正在检查…" : "验证指纹"}
         </Button>
         <p className="muted mt8">
-          指纹探测只读取主机公钥，不验证 SSH 密码；能显示指纹不等于密码正确。
+          这里仅检查服务器身份；密码是否正确，要等实际连接时才能确认。
         </p>
         {observed && (
           <div className="mt16">
@@ -219,7 +224,7 @@ export function SSHFields({
                   fingerprint: e.target.checked ? observed : "",
                 })
               }
-              label="我已与 VPS 控制台提供的主机指纹核对一致"
+              label="我已与服务商控制台提供的指纹核对一致"
             />
           </div>
         )}
@@ -227,7 +232,7 @@ export function SSHFields({
           value._rememberedFingerprint !== (value.fingerprint || observed) && (
             <div className="mt16">
               <Notice tone="red">
-                主机指纹变化。若不是你刚完成的重装或主机更换，请停止操作。
+                服务器身份已变化。若没有重装或更换服务器，请停止操作。
               </Notice>
               <p className="mono">原指纹：{value._rememberedFingerprint}</p>
               <p className="mono">新指纹：{value.fingerprint || observed}</p>
@@ -244,7 +249,7 @@ export function SSHFields({
                       : "",
                   })
                 }
-                label="我已通过 VPS 控制台独立核实新指纹，明确允许替换原主机记录"
+                label="我已在服务商控制台核对新指纹，确认是自己的服务器，允许更新记录"
               />
             </div>
           )}
@@ -313,7 +318,7 @@ const phases: Record<string, string> = {
   queued: "等待执行机",
   executing: "执行中",
   complete: "完成",
-  fingerprint: "主机指纹探测",
+  fingerprint: "验证指纹",
   validate: "参数校验",
   install: "安装",
   config: "配置交付",
@@ -325,6 +330,8 @@ const phases: Record<string, string> = {
   relay: "中转部署",
   front: "前置机部署",
   integrity: "完整性校验",
+  extract: "资源解压",
+  binary: "程序架构 / 启动验证",
   dependencies: "系统依赖",
   download: "资源下载",
   service: "服务启动",
@@ -440,7 +447,7 @@ export function TaskDetail({
         <strong>{current.host}</strong>
       </div>
       <p className="mt16">
-        {current.message || current.phase || "等待执行机接收任务"}
+        {current.message || phases[current.phase] || "等待执行机接收任务"}
       </p>
       <div className="kv">
         <span>执行阶段</span>
@@ -632,191 +639,199 @@ export function ToolPage({
         <Notice>该功能当前由管理员关闭，已有任务仍可查看。</Notice>
       ) : (
         <div className="tool-layout">
-          <div className="card">
-            {q && (
-              <div className="quota">
-                <span>
-                  每 <b>{q.minutes} 分钟</b>最多 <b>{q.count} 次</b> · 剩余{" "}
-                  <b>{q.remaining} 次</b>
-                </span>
-                <small>
-                  {q.remaining ? "当前可操作" : `下次可用：${date(q.nextAt)}`} ·
-                  失败操作也计次
-                </small>
-              </div>
-            )}
-            <form onSubmit={submit}>
-              {kind === "relay" && (
-                <>
-                  <div className="step-label">
-                    <b>1</b>上传节点配置
-                  </div>
-                  <ConfigUpload onLoad={setConfig} />
-                  <div className="step-label">
-                    <b>2</b>填写中转服务器
-                  </div>
-                </>
+          <div>
+            <div className="card">
+              {q && (
+                <div className="quota">
+                  <span>
+                    每 <b>{q.minutes} 分钟</b>最多 <b>{q.count} 次</b> · 剩余{" "}
+                    <b>{q.remaining} 次</b>
+                  </span>
+                  <small>
+                    {q.remaining ? "当前可操作" : `下次可用：${date(q.nextAt)}`}{" "}
+                    · 失败操作也计次
+                  </small>
+                </div>
               )}
-              <SSHFields
-                title={kind === "relay" ? "中转服务器地址" : "服务器 IP 地址"}
-                value={ssh}
-                onChange={setSSH}
-              />
-              {kind === "deploy" && (
-                <>
-                  <fieldset className="fieldset">
-                    <legend>执行策略</legend>
-                    <div className="radio-cards">
-                      {[
-                        [
-                          "fresh",
-                          "全新安装",
-                          "重新部署受管的 MSBOOST 组件，不重装操作系统。",
-                        ],
-                        [
-                          "repair",
-                          "安全升级 / 修复",
-                          "优先保留已有认证与端口，失败可回滚受管变更。",
-                        ],
-                      ].map(([v, t, d]) => (
-                        <label className="radio-card" key={v}>
-                          <input
-                            type="radio"
-                            checked={mode === v}
-                            onChange={() => setMode(v)}
+              <form onSubmit={submit}>
+                {kind === "relay" && (
+                  <>
+                    <div className="step-label">
+                      <b>1</b>上传节点配置
+                    </div>
+                    <ConfigUpload onLoad={setConfig} />
+                    <div className="step-label">
+                      <b>2</b>填写中转服务器
+                    </div>
+                  </>
+                )}
+                <SSHFields
+                  title={kind === "relay" ? "中转服务器地址" : "服务器 IP 地址"}
+                  value={ssh}
+                  onChange={setSSH}
+                />
+                {kind === "deploy" && (
+                  <>
+                    <fieldset className="fieldset">
+                      <legend>执行策略</legend>
+                      <div className="radio-cards">
+                        {[
+                          [
+                            "fresh",
+                            "全新安装",
+                            "重新部署受管的 MSBOOST 组件，不重装操作系统。",
+                          ],
+                          [
+                            "repair",
+                            "安全升级 / 修复",
+                            "优先保留已有认证与端口，失败可回滚受管变更。",
+                          ],
+                        ].map(([v, t, d]) => (
+                          <label className="radio-card" key={v}>
+                            <input
+                              type="radio"
+                              checked={mode === v}
+                              onChange={() => setMode(v)}
+                            />
+                            <span>
+                              <strong>{t}</strong>
+                              <small>{d}</small>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                    <Notice tone="orange">
+                      本功能仅限游戏用途，禁止用于翻墙、公共代理、违法活动或其他与游戏无关的用途。(MSBOOST
+                      将屏蔽部分网站)
+                    </Notice>
+                  </>
+                )}
+                {kind === "relay" && (
+                  <>
+                    <Field
+                      label="配置备注"
+                      placeholder="例如：东京中转（将用于配置名称和文件名）"
+                      value={remark}
+                      maxLength={60}
+                      onChange={(e) => setRemark(e.target.value)}
+                    />
+                    <Check
+                      checked={useFront}
+                      onChange={(e) => setUseFront(e.target.checked)}
+                      label="使用自备前置机"
+                    />
+                    {useFront && (
+                      <div className="mt16">
+                        <Notice tone="orange">
+                          前置机 → 自备中转机 → MSBOOST
+                          节点。请同时填写两台服务器信息。
+                        </Notice>
+                        <div className="mt16">
+                          <SSHFields
+                            title="前置机 IP 地址"
+                            value={front}
+                            onChange={setFront}
                           />
-                          <span>
-                            <strong>{t}</strong>
-                            <small>{d}</small>
-                          </span>
-                        </label>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flow">
+                      {[
+                        "客户电脑",
+                        ...(useFront ? ["自备前置机"] : []),
+                        "自备中转机",
+                        "MSBOOST 节点",
+                      ].map((x, i) => (
+                        <span className="flex" key={x}>
+                          {i > 0 && <ArrowRight size={13} />}
+                          <span className="flow-node">{x}</span>
+                        </span>
                       ))}
                     </div>
-                  </fieldset>
-                  <Notice tone="orange">
-                    本功能仅限游戏用途，禁止用于翻墙、公共代理、违法活动或其他与游戏无关的用途。(MSBOOST
-                    将屏蔽部分网站)
-                  </Notice>
-                </>
-              )}
-              {kind === "relay" && (
-                <>
-                  <Field
-                    label="配置备注"
-                    placeholder="例如：东京中转（将用于配置名称和文件名）"
-                    value={remark}
-                    maxLength={60}
-                    onChange={(e) => setRemark(e.target.value)}
-                  />
-                  <Check
-                    checked={useFront}
-                    onChange={(e) => setUseFront(e.target.checked)}
-                    label="使用自备前置机"
-                  />
-                  {useFront && (
-                    <div className="mt16">
-                      <Notice tone="orange">
-                        前置机 → 自备中转机 → MSBOOST
-                        节点。请同时填写两台服务器信息。
-                      </Notice>
-                      <div className="mt16">
-                        <SSHFields
-                          title="前置机 IP 地址"
-                          value={front}
-                          onChange={setFront}
-                        />
+                    <Notice>
+                      入口使用实际转发服务器的 IP；监听端口随机分配，每端口固定
+                      5 Mbps。
+                    </Notice>
+                  </>
+                )}
+                {kind === "dd" && (
+                  <>
+                    <fieldset className="fieldset">
+                      <legend>重装参数</legend>
+                      <div className="form-grid">
+                        <Field label="重装系统" value="Debian 12" disabled />
+                        <Select
+                          label="重装后 SSH 端口"
+                          value={portMode}
+                          onChange={(e) => setPortMode(e.target.value)}
+                        >
+                          <option value="keep">保持不变</option>
+                          <option value="new">输入新端口</option>
+                        </Select>
+                        {portMode === "new" && (
+                          <Field
+                            label="新 SSH 端口"
+                            type="number"
+                            min={1}
+                            max={65535}
+                            value={newPort}
+                            onChange={(e) => setNewPort(e.target.value)}
+                            required
+                          />
+                        )}
+                        <Select
+                          label="重装密码策略"
+                          value={passwordMode}
+                          onChange={(e) => setPasswordMode(e.target.value)}
+                        >
+                          <option value="keep">保持不变</option>
+                          <option value="new">输入新密码</option>
+                        </Select>
+                        {passwordMode === "new" && (
+                          <Field
+                            label="新 root 密码"
+                            type="password"
+                            value={newPassword}
+                            onChange={(e) => setNewPassword(e.target.value)}
+                            required
+                          />
+                        )}
                       </div>
-                    </div>
-                  )}
-                  <div className="flow">
-                    {[
-                      "客户电脑",
-                      ...(useFront ? ["自备前置机"] : []),
-                      "自备中转机",
-                      "MSBOOST 节点",
-                    ].map((x, i) => (
-                      <span className="flex" key={x}>
-                        {i > 0 && <ArrowRight size={13} />}
-                        <span className="flow-node">{x}</span>
-                      </span>
-                    ))}
-                  </div>
-                  <Notice>
-                    入口使用实际转发服务器的 IP；监听端口随机分配，每端口固定 5
-                    Mbps。
-                  </Notice>
-                </>
-              )}
-              {kind === "dd" && (
-                <>
-                  <fieldset className="fieldset">
-                    <legend>重装参数</legend>
-                    <div className="form-grid">
-                      <Field label="重装系统" value="Debian 12" disabled />
-                      <Select
-                        label="重装后 SSH 端口"
-                        value={portMode}
-                        onChange={(e) => setPortMode(e.target.value)}
-                      >
-                        <option value="keep">保持不变</option>
-                        <option value="new">输入新端口</option>
-                      </Select>
-                      {portMode === "new" && (
-                        <Field
-                          label="新 SSH 端口"
-                          type="number"
-                          min={1}
-                          max={65535}
-                          value={newPort}
-                          onChange={(e) => setNewPort(e.target.value)}
-                          required
-                        />
-                      )}
-                      <Select
-                        label="重装密码策略"
-                        value={passwordMode}
-                        onChange={(e) => setPasswordMode(e.target.value)}
-                      >
-                        <option value="keep">保持不变</option>
-                        <option value="new">输入新密码</option>
-                      </Select>
-                      {passwordMode === "new" && (
-                        <Field
-                          label="新 root 密码"
-                          type="password"
-                          value={newPassword}
-                          onChange={(e) => setNewPassword(e.target.value)}
-                          required
-                        />
-                      )}
-                    </div>
-                  </fieldset>
-                  <Notice tone="red">
-                    <strong>DD 会清除服务器原有系统和数据。</strong>
-                    请先备份。操作提交后请等待15分钟以上，再执行部署 MSBOOST。
-                  </Notice>
-                  <Check
-                    checked={erase}
-                    onChange={(e) => setErase(e.target.checked)}
-                    required
-                    label="我已备份重要数据，并理解重装会清除原系统和数据"
-                  />
-                </>
-              )}
-              <ErrorNotice error={error} />
-              <div className="form-actions">
-                <Button type="submit" primary disabled={busy}>
-                  {busy
-                    ? "正在提交…"
-                    : kind === "deploy"
-                      ? "开始部署"
-                      : kind === "relay"
-                        ? "配置转发"
-                        : "执行 DD"}
-                  <ArrowRight size={15} />
-                </Button>
-              </div>
-            </form>
+                    </fieldset>
+                    <Notice tone="red">
+                      <strong>DD 会清除服务器原有系统和数据。</strong>
+                      请先备份。操作提交后请等待15分钟以上，再执行部署 MSBOOST。
+                    </Notice>
+                    <Check
+                      checked={erase}
+                      onChange={(e) => setErase(e.target.checked)}
+                      required
+                      label="我已备份重要数据，并理解重装会清除原系统和数据"
+                    />
+                  </>
+                )}
+                <ErrorNotice error={error} />
+                <div className="form-actions">
+                  <Button type="submit" primary disabled={busy}>
+                    {busy
+                      ? "正在提交…"
+                      : kind === "deploy"
+                        ? "开始部署"
+                        : kind === "relay"
+                          ? "配置转发"
+                          : "执行 DD"}
+                    <ArrowRight size={15} />
+                  </Button>
+                </div>
+              </form>
+            </div>
+            {["deploy", "relay"].includes(kind) && (
+              <CleanupPanel
+                scope={kind === "deploy" ? "msboost" : "relay"}
+                user={user}
+              />
+            )}
           </div>
           <aside className="stack" style={{ alignContent: "start" }}>
             <div className="card">
@@ -842,14 +857,6 @@ export function ToolPage({
           </aside>
         </div>
       )}
-      {!gate &&
-        settings[kind] !== false &&
-        ["deploy", "relay"].includes(kind) && (
-          <CleanupPanel
-            scope={kind === "deploy" ? "msboost" : "relay"}
-            user={user}
-          />
-        )}
       {task && (
         <TaskDetail
           task={task}
@@ -871,9 +878,15 @@ function CleanupPanel({
   const [ssh, setSSH] = useState(newSSH),
     [preview, setPreview] = useState<RecordData | null>(null),
     [task, setTask] = useState<RecordData | null>(null),
-    [confirmation, setConfirmation] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const checking =
+    busy || (!!preview && ["queued", "running"].includes(preview.state));
+  const ready =
+    preview?.state === "succeeded" &&
+    !!preview.cleanup?.digest &&
+    Array.isArray(preview.cleanup?.items) &&
+    preview.cleanup.items.length > 0;
   useEffect(() => {
     if (!preview || !["queued", "running"].includes(preview.state)) return;
     let alive = true;
@@ -894,8 +907,11 @@ function CleanupPanel({
     };
   }, [preview?.id, preview?.state]);
   async function submit(remove: boolean) {
-    if (busy) return;
-    if (remove && (confirmation !== "确认清理" || !preview?.cleanup)) return;
+    if (checking || (remove && !ready)) return;
+    const checkedPreview = preview;
+    // A final click consumes this UI confirmation, including an uncertain HTTP
+    // result. The server still enforces its single-use token, digest and host.
+    setPreview(null);
     setBusy(true);
     setError("");
     try {
@@ -909,8 +925,8 @@ function CleanupPanel({
             scope,
             ...(remove
               ? {
-                  previewId: preview!.id,
-                  digest: preview!.cleanup.digest,
+                  previewId: checkedPreview!.id,
+                  digest: checkedPreview!.cleanup.digest,
                   confirm: true,
                 }
               : { confirm: false }),
@@ -920,11 +936,9 @@ function CleanupPanel({
         { "Idempotency-Key": requestID() },
       );
       if (remove) {
-        setTask(result);
-        setPreview(null);
+        setTask(result.task || result);
         setSSH(newSSH());
-      } else setPreview(result);
-      setConfirmation("");
+      } else setPreview(result.task || result);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -932,16 +946,9 @@ function CleanupPanel({
     }
   }
   return (
-    <details className="card mt24">
-      <summary>
-        {scope === "msboost"
-          ? "清理 VPS 上的 MSBOOST"
-          : "清理 VPS 上本项目创建的全部自备转发"}
-      </summary>
-      <Notice tone="red">
-        清理会停止相关服务并删除清单内配置。先预览、不删除；再次输入“确认清理”才提交一次性清理任务。不会卸载本网站、Docker、第三方
-        GOST 或重置全局防火墙。备份、系统账户、依赖和共享二进制缓存保留。
-      </Notice>
+    <details className="card mt24" data-testid="cleanup-panel">
+      <summary>{scope === "msboost" ? "卸载 MSBOOST" : "清理自备转发"}</summary>
+      <Notice tone="red">清理会停止相关服务并删除清单内配置。</Notice>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -949,70 +956,47 @@ function CleanupPanel({
         }}
       >
         <fieldset
-          className="fieldset mt16"
-          disabled={
-            busy || (!!preview && ["queued", "running"].includes(preview.state))
-          }
+          style={{ border: 0, padding: 0, margin: "16px 0 0", minWidth: 0 }}
+          disabled={checking}
         >
           <SSHFields
-            title="需要清理的 VPS 公网 IP"
+            title="服务器 IP 地址"
+            showHelp={false}
             value={ssh}
             onChange={(next) => {
               setSSH(next);
               setPreview(null);
-              setConfirmation("");
+              setError("");
             }}
           />
-          <Button type="submit" className="mt16" disabled={busy}>
-            只预览清理范围
-          </Button>
+          {!ready && (
+            <Button type="submit" className="mt16" disabled={checking}>
+              {checking ? "正在检查…" : "继续"}
+            </Button>
+          )}
         </fieldset>
       </form>
-      {preview && (
-        <div className="mt16">
-          <Badge>{states[preview.state] || preview.state}</Badge>
-          <p>{preview.message}</p>
-          {preview.nextStep && <Notice>{preview.nextStep}</Notice>}
-          {preview.state === "succeeded" && preview.cleanup && (
-            <>
-              <Table
-                headers={["将删除的对象", "类型"]}
-                rows={preview.cleanup.items.map((item: RecordData) => [
-                  item.path,
-                  item.kind === "firewall"
-                    ? "本项目防火墙规则"
-                    : item.kind === "directory"
-                      ? "目录"
-                      : "文件",
-                ])}
-              />
-              {!preview.cleanup.items.length ? (
-                <Notice>未发现符合所有权校验的受管组件，无需清理。</Notice>
-              ) : (
-                <>
-                  <Notice tone="orange">
-                    预览有效期 10
-                    分钟。执行时会重新检查主机指纹、文件摘要和服务所有权；范围变化即中止。自备前置与中转位于不同
-                    VPS 时，需分别预览和清理。
-                  </Notice>
-                  <Field
-                    label="二次确认"
-                    placeholder="输入：确认清理"
-                    value={confirmation}
-                    onChange={(e) => setConfirmation(e.target.value)}
-                  />
-                  <Button
-                    disabled={busy || confirmation !== "确认清理"}
-                    onClick={() => submit(true)}
-                  >
-                    确认停止服务并清理清单
-                  </Button>
-                </>
-              )}
-            </>
-          )}
-        </div>
+      {ready && (
+        <Button
+          className="mt16 danger"
+          disabled={checking}
+          onClick={() => void submit(true)}
+        >
+          确认删除
+        </Button>
       )}
+      {preview?.state === "succeeded" &&
+        preview.cleanup?.items?.length === 0 && (
+          <p className="muted mt16">未发现需要卸载的组件。</p>
+        )}
+      {preview &&
+        ["failed", "unknown", "interrupted"].includes(preview.state) && (
+          <ErrorNotice
+            error={[preview.message, preview.nextStep]
+              .filter(Boolean)
+              .join(" ")}
+          />
+        )}
       <ErrorNotice error={error} />
       {task && (
         <TaskDetail task={task} owner={user.id} onClose={() => setTask(null)} />
@@ -1066,8 +1050,9 @@ export function TasksPage({ user }: { user: RecordData }) {
                   deploy: "部署 MSBOOST",
                   relay: "自备中转",
                   dd: "DD 系统",
-                  "cleanup-preview": "清理范围预览",
-                  cleanup: "清理受管组件",
+                  fingerprint: "验证指纹",
+                  "cleanup-preview": "卸载检查",
+                  cleanup: "卸载组件",
                 } as Record<string, string>
               )[t.kind] || t.kind}
               <small>{date(t.createdAt)}</small>
@@ -1082,7 +1067,7 @@ export function TasksPage({ user }: { user: RecordData }) {
             >
               {states[t.state] || t.state}
             </Badge>,
-            ["dd", "cleanup", "cleanup-preview"].includes(t.kind)
+            ["dd", "fingerprint", "cleanup", "cleanup-preview"].includes(t.kind)
               ? "不生成配置"
               : files[t.id]
                 ? "已存当前浏览器"

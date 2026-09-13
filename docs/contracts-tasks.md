@@ -1,4 +1,4 @@
-# 任务与执行机 API（v0.2.0）
+# 任务与执行机 API（v0.2.1）
 
 浏览器使用会话 Cookie，写请求需要 `X-CSRF-Token`。JSON 使用 camelCase，响应不缓存，错误为 `{ "error": "中文说明" }`。SSH 密码、免费配置和执行信封仅短期保存在内存，任务审计不存密码或原始远端日志。
 
@@ -53,7 +53,7 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 
 `scope` 仅允许 `msboost`、`relay`。成功 Task 携带 `cleanup:{scope,digest,items:[{path,kind}],removed:false}`；`digest` 为 64 位小写 SHA256，`kind` 为 `file`、`directory` 或 `firewall`。预览会创建/获取互斥锁文件，但不停止服务、删除组件或修改防火墙；缺少 Python 3 时明确失败，不为预览自动安装依赖。未发现受管内容可返回空清单。
 
-用户核对清单，在 UI 输入“确认清理”后以新幂等键提交：
+UI 折叠入口为“卸载 MSBOOST”或“卸载自备中转”。点击“继续”先自动核对主机并生成后台预览，不删除内容；成功后显示“确认删除”按钮，点击后以新幂等键提交。界面不再展示内部路径清单或要求手输确认词；修改 SSH 信息会作废当前预览，必须重新检查。后台仍执行全部范围、摘要与一次性授权校验：
 
 ```json
 {
@@ -84,13 +84,16 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 | `task_timeout` / `executor_offline` | 执行超时/连接中断，或执行机响应中断 |
 | `unsupported_system` / `missing_dependency` | 系统/架构不支持，或依赖不可用 |
 | `download_failed` / `integrity_failed` | 下载或资源完整性校验失败 |
+| `archive_failed` / `binary_unusable` / `install_failed` | 解压失败、已校验程序架构/启动检查失败、受管组件写入失败 |
 | `target_unreachable` / `service_failed` | 目标 TCP 不可达，或服务启动/监听检查失败 |
 | `executor_configuration` | 缺少固定版本 GOST 资源配置 |
 | `ownership_failed` / `cleanup_changed` / `cleanup_failed` | 所有权不符、范围变化、清理未全部完成 |
 | `invalid_config` / `invalid_request` | 配置或任务参数无效 |
 | `execution_failed` | 仅确定远端步骤失败，证据不足以进一步归因 |
 
-主要阶段为 `ssh_connect,ssh_host_key,ssh_auth,ssh_handshake,ssh_session,preflight,dependencies,download,integrity,install,service,config,target,relay,front,prepare,submission_unknown,ownership,cleanup,execution,executor`，UI 显示中文。CPU 上升、能探测到指纹等现象不能单独证明任务失败原因。
+主要阶段为 `ssh_connect,ssh_host_key,ssh_auth,ssh_handshake,ssh_session,preflight,dependencies,download,integrity,extract,binary,install,service,config,target,relay,front,prepare,submission_unknown,ownership,cleanup,execution,executor`，UI 显示中文。CPU 上升、能探测到指纹等现象不能单独证明任务失败原因。
+
+GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/libexec/msboost-free` 磁盘目录暂存、校验和原子发布；不在 Debian 默认可能挂载为 `noexec` 的 `/run` 中执行 ELF，也不修改挂载安全选项。已有共享缓存程序只核验、不覆盖。DD 使用仓库固定版本的 `bin456789/reinstall` 脚本，显式传入 `--username root`、密码与 SSH 端口，关闭其标准输入以避免交互提示吞掉外层执行指令。
 
 ## 执行机管理
 
@@ -106,7 +109,7 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 
 执行机以 `msboost-agent --capability executor` 运行，配置 `MSBOOST_SERVER_URL`、`MSBOOST_EXECUTOR_TOKEN` 和两架构的 `GOST_*_URL` / `GOST_*_SHA256`。控制面要求 HTTPS，仅 loopback 开发允许 HTTP。GOST 使用固定官方 `go-gost/gost` Release，不使用 `latest`。远端免费中转要求 root SSH、systemd 247+ / `LoadCredential`；安装可在 Debian/Ubuntu 补齐 Python 3、curl、tar，其他系统需预先准备。清理预览不安装依赖。
 
-网站升级不会自动更新独立 Agent。v0.2.0 新诊断与清理需要新版执行机，参见 [Agent 安装与升级](agent-installation.md)。
+网站升级不会自动更新独立 Agent。v0.2.1 新诊断与清理需要新版执行机，参见 [Agent 安装与升级](agent-installation.md)。
 
 ## 内部付费前置适配
 

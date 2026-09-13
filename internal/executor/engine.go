@@ -163,7 +163,10 @@ func (e *Engine) dd(ctx context.Context, job Job, r Result) Result {
 		port = opts.NewPort
 	}
 	script := prepareAsset(job.Script) + encodedAssignment("new_password", p) + encodedAssignment("new_port", strconv.Itoa(port))
-	script += "msboost_phase=prepare\nbash \"$work/installer.sh\" debian 12 --password \"$new_password\" --ssh-port \"$new_port\" >\"$work/private.log\" 2>&1\nprintf 'MSBOOST_PREPARED=1\\n'\n"
+	// The pinned upstream prompts for a username even when password is supplied.
+	// Supply it explicitly and detach stdin so an unexpected prompt cannot read
+	// the remaining outer bash script (including the preparation success marker).
+	script += "msboost_phase=prepare\nbash \"$work/installer.sh\" debian 12 --username root --password \"$new_password\" --ssh-port \"$new_port\" </dev/null >\"$work/private.log\" 2>&1\nprintf 'MSBOOST_PREPARED=1\\n'\n"
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	if err != nil || marker(out, "MSBOOST_PREPARED") != "1" {
 		return failRemote(r, "prepare", out, err)

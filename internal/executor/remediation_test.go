@@ -125,7 +125,7 @@ func TestCleanupPythonIsolatedInventoryAndMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"preview", "cleanup", "changed", "unknown", "symlink", "dropin", "stop-hook", "continued-hook", "propagated-stop", "also-unit", "failure-trigger", "new-section"} {
+	for _, scenario := range []string{"preview", "cleanup", "legacy-cleanup", "credential-mismatch-load", "credential-mismatch-exec", "credential-other-name", "changed", "unknown", "symlink", "dropin", "stop-hook", "continued-hook", "propagated-stop", "also-unit", "failure-trigger", "new-section"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			write := func(path, data string) {
@@ -141,7 +141,12 @@ func TestCleanupPythonIsolatedInventoryAndMutation(t *testing.T) {
 			unit := "etc/systemd/system/msboost-free-task1.service"
 			write(conf+"/config.json", `{"services":[{"name":"msboost-free","addr":":30001"}]}`)
 			write(conf+"/ufw-owned", "30001\n")
-			write(unit, cleanupUnitFixture(t, root, "relay"))
+			unitText := cleanupUnitFixture(t, root, "relay")
+			if scenario == "legacy-cleanup" {
+				unitText = strings.Replace(unitText, "LoadCredential=config.json:", "LoadCredential=config:", 1)
+				unitText = strings.Replace(unitText, "-C %d/config.json", "-C %d/config", 1)
+			}
+			write(unit, unitText)
 			write("usr/local/libexec/msboost-free/gost-"+strings.Repeat("a", 64), "fixture binary")
 			write("usr/local/bin/gost", "unrelated third party")
 			write("run/placeholder", "")
@@ -183,6 +188,18 @@ subprocess.run=fake_run
 				return
 			}
 			switch scenario {
+			case "credential-mismatch-load", "credential-mismatch-exec", "credential-other-name":
+				text := unitText
+				switch scenario {
+				case "credential-mismatch-load":
+					text = strings.Replace(text, "LoadCredential=config.json:", "LoadCredential=config:", 1)
+				case "credential-mismatch-exec":
+					text = strings.Replace(text, "-C %d/config.json", "-C %d/config", 1)
+				case "credential-other-name":
+					text = strings.Replace(text, "LoadCredential=config.json:", "LoadCredential=other.json:", 1)
+					text = strings.Replace(text, "-C %d/config.json", "-C %d/other.json", 1)
+				}
+				write(unit, text)
 			case "changed":
 				write(conf+"/config.json", `{"services":[{"name":"msboost-free","addr":":30002"}]}`)
 				write(conf+"/ufw-owned", "30002\n")
@@ -216,7 +233,7 @@ subprocess.run=fake_run
 				write(unit, text)
 			}
 			out, err = run("cleanup", report.Digest)
-			if scenario == "cleanup" {
+			if scenario == "cleanup" || scenario == "legacy-cleanup" {
 				if err != nil {
 					t.Fatalf("cleanup: %s %v", out, err)
 				}
@@ -229,6 +246,9 @@ subprocess.run=fake_run
 			} else {
 				if err == nil {
 					t.Fatalf("unsafe %s accepted: %s", scenario, out)
+				}
+				if strings.HasPrefix(scenario, "credential-") && marker(out, "MSBOOST_ERROR_CODE") != "ownership_failed" {
+					t.Fatalf("mismatched credential pair must fail full ownership check: %s", out)
 				}
 				if _, err := os.Stat(filepath.Join(root, unit)); err != nil {
 					t.Fatal("rejected cleanup mutated files")

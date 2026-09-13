@@ -554,7 +554,7 @@ func (a *App) overview(w http.ResponseWriter, r *http.Request) {
 		out["routes"] = len(s.Docs["routes"])
 		out["orders"] = len(s.Docs["orders"])
 		out["tickets"] = len(s.Docs["tickets"])
-		out["version"] = "0.2.0-dev"
+		out["version"] = "0.2.1-dev"
 		out["database"] = "transactional"
 		return nil
 	})
