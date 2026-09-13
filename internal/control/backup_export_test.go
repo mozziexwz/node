@@ -68,7 +68,7 @@ func TestBackupExportPostgresReadOnlyIntegration(t *testing.T) {
 	if admin == "" {
 		t.Skip("isolated PostgreSQL integration URL not set")
 	}
-	name := "msboost_restore_export_" + strings.ReplaceAll(ID(), "-", "")[:16]
+	name := "msboost_restore_export_" + hex.EncodeToString([]byte(ID()[:10]))
 	target, err := createRecoveryPostgres(admin, name)
 	if err != nil {
 		t.Fatal(err)

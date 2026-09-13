@@ -12,7 +12,7 @@ import (
 
 func TestDisasterCLIConfigStdinAndPublicGetWhitelist(t *testing.T) {
 	fixture := newRemoteFixture(t)
-	parent, local := t.TempDir(), filepath.Join(t.TempDir(), "backups")
+	parent, local := testPrivateDirectory(t), filepath.Join(testPrivateDirectory(t), "backups")
 	file := filepath.Join(parent, "disaster.json")
 	args := []string{"config-save", "--file", file, "--local-dir", local, "--retention-days", "45", "--time", "03:45", "--remote-host", "8.8.8.8", "--remote-port", "22", "--remote-user", "root", "--remote-dir", "/remote/backups", "--fingerprint", fixture.fingerprint}
 	var output bytes.Buffer
@@ -71,8 +71,8 @@ func TestDisasterCLIConfigStdinAndPublicGetWhitelist(t *testing.T) {
 }
 
 func TestDisasterCLIRejectsSecretArgumentsAndOversizedStdin(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "disaster.json")
-	local := filepath.Join(t.TempDir(), "backups")
+	file := filepath.Join(testPrivateDirectory(t), "disaster.json")
+	local := filepath.Join(testPrivateDirectory(t), "backups")
 	for _, args := range [][]string{{"config-save", "--password", remoteFixturePassword}, {"config-save", "--retention-days", remoteFixturePassword}, {"config-get", "--field", remoteFixturePassword}, {"unknown", remoteFixturePassword}, {"prepare-dir", "--dir", local, remoteFixturePassword}} {
 		var out bytes.Buffer
 		err := Run(args, strings.NewReader(remoteFixturePassword), &out)
@@ -105,7 +105,7 @@ func TestDisasterCLIArchiveDispatchAndNoOverwrite(t *testing.T) {
 	if bytes.Contains(output.Bytes(), []byte("private isolated fixture")) {
 		t.Fatal("verify leaked archive contents")
 	}
-	destination := filepath.Join(t.TempDir(), "recovered")
+	destination := filepath.Join(testPrivateDirectory(t), "recovered")
 	output.Reset()
 	if err := Run([]string{"unpack", "--archive", archive, "--dir", destination}, nil, &output); err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestDisasterCLIArchiveDispatchAndNoOverwrite(t *testing.T) {
 	if err := Run([]string{"validate-volume", "--archive", filepath.Join(destination, "app_data.tar")}, nil, &output); err != nil {
 		t.Fatal(err)
 	}
-	if err := Run([]string{"prepare-dir", "--dir", filepath.Join(t.TempDir(), "new")}, nil, &output); err != nil {
+	if err := Run([]string{"prepare-dir", "--dir", filepath.Join(testPrivateDirectory(t), "new")}, nil, &output); err != nil {
 		t.Fatal(err)
 	}
 	if err := Run([]string{"prepare-dir", "--dir", "."}, nil, &output); err == nil {

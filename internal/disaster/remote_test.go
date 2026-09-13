@@ -330,7 +330,7 @@ func (f *remoteFixture) connect(t *testing.T) *sftp.Client {
 }
 func remoteBundleFixture(t *testing.T) string {
 	t.Helper()
-	source, dir := t.TempDir(), t.TempDir()
+	source, dir := testPrivateDirectory(t), testPrivateDirectory(t)
 	var raw bytes.Buffer
 	tw := tar.NewWriter(&raw)
 	if err := tw.WriteHeader(&tar.Header{Name: "fixture.txt", Mode: 0600, Size: 7, Typeflag: tar.TypeReg}); err != nil {
@@ -356,7 +356,7 @@ func remoteBundleFixture(t *testing.T) string {
 func remoteTestConfig(t *testing.T, f *remoteFixture) Config {
 	t.Helper()
 	c := DefaultConfig()
-	c.LocalDir = t.TempDir()
+	c.LocalDir = testPrivateDirectory(t)
 	c.RemoteHost = "8.8.8.8"
 	c.RemotePort = 22
 	c.RemoteUser = "root"
@@ -570,7 +570,7 @@ func remoteAgedBundle(t *testing.T, index, days int) string {
 	if tw.Close() != nil || writer.Close() != nil {
 		t.Fatal("aged bundle fixture close")
 	}
-	name := filepath.Join(t.TempDir(), fmt.Sprintf("msboost-disaster-20260913T010203Z-%016x.tar.gz", index))
+	name := filepath.Join(testPrivateDirectory(t), fmt.Sprintf("msboost-disaster-20260913T010203Z-%016x.tar.gz", index))
 	if err := os.WriteFile(name, raw.Bytes(), 0600); err != nil {
 		t.Fatal(err)
 	}
