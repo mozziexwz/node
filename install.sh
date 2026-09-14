@@ -15,20 +15,28 @@ bootstrap_help() {
     '  bash install.sh upgrade [--version v0.2.3]' \
     '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  bash install.sh repair|status|logs|uninstall|purge' \
+    '  bash install.sh admin-password        本机交互修改已有管理员密码（不停止服务）' \
+    '  bash install.sh backup-reconcile      核对异常网页备份（不停止服务，不解锁整站门禁）' \
+    '  bash install.sh relay-recovery        受保护中转恢复 / TLS 维护（私有文件交互）' \
     '  bash install.sh disaster-backup|disaster-config|disaster-disable' \
+    '  bash install.sh disaster-backup-maintenance  单次手动维护备份（终端确认旧链路可能中断）' \
     '  bash install.sh disaster-restore --archive /root/msboost-backup/整站备份.tar.gz [--version vX.Y.Z]' \
     '默认拉取预构建镜像；只有显式 --build 才在服务器编译源码。' \
     'uninstall 卸载但保留数据；purge 为独立彻底清理，需要两次交互确认。'
 }
 
 bootstrap_menu() {
-  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 一键整站灾难备份' '  9) 设置整站备份目录 / 远程密码 / 每日计划' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  0) 退出' >&2
+  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 一键整站灾难备份' '  9) 设置整站备份目录 / 远程密码 / 每日计划' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  12) 修改已有管理员密码（仅本机 root）' '  13) 核对异常网页备份（不停止服务）' '  14) 手动维护备份（确认旧链路可能中断）' '  15) 中转恢复 / TLS 维护（受保护私有文件）' '  0) 退出' >&2
   local choice
   read -r -p '请选择: ' choice </dev/tty
   case "$choice" in
     1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;;
     5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 0) printf exit ;;
     8) printf disaster-backup ;; 9) printf disaster-config ;; 10) printf disaster-restore ;; 11) printf disaster-disable ;;
+    12) printf admin-password ;;
+    13) printf backup-reconcile ;;
+    14) printf disaster-backup-maintenance ;;
+    15) printf relay-recovery ;;
     *) printf '%s\n' '无效选择' >&2; return 1 ;;
   esac
 }
@@ -43,7 +51,13 @@ bootstrap_main() {
   elif [[ $1 != --* ]]; then action=$1; shift
   fi
   [[ $action != exit ]] || return 0
-  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-config|disaster-disable|disaster-restore) ;; *) bootstrap_help; return 2 ;; esac
+  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-backup-maintenance|disaster-config|disaster-disable|disaster-restore|admin-password|backup-reconcile|relay-recovery) ;; *) bootstrap_help; return 2 ;; esac
+  # Reject all arguments before parsing or echoing them: a password accidentally
+  # supplied as an option must never be reflected into deployment diagnostics.
+  if [[ $action == admin-password && $# != 0 ]]; then printf '%s\n' 'admin-password 不接受参数；邮箱和密码只能从本机终端输入。' >&2; return 2; fi
+  if [[ $action == backup-reconcile && $# != 0 ]]; then printf '%s\n' 'backup-reconcile 不接受参数，只能从本机终端确认具体备份记录。' >&2; return 2; fi
+  if [[ $action == disaster-backup-maintenance && $# != 0 ]]; then printf '%s\n' '手动维护备份不接受参数、自动确认或强制选项。' >&2; return 2; fi
+  if [[ $action == relay-recovery && $# != 0 ]]; then printf '%s\n' 'relay-recovery 不接受参数，只能通过本机终端选择私有请求 / 结果文件。' >&2; return 2; fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --version) [[ $# -ge 2 ]] || { printf '%s\n' '缺少 --version 参数' >&2; return 2; }; version=$2; shift 2 ;;

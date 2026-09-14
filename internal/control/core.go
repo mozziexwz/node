@@ -33,13 +33,14 @@ type Config struct {
 }
 
 type App struct {
-	Store          *Store
-	Config         Config
-	aead           cipher.AEAD
-	rateMu         sync.Mutex
-	rates          map[string][]int64
-	mailSender     func(context.Context, SMTPConfig, string, string, string) error
-	trustedProxies []*net.IPNet
+	Store            *Store
+	Config           Config
+	aead             cipher.AEAD
+	rateMu           sync.Mutex
+	rates            map[string][]int64
+	mailSender       func(context.Context, SMTPConfig, string, string, EmailMessage) error
+	trustedProxies   []*net.IPNet
+	passwordRecovery *passwordRecovery
 }
 
 func New(c Config) (*App, error) {
@@ -92,6 +93,7 @@ func New(c Config) (*App, error) {
 		store.Close()
 		return nil, err
 	}
+	a.passwordRecovery = newPasswordRecovery()
 	return a, nil
 }
 
@@ -141,7 +143,12 @@ func masterKey(c Config) ([]byte, error) {
 	return key, nil
 }
 
-func (a *App) Close() error { return a.Store.Close() }
+func (a *App) Close() error {
+	if a.passwordRecovery != nil {
+		a.passwordRecovery.close()
+	}
+	return a.Store.Close()
+}
 
 func ID() string {
 	b := make([]byte, 24)
@@ -255,6 +262,22 @@ func (a *App) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
+		// Cover GET-based payment callbacks and executor polling as well as
+		// ordinary writes. Store.Update remains the authoritative race barrier
+		// for requests and workers already in flight when the gate was acquired.
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			gateErr := a.Store.View(func(s *State) error {
+				if backupPauseGatePresent(s) {
+					return ErrBackupPauseActive
+				}
+				return nil
+			})
+			if gateErr != nil {
+				w.Header().Set("Retry-After", "30")
+				Fail(w, http.StatusServiceUnavailable, "控制面暂不可用或正在进行整站备份，请稍后重试；此响应不代表节点转发已停止")
+				return
+			}
+		}
 		unsafe := r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS"
 		if unsafe {
 			origin := r.Header.Get("Origin")

@@ -115,11 +115,11 @@ func TestIdentityRealCredentialsSessionAndCSRF(t *testing.T) {
 func identityMail(t *testing.T, a *App) *string {
 	t.Helper()
 	code := new(string)
-	a.mailSender = func(_ context.Context, _ SMTPConfig, secret, recipient, body string) error {
+	a.mailSender = func(_ context.Context, _ SMTPConfig, secret, recipient string, message EmailMessage) error {
 		if secret != "mail-secret" {
 			return errors.New("incorrect decrypted SMTP secret")
 		}
-		match := regexp.MustCompile(`[0-9]{6}`).FindString(body)
+		match := regexp.MustCompile(`[0-9]{6}`).FindString(message.TextBody)
 		if match != "" {
 			*code = match
 		}
@@ -256,7 +256,7 @@ func TestIdentitySMTPSettingsTestAndSecretRedaction(t *testing.T) {
 		t.Fatal("SMTP secret leaked")
 	}
 	var delivered atomic.Int32
-	a.mailSender = func(_ context.Context, c SMTPConfig, secret, recipient, body string) error {
+	a.mailSender = func(_ context.Context, c SMTPConfig, secret, recipient string, message EmailMessage) error {
 		if secret != "mail-secret" || recipient != "99999999@qq.com" {
 			return errors.New("incorrect mail credentials")
 		}
@@ -443,7 +443,7 @@ func TestIdentityFailedDeliveryNeverCreatesUsableCode(t *testing.T) {
 	a, h := identityFixture(t, false)
 	cookie, csrf, _ := identityRegister(t, h, "12345678@qq.com")
 	identityMail(t, a)
-	a.mailSender = func(context.Context, SMTPConfig, string, string, string) error {
+	a.mailSender = func(context.Context, SMTPConfig, string, string, EmailMessage) error {
 		return errors.New("535 authentication rejected")
 	}
 	identityResponse(t, identityRequest(h, "POST", "/api/auth/email/send", map[string]any{"purpose": "verify"}, cookie, csrf), 502)

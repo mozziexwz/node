@@ -87,6 +87,12 @@ func (s *Store) View(fn func(*State) error) error   { return s.transaction(false
 func (s *Store) Update(fn func(*State) error) error { return s.transaction(true, fn) }
 
 func (s *Store) transaction(write bool, fn func(*State) error) (err error) {
+	return s.transactionWithBackupPause(write, false, fn)
+}
+
+// Only the local backup gate acquire/release path may bypass an existing gate.
+// The check is inside the same row lock as the callback, not a cached precheck.
+func (s *Store) transactionWithBackupPause(write, gateOperation bool, fn func(*State) error) (err error) {
 	// A single connection prevents local read/modify/write races. BEGIN IMMEDIATE
 	// (SQLite) and FOR UPDATE (Postgres) also serialize independent processes.
 	s.mu.Lock()
@@ -125,6 +131,9 @@ func (s *Store) transaction(write bool, fn func(*State) error) (err error) {
 	}
 	if state.Users == nil || state.Sessions == nil || state.Settings == nil || state.Docs == nil {
 		return errors.New("incomplete persisted database state")
+	}
+	if write && !gateOperation && backupPauseGatePresent(state) {
+		return ErrBackupPauseActive
 	}
 	if err = fn(state); err != nil {
 		return err

@@ -9,6 +9,14 @@ import {
 } from "lucide-react";
 import { RecordData, post } from "./api";
 import { Captcha } from "./captcha";
+import { PasswordReset } from "./password-reset";
+import {
+  CodeSendButton,
+  qqEmailInput,
+  useEmailCodeCooldown,
+  validateNewPassword,
+} from "./auth-code";
+import "./auth-extra.css";
 import {
   Brand,
   Maple,
@@ -96,25 +104,39 @@ export function AuthPage({
     [email, setEmail] = useState(""),
     [codeStatus, setCodeStatus] = useState(""),
     [sending, setSending] = useState(false),
-    [waitUntil, setWaitUntil] = useState(0),
+    [working, setWorking] = useState(false),
+    [authNotice, setAuthNotice] = useState(""),
     [turnstileToken, setTurnstileToken] = useState(""),
     [captchaReset, setCaptchaReset] = useState(0);
+  const cooldown = useEmailCodeCooldown();
+  function changeMode(next: string) {
+    if (working) return;
+    setMode(next);
+    setCodeStatus("");
+    setAuthNotice("");
+    setTurnstileToken("");
+    setCaptchaReset((n) => n + 1);
+  }
   async function send() {
+    if (working || cooldown.seconds > 0) return;
     setSending(true);
+    setWorking(true);
     try {
+      const recipient = qqEmailInput(email);
       if (settings.turnstile && !turnstileToken)
         throw new Error("请先完成人机验证");
-      await post("/api/auth/email/send", {
-        email,
+      const result = await post("/api/auth/email/send", {
+        email: recipient,
         purpose: "register",
         turnstileToken,
       });
       setCodeStatus("验证码已发送，请检查收件箱。");
-      setWaitUntil(Date.now() + 60000);
+      cooldown.start(result.retryAfter);
     } catch (e) {
       setCodeStatus((e as Error).message);
     } finally {
       setSending(false);
+      setWorking(false);
       setTurnstileToken("");
       setCaptchaReset((n) => n + 1);
     }
@@ -163,40 +185,78 @@ export function AuthPage({
         </div>
         <div className="card auth-card">
           <div className="eyebrow">WELCOME TO MSBOOST</div>
-          <h2>{mode === "login" ? "欢迎回来" : "创建你的账号"}</h2>
+          <h2>
+            {mode === "login"
+              ? "欢迎回来"
+              : mode === "reset"
+                ? "找回密码"
+                : "创建你的账号"}
+          </h2>
           <p>
             {mode === "login"
               ? "登录，管理你的节点与中转。"
-              : "注册前请先准备自己的服务器。"}
+              : mode === "reset"
+                ? "验证注册邮箱，为会员账号设置新密码。"
+                : "注册前请先准备自己的服务器。"}
           </p>
           <div className="auth-tabs">
             <button
               className={mode === "login" ? "active" : ""}
-              onClick={() => setMode("login")}
+              disabled={working}
+              onClick={() => changeMode("login")}
             >
               登录
             </button>
             <button
               className={mode === "register" ? "active" : ""}
-              onClick={() => setMode("register")}
+              disabled={working}
+              onClick={() => changeMode("register")}
             >
               注册
             </button>
           </div>
-          {mode === "register" && settings.register === false ? (
+          {authNotice && (
+            <div role="status">
+              <Notice tone="green">{authNotice}</Notice>
+            </div>
+          )}
+          {mode === "reset" ? (
+            <PasswordReset
+              settings={settings}
+              email={email}
+              onEmail={setEmail}
+              seconds={cooldown.seconds}
+              startCooldown={cooldown.start}
+              working={working}
+              onWorking={setWorking}
+              onBack={() => changeMode("login")}
+              onSuccess={() => {
+                setMode("login");
+                setAuthNotice(
+                  "密码已重置，请使用新密码重新登录。原有登录会话已失效。",
+                );
+                setTurnstileToken("");
+                setCaptchaReset((n) => n + 1);
+              }}
+            />
+          ) : mode === "register" && settings.register === false ? (
             <Notice>管理员已关闭注册，请联系站点管理员。</Notice>
           ) : (
             <AsyncForm
               key={mode}
               label={mode === "login" ? "登录" : "注册并登录"}
               onSubmit={async (f) => {
-                if (
-                  mode === "register" &&
-                  f.get("password") !== f.get("confirm")
-                )
-                  throw new Error("两次密码不一致");
+                if (working) throw new Error("请等待当前请求完成");
+                if (mode === "register") {
+                  qqEmailInput(email);
+                  validateNewPassword(
+                    String(f.get("password") || ""),
+                    String(f.get("confirm") || ""),
+                  );
+                }
                 if (settings.turnstile && !turnstileToken)
                   throw new Error("请先完成人机验证");
+                setWorking(true);
                 try {
                   await post("/api/auth/" + mode, {
                     email,
@@ -211,6 +271,7 @@ export function AuthPage({
                       : {}),
                   });
                 } finally {
+                  setWorking(false);
                   setTurnstileToken("");
                   setCaptchaReset((n) => n + 1);
                 }
@@ -222,16 +283,25 @@ export function AuthPage({
                 type="email"
                 name="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setCodeStatus("");
+                }}
                 placeholder="请输入 QQ 邮箱"
                 autoComplete="username"
+                disabled={working}
                 required
               />
               <Field
                 label="密码"
                 type="password"
                 name="password"
-                minLength={mode === "register" ? 12 : 1}
+                minLength={mode === "login" ? 1 : undefined}
+                aria-describedby={
+                  mode === "register"
+                    ? "register-password-requirements"
+                    : undefined
+                }
                 autoComplete={
                   mode === "login" ? "current-password" : "new-password"
                 }
@@ -240,6 +310,12 @@ export function AuthPage({
               />
               {mode === "register" && (
                 <>
+                  <p
+                    id="register-password-requirements"
+                    className="auth-reset-help"
+                  >
+                    密码需为 12–72 字节。
+                  </p>
                   <Field
                     label="确认密码"
                     type="password"
@@ -252,26 +328,22 @@ export function AuthPage({
                   )}
                   {settings.registrationEmailVerificationRequired && (
                     <>
-                      <div className="email-code-input41">
+                      <div className="email-code-input41 auth-code-row">
                         <Field
                           label="邮箱验证码"
                           name="code"
                           inputMode="numeric"
                           autoComplete="one-time-code"
+                          pattern="[0-9]{6}"
+                          maxLength={6}
                           required
                         />
-                        <Button
-                          disabled={sending}
-                          onClick={() => {
-                            if (Date.now() < waitUntil) {
-                              setCodeStatus("请在 60 秒后重发");
-                              return;
-                            }
-                            void send();
-                          }}
-                        >
-                          获取验证码
-                        </Button>
+                        <CodeSendButton
+                          seconds={cooldown.seconds}
+                          sending={sending}
+                          disabled={working}
+                          onClick={() => void send()}
+                        />
                       </div>
                       {codeStatus && <Notice>{codeStatus}</Notice>}
                     </>
@@ -305,14 +377,29 @@ export function AuthPage({
               />
             </AsyncForm>
           )}
+          {mode === "login" && (
+            <div className="auth-reset-entry">
+              <Button
+                className="link"
+                disabled={working}
+                onClick={() => changeMode("reset")}
+              >
+                忘记密码？
+              </Button>
+            </div>
+          )}
         </div>
       </section>
       <section className="public-tools">
         <div className="grid3">
           {[
-            [Server, "一键部署 MSBOOST", "部署你的专属 MSBOOST 节点"],
-            [Route, "自备服务器中转", "一键中转你或朋友的 MSBOOST 节点"],
-            [RefreshCw, "在线 DD 系统", "一键重装系统"],
+            [Server, "一键部署 MSBOOST", "部署你的独立IP游戏节点"],
+            [
+              Route,
+              "一键配置中转服务器",
+              "与朋友共享你的服务器，但不共享你的IP",
+            ],
+            [RefreshCw, "一键DD系统", "在线重装系统"],
           ].map(([Icon, title, sub]) => {
             const I = Icon as typeof Server;
             return (
@@ -338,7 +425,10 @@ export function AuthPage({
         </div>
       </section>
       <footer className="public-footer">
-        <span>© {new Date().getFullYear()} MSBOOST</span>
+        <div className="public-contact">
+          <span>© {new Date().getFullYear()} MSBOOST</span>
+          <span>admin@msboost.de</span>
+        </div>
         <div className="flex">
           <button onClick={() => setAgreement("terms")}>用户协议</button>
           <button onClick={() => setAgreement("privacy")}>隐私政策</button>

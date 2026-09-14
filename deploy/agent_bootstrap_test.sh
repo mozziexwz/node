@@ -32,6 +32,14 @@ grep -qx executor "$AGENT_TEST_TRACE" || fail 'capability not forwarded'
 grep -qx -- '--agent-sha256' "$AGENT_TEST_TRACE" || fail 'checksum not forwarded'
 ! grep -q 'abcdefghijklmnopqrstuvwxyz1234567890' "$TEST_WORK/success.log" || fail 'enrollment token leaked'
 rm -- "$AGENT_TEST_TRACE"
+bash "$TEST_REPO/agent.sh" --capability relay --server https://panel.example.com --version v9.8.7 --token-file "$TEST_WORK/token" --offline-policy keep_last --acknowledge-relay-restart > "$TEST_WORK/keep-last.log" 2>&1 || fail 'explicit keep_last forwarding failed'
+grep -qx -- '--offline-policy' "$AGENT_TEST_TRACE" || fail 'offline policy option not forwarded'
+grep -qx keep_last "$AGENT_TEST_TRACE" || fail 'keep_last not forwarded'
+grep -qx -- '--acknowledge-relay-restart' "$AGENT_TEST_TRACE" || fail 'maintenance acknowledgement missing'
+rm -- "$AGENT_TEST_TRACE"
+if bash "$TEST_REPO/agent.sh" --capability executor --offline-policy keep_last > "$TEST_WORK/wrong-role.log" 2>&1; then fail 'executor accepted relay policy'; fi
+if bash "$TEST_REPO/agent.sh" --capability relay --offline-policy unknown > "$TEST_WORK/wrong-policy.log" 2>&1; then fail 'unknown policy accepted'; fi
+[[ ! -f $AGENT_TEST_TRACE ]] || fail 'invalid policy ran installer'
 export AGENT_TEST_DOWNLOAD_FAIL=1
 if run_bootstrap > "$TEST_WORK/download.log" 2>&1; then fail 'download error swallowed'; fi
 grep -q '下载.*失败' "$TEST_WORK/download.log" || fail 'missing Chinese download error'

@@ -38,7 +38,8 @@ CI_IMAGE= CI_IMAGE_ID= CI_TOOL_CONTAINER=
 CI_OPT_IDENTITY= CI_OPT_ORIGINAL_MODE= CI_OPT_CHANGED=0
 CI_WORKS=()
 declare -A CI_CADDY_METADATA=()
-DISASTER_WORK= DISASTER_TOOL_DIR= DISASTER_TOOL_CONTAINER= DISASTER_RESUME=0
+DISASTER_WORK= DISASTER_TOOL_DIR= DISASTER_TOOL_CONTAINER= DISASTER_RESUME=0 DISASTER_PAUSE_RELEASE=0
+CI_BACKUP_VERIFY=0
 DISASTER_RUNNING=()
 
 # Every resource this test creates carries a random ownership label. Reuse the
@@ -49,6 +50,7 @@ docker() {
     [[ ${*: -1} =~ ^msboost_(app_data|database_data|caddy_data|caddy_config)$ ]] || return 1
     ci_docker volume create --label "msboost.ci.disaster=$CI_TOKEN" "${@:3}"
   elif [[ ${1:-} == run ]]; then
+    if [[ $CI_BACKUP_VERIFY == 1 && " $* " == *'target=/snapshot,readonly'* ]]; then ci_assert_backup_gate true || return; fi
     ci_docker run --label "msboost.ci.disaster=$CI_TOKEN" "${@:2}"
   else ci_docker "$@"; fi
 }
@@ -180,9 +182,22 @@ printf '%s\n' \
   '  caddy_data:' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" \
   '  caddy_config:' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" > "$CI_OVERRIDE"
 compose_live() {
+  if [[ $CI_BACKUP_VERIFY == 1 ]]; then
+    case "$1" in
+      stop) ci_assert_backup_gate true || return ;;
+      start) ci_assert_backup_gate false || return ;;
+      exec) if [[ " $* " == *' database pg_dump '* ]]; then ci_assert_backup_gate true || return; fi ;;
+      run) if [[ " $* " == *' server export '* ]]; then ci_assert_backup_gate true || return; fi ;;
+    esac
+  fi
   ( unset MSBOOST_IMAGE MSBOOST_VERSION MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS MSBOOST_DATABASE_NAME POSTGRES_PASSWORD POSTGRES_IMAGE CADDY_IMAGE
     export MSBOOST_ENV_FILE="$INSTALL_ROOT/.env"
     docker compose --project-name msboost --env-file "$INSTALL_ROOT/.env" -f "$INSTALL_ROOT/deploy/compose.yml" -f "$CI_OVERRIDE" "$@" )
+}
+ci_assert_backup_gate() {
+  local expected=$1
+  compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause status > "$CI_ROOT/gate-status.json" || return
+  jq -e --argjson expected "$expected" '.gateActive == $expected and (.gateActive == false or .canPauseControl == false) and (has("token") | not) and (has("tokenHash") | not)' "$CI_ROOT/gate-status.json" >/dev/null
 }
 require_platform() { :; } # The CI runner is Ubuntu; product remains Debian 12.
 ensure_docker() { docker info >/dev/null; }
@@ -231,6 +246,8 @@ freeze_images
 replace_live_environment "$STAGE/.env"
 cleanup_stage; STAGE=
 start_live
+source "$CI_REPO/deploy/backup_activity_integration_test.sh"
+ci_test_backup_activity_readonly
 POSTGRES_TEST_IMAGE=$(env_get "$INSTALL_ROOT/.env" POSTGRES_IMAGE)
 CI_KEY_BEFORE=$(env_get "$INSTALL_ROOT/.env" MASTER_KEY)
 [[ -n $CI_KEY_BEFORE ]]
@@ -273,14 +290,22 @@ printf '%s\n' 'CI_DISASTER_STAGE=config-save'
 "$CI_TOOL" disaster config-save --file "$INSTALL_ROOT/disaster.json" --local-dir "$CI_ARCHIVES" --retention-days 30 --time 02:30 </dev/null
 printf '%s\n' 'CI_DISASTER_STAGE=config-saved'
 note 'CI: real stop, pg_dump, encrypted export, volume archives, pack and verification.'
+compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause check > "$CI_ROOT/gate-check.json"
+jq -e '.canPauseControl == true and .gateActive == false and .checkedRules == 0' "$CI_ROOT/gate-check.json" >/dev/null
+CI_BACKUP_VERIFY=1
 disaster_backup
+CI_BACKUP_VERIFY=0
 CI_WORKS+=("$DISASTER_WORK")
+ci_assert_backup_gate false
+[[ $DISASTER_PAUSE_RELEASE == 0 && $(stat -c '%u:%a' "$DISASTER_WORK/backup-pause.token") == 0:600 && $(wc -c < "$DISASTER_WORK/backup-pause.token") == 65 ]]
 [[ $(compose_live ps --status running --services | sort | tr '\n' ' ') == 'caddy database server ' ]]
 mapfile -t CI_BUNDLES < <(find "$CI_ARCHIVES" -maxdepth 1 -type f -name 'msboost-disaster-*.tar.gz')
 [[ ${#CI_BUNDLES[@]} == 1 ]]
 CI_ARCHIVE=${CI_BUNDLES[0]}
 "$CI_TOOL" disaster verify --archive "$CI_ARCHIVE" >/dev/null
 "$CI_TOOL" disaster unpack --archive "$CI_ARCHIVE" --dir "$CI_ROOT/inspection"
+[[ ! -e $CI_ROOT/inspection/backup-pause.token ]]
+if tar -tzf "$CI_ARCHIVE" | grep -Fq backup-pause.token; then die 'CI backup archive contains the runtime gate credential'; exit 1; fi
 [[ $(head -c 5 "$CI_ROOT/inspection/database.dump") == PGDMP && -s $CI_ROOT/inspection/state.msb ]]
 cmp "$INSTALL_ROOT/.env" "$CI_ROOT/inspection/site.env"
 for volume in app_data caddy_data caddy_config; do "$CI_TOOL" disaster validate-volume --archive "$CI_ROOT/inspection/$volume.tar"; done
@@ -293,6 +318,7 @@ ci_remove_site
 DISASTER_ARCHIVE=$CI_ARCHIVE
 DISASTER_WORK= DISASTER_RESUME=0 STAGE=
 disaster_restore
+ci_assert_backup_gate false
 [[ ! -e $INSTALL_ROOT/.disaster-incomplete && ! -L $INSTALL_ROOT/.disaster-incomplete ]]
 [[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) == "$CI_KEY_BEFORE" ]]
 CI_DATABASE=$(env_get "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME)
@@ -314,6 +340,7 @@ SELECT
   AND payload::jsonb #>> '{docs,attachments,ci-attachment,bytes}' = 'cHJvb2Y='
   AND payload::jsonb #>> '{docs,payment_channels,ci-channel,enabled}' = 'false'
   AND payload::jsonb->'sessions' = '{}'::jsonb
+  AND NOT (payload::jsonb->'docs' ? 'backup_pause')
   AND EXISTS (SELECT 1 FROM jsonb_each(payload::jsonb->'users') WHERE value->>'balanceCents' = '54321')
 FROM control_state WHERE id=1;
 SQL

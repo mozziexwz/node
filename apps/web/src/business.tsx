@@ -20,6 +20,8 @@ import {
 } from "./ui";
 import { ConfigUpload, SSHFields, SSH, prepareSSH } from "./tools";
 import { PaymentReturn } from "./payment-return";
+import { relayNeedsRecovery, relayStatus } from "./relay-status";
+import { RelayStatusDetail } from "./relay-status-view";
 
 export function Account({
   user,
@@ -209,8 +211,14 @@ export function Plans({
       )}
       <div className="mt24">
         <Notice>
-          再次购买条件：剩余时间少于30天，或剩余流量少于10GB。新套餐覆盖旧的剩余时间与流量，不叠加。
+          本站增值中转服务不承诺 100%
+          可用性。如您对稳定性要求较高，建议使用本站免费工具搭配自备服务器部署中转，或选择专业游戏加速器。
         </Notice>
+        <div className="mt16">
+          <Notice>
+            再次购买条件：剩余时间少于30天，或剩余流量少于10GB。新套餐覆盖旧的剩余时间与流量，不叠加。
+          </Notice>
+        </div>
       </div>
       {selected && (
         <Modal
@@ -423,12 +431,22 @@ export function Routes({ user }: { user: RecordData }) {
         ))}
       </div>
       <p className="muted mt16">
-        每条转发规则独立限速，上下行分别计算，不是账号共享总带宽；实际取用户限速与线路上限的较小值。
+        每条中转规则独立限速，上下行分别计算；实际取用户限速与线路上限的较小值。
       </p>
       <div className="summary mt24 between">
-        <span>同一账号所有线路必须转发同一个 MSBOOST 节点配置。</span>
+        <span>同一账号所有线路必须中转同一个 MSBOOST 节点配置。</span>
         <Button
+          disabled={rules.some(
+            (rule) => relayNeedsRecovery(rule) || rule.stopStatus === "pending",
+          )}
           onClick={() => {
+            if (
+              rules.some(
+                (rule) =>
+                  relayNeedsRecovery(rule) || rule.stopStatus === "pending",
+              )
+            )
+              return;
             if (confirm("更换统一目标将撤销全部旧线路。请确认后逐条重新配置。"))
               void action(() =>
                 post("/api/user/target/reset", { confirm: true }),
@@ -445,8 +463,8 @@ export function Routes({ user }: { user: RecordData }) {
             <div className="card route-card" key={route.id}>
               <div className="between">
                 <h3>{route.name}</h3>
-                <Badge tone={route.online ? "green" : "red"}>
-                  {route.online ? "在线" : "离线"}
+                <Badge tone={route.online ? "green" : "orange"}>
+                  {route.online ? "管理在线" : "管理离线"}
                 </Badge>
               </div>
               <div className="route-facts">
@@ -461,33 +479,12 @@ export function Routes({ user }: { user: RecordData }) {
                 <div>
                   <small>配置状态</small>
                   <b>
-                    {rule
-                      ? (
-                          {
-                            pending: "等待各跳确认",
-                            syncing: "限速 / 配置同步中",
-                            active: "转发中",
-                            paused: "已暂停",
-                            pausing: "暂停中，等待停止 / 租约到期",
-                            revoking: "正在撤销",
-                            failed: "节点执行失败",
-                            suspended: "账号已停用",
-                            quota_exhausted: "流量耗尽",
-                            unavailable: "权益或线路不可用",
-                            awaiting_front: "等待前置机配置",
-                            provisioning: "前置机配置中",
-                          } as Record<string, string>
-                        )[rule.syncState || rule.state] || rule.state
-                      : "尚未配置"}
+                    {rule ? relayStatus(rule, route.online).label : "尚未配置"}
                   </b>
                 </div>
               </div>
               {rule && (
-                <p className="muted mt16">
-                  {rule.appliedRateMbps > 0
-                    ? `各跳已确认：上下行各 ${rule.appliedRateMbps} Mbps`
-                    : `尚未确认全链路生效：${rule.readySegments || 0} / ${rule.totalSegments || 0} 个节点已确认。同步期间旧配置最多保留 45 秒。`}
-                </p>
+                <RelayStatusDetail rule={rule} routeOnline={route.online} />
               )}
               <div className="route-action">
                 {rule ? (
@@ -506,10 +503,12 @@ export function Routes({ user }: { user: RecordData }) {
                       从服务器下载
                     </Button>
                     <Button
-                      disabled={["revoking", "awaiting_front"].includes(
-                        rule.state,
-                      )}
+                      disabled={
+                        relayNeedsRecovery(rule) ||
+                        ["revoking", "awaiting_front"].includes(rule.state)
+                      }
                       onClick={() =>
+                        !relayNeedsRecovery(rule) &&
                         void action(() =>
                           post(
                             `/api/user/routes/${route.id}/rules`,
@@ -522,8 +521,14 @@ export function Routes({ user }: { user: RecordData }) {
                       {rule.state === "paused" ? "恢复" : "暂停"}
                     </Button>
                     <Button
+                      disabled={relayNeedsRecovery(rule)}
                       onClick={() => {
-                        if (confirm("删除这条转发及服务器保存的配置？"))
+                        if (relayNeedsRecovery(rule)) return;
+                        if (
+                          confirm(
+                            "请求删除这条中转及服务器保存的配置？待节点停止确认前，端口及旧目标继续占用。",
+                          )
+                        )
                           void action(() =>
                             api(`/api/user/routes/${route.id}/rules`, {
                               method: "DELETE",

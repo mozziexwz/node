@@ -89,15 +89,19 @@ jobs:
           tar -xzf .runtime/gost/archive.tar.gz -C .runtime/gost gost
           GOST_TEST_BINARY="$PWD/.runtime/gost/gost" go test -race ./internal/relayruntime -run TestRealGost -count=1 -v
           GOST_TEST_BINARY="$PWD/.runtime/gost/gost" go test -race ./internal/executor -run TestRealGostCredentialConfigFileName -count=1 -v
-      - name: Verify lease expiry closes existing GOST connections
+      - name: Verify lease expiry and protected recovery with existing GOST connections
         shell: bash
         run: |
           go test -c -race -o .runtime/relay-lease.test ./internal/relayruntime
+          go test -c -race -o .runtime/control-outage.test ./internal/control
           sudo unshare --net -- bash -c '
             set -Eeuo pipefail
             ip link set lo up
-            exec env MSBOOST_TEST_LOOPBACK_NETNS=1 GOST_TEST_BINARY="$1" "$2" -test.run "^TestRealGostLeaseExpiryClosesExistingConnection$" -test.count=1 -test.v -test.timeout=30s
-          ' msboost-isolated-test "$PWD/.runtime/gost/gost" "$PWD/.runtime/relay-lease.test"
+            "$2" -test.run "^TestV2(RecoveryLinux|StateDirectoryLock)" -test.count=1 -test.v -test.timeout=3m
+            env MSBOOST_TEST_LOOPBACK_NETNS=1 MSBOOST_REAL_GOST_RECOVERY=1 GOST_TEST_BINARY="$1" "$2" -test.run "^TestRealGost(LeaseExpiryClosesExistingConnection|ProtectedRecoveryKeepsOriginalConnection|KeepLastNewConnectionsAndRuleIsolation)$" -test.count=1 -test.v -test.timeout=4m
+            "$3" -test.run "^TestBackupActivityLockLinux" -test.count=1 -test.v -test.timeout=2m
+            env MSBOOST_TEST_LOOPBACK_NETNS=1 MSBOOST_REAL_CONTROL_OUTAGE=1 GOST_TEST_BINARY="$1" "$3" -test.run "^TestRealControlBackupPauseAndOfflineConnection$" -test.count=1 -test.v -test.timeout=8m
+          ' msboost-isolated-test "$PWD/.runtime/gost/gost" "$PWD/.runtime/relay-lease.test" "$PWD/.runtime/control-outage.test"
       - name: Check installers without executing them
         run: |
           for script in install.sh agent.sh deploy/*.sh installers/node/msboost.sh installers/reinstall/reinstall.sh; do bash -n "$script"; done
@@ -109,10 +113,48 @@ jobs:
           bash deploy/disaster_test.sh
           bash deploy/agent_bootstrap_test.sh
       - run: go build ./cmd/server && go build ./cmd/agent && go build ./cmd/restore
+  relay-endurance:
+    name: Real GOST keep_last (${{ matrix.duration }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        duration: [5m, 30m]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Build production runtime tests with Linux race instrumentation
+        run: |
+          mkdir -p .runtime/relay-endurance
+          go test -c -race -o .runtime/relay-endurance/relay.test ./internal/relayruntime
+      - name: Verify pinned official GOST executable
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 https://github.com/go-gost/gost/releases/download/v3.3.0/gost_3.3.0_linux_amd64.tar.gz -o .runtime/relay-endurance/gost.tar.gz
+          printf '%s\n' '676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5  .runtime/relay-endurance/gost.tar.gz' | sha256sum --check --strict
+          tar -xzf .runtime/relay-endurance/gost.tar.gz -C .runtime/relay-endurance gost
+      - name: Real persistent TCP and TLS connections through independent agents
+        env:
+          DURATION: ${{ matrix.duration }}
+        run: |
+          set -Eeuo pipefail
+          sudo bash deploy/relay_endurance_test.sh "$PWD/.runtime/relay-endurance/relay.test" "$PWD/.runtime/relay-endurance/gost" "$DURATION" 2>&1 | tee .runtime/relay-endurance/results.log
+          test "$(grep -c 'REAL_GOST_KEEP_LAST_PASS ' .runtime/relay-endurance/results.log)" = 3
+          grep -qx 'PASS' .runtime/relay-endurance/results.log
+      - name: Retain credential-free real test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-endurance-${{ matrix.duration }}
+          path: .runtime/relay-endurance/results.log
+          if-no-files-found: ignore
+          retention-days: 14
   image:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: verify
+    needs: [verify, relay-endurance]
     env:
       MSBOOST_ENV_FILE: /tmp/msboost-ci.env
     permissions:

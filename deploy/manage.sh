@@ -28,7 +28,11 @@ usage() {
     '  msboost upgrade [--version vX.Y.Z] [--build]' \
     '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  msboost repair|status|logs|uninstall|purge' \
+    '  msboost admin-password        本机交互修改已有管理员密码（不停止服务）' \
+    '  msboost backup-reconcile      核对异常网页备份（不停止服务，不解锁整站门禁）' \
+    '  msboost relay-recovery        受保护中转恢复 / TLS 维护（私有文件交互）' \
     '  msboost disaster-backup|disaster-config|disaster-disable' \
+    '  msboost disaster-backup-maintenance  单次手动维护备份（真实终端确认，接受旧链路中断）' \
     '  bash install.sh disaster-restore --archive /root/msboost-backup/整站备份.tar.gz' \
     '  --build 需显式选择，并提供已校验的完整源码包。' \
     'uninstall 保留配置、密钥、数据库、应用数据、证书及备份。' \
@@ -40,9 +44,9 @@ read_tty() {
   printf '%s' "$answer"
 }
 menu() {
-  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 一键整站灾难备份' '  9) 设置整站备份目录 / 远程密码 / 每日计划' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  0) 退出' >&2
+  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 一键整站灾难备份' '  9) 设置整站备份目录 / 远程密码 / 每日计划' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  12) 修改已有管理员密码（仅本机 root）' '  13) 核对异常网页备份（不停止服务）' '  14) 手动维护备份（确认旧链路可能中断）' '  15) 中转恢复 / TLS 维护（受保护私有文件）' '  0) 退出' >&2
   local choice; choice=$(read_tty '请选择: ')
-  case "$choice" in 1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;; 5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 8) printf disaster-backup ;; 9) printf disaster-config ;; 10) printf disaster-restore ;; 11) printf disaster-disable ;; 0) printf exit ;; *) die '无效选择' ;; esac
+  case "$choice" in 1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;; 5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 8) printf disaster-backup ;; 9) printf disaster-config ;; 10) printf disaster-restore ;; 11) printf disaster-disable ;; 12) printf admin-password ;; 13) printf backup-reconcile ;; 14) printf disaster-backup-maintenance ;; 15) printf relay-recovery ;; 0) printf exit ;; *) die '无效选择' ;; esac
 }
 require_platform() (
   [[ $(id -u) == 0 ]] || { die '请在目标服务器以 root 或 sudo 运行'; return 1; }
@@ -188,6 +192,8 @@ copy_deployment_files() {
   done
   # Optional only for snapshot/rollback compatibility with pre-disaster releases.
   if [[ -f $from/deploy/disaster.sh && ! -L $from/deploy/disaster.sh ]]; then install -m 0600 "$from/deploy/disaster.sh" "$to/deploy/disaster.sh" || return; fi
+  if [[ -f $from/deploy/backup_activity_recovery.sh && ! -L $from/deploy/backup_activity_recovery.sh ]]; then install -m 0600 "$from/deploy/backup_activity_recovery.sh" "$to/deploy/backup_activity_recovery.sh" || return; fi
+  if [[ -f $from/deploy/relay_recovery.sh && ! -L $from/deploy/relay_recovery.sh ]]; then install -m 0600 "$from/deploy/relay_recovery.sh" "$to/deploy/relay_recovery.sh" || return; fi
   install -m 0700 "$from/install.sh" "$to/install.sh" || return
   chmod 0700 "$to/deploy/manage.sh"
 }
@@ -516,10 +522,91 @@ remove_managed_installation() {
   [[ $INSTALL_ROOT == /opt/msboost && $(realpath -m "$INSTALL_ROOT") == /opt/msboost && ! -L $INSTALL_ROOT ]] || { die '最终清理路径验证失败'; return 1; }
   rm -rf -- /opt/msboost || return
 }
+
+# Only terminal input is accepted. Keeping this small function separate also
+# allows offline contract tests to inject synthetic answers without real TTYs.
+admin_password_read() {
+  local fd=$1 variable=$2 prompt=$3
+  if ! IFS= read -r -s -u "$fd" -p "$prompt" "$variable"; then
+    printf '\n' >&2
+    die '输入已取消或结束；未发送改密请求'
+    return 1
+  fi
+  printf '\n' >&2
+}
+admin_password_open_tty() {
+  if ! exec {tty_fd}<>/dev/tty; then die '此操作必须使用本机交互终端，不接受 stdin 文件或管道密码'; return 1; fi
+  [[ -t $tty_fd ]] || { die '改密输入必须来自终端'; return 1; }
+}
+
+admin_password_site() (
+  # Never trace secret expansion, even if an operator started bash with -x/-v.
+  # The subshell keeps this setting and all secret variables out of its caller.
+  set +xv
+  ulimit -c 0 || return
+  local LC_ALL=C admin_email_input='' admin_password_first='' admin_password_second='' admin_confirm_input=''
+  export -n admin_email_input admin_password_first admin_password_second admin_confirm_input
+  trap 'admin_password_first=; admin_password_second=; admin_email_input=; admin_confirm_input=' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  [[ $(id -u) == 0 && $(uname -s) == Linux ]] || { die '管理员改密仅允许在目标 Linux 服务器以 root 运行'; return 1; }
+  assert_managed || return
+  local file mode image image_id database_id identity database_name tty_fd
+  # No untrusted writable parent/file may supply the selected image or DB.
+  for file in /opt "$INSTALL_ROOT" "$INSTALL_ROOT/.env" "$INSTALL_ROOT/.managed-by-msboost"; do
+    [[ ! -L $file && $(stat -c %u "$file") == 0 ]] || { die '安装配置或父目录归属异常'; return 1; }
+    mode=$(stat -c %a "$file") || return
+    [[ $mode =~ ^[0-7]{3,4}$ && $((8#$mode & 0022)) == 0 ]] || { die '安装配置或父目录可被其他用户写入'; return 1; }
+  done
+  mode=$(stat -c %a "$INSTALL_ROOT/.env") || return
+  [[ $((8#$mode & 0077)) == 0 ]] || { die '.env 必须仅 root 可读写'; return 1; }
+  image=$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE)
+  image_id=$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID)
+  [[ $image =~ ^ghcr.io/mozziexwz/node@sha256:[a-f0-9]{64}$ || $image =~ ^msboost-release:v[0-9]+\.[0-9]+\.[0-9]+-(amd64|arm64)-[a-f0-9]{12}$ ]] || { die '本机改密只使用已校验的官方发布镜像，请先升级或修复正式部署'; return 1; }
+  [[ $image_id =~ ^sha256:[a-f0-9]{64}$ && $(server_identity "$image") == "$image_id" ]] || { die '改密工具镜像身份不符；未修改数据库'; return 1; }
+  database_name=$(env_get "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME); database_name=${database_name:-msboost}
+  [[ $database_name =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]] || { die '已安装数据库名称无效'; return 1; }
+  database_id=$(docker ps --quiet --no-trunc --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=database) || return
+  [[ $database_id =~ ^[a-f0-9]{64}$ ]] || { die '本站数据库容器未运行或不唯一；不会启动或重建服务'; return 1; }
+  identity=$(docker inspect --type container --format '{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$database_id") || return
+  [[ $identity == "$PROJECT|database|running|healthy" ]] || { die '本站数据库容器归属或健康状态异常；未修改数据库'; return 1; }
+  admin_password_open_tty || return
+  note '仅修改已存在管理员的登录密码，撤销其旧会话和待完成密码恢复请求。'
+  note '不停止或重启 server/Caddy/数据库/节点，不更改维护模式、角色、余额或套餐。'
+  admin_password_read "$tty_fd" admin_email_input '目标管理员邮箱（不回显）: ' || return
+  admin_email_input=${admin_email_input,,}
+  [[ ${#admin_email_input} -le 254 && $admin_email_input =~ ^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,63}$ ]] || { die '管理员邮箱格式无效'; return 1; }
+  admin_password_read "$tty_fd" admin_password_first '新密码（12–72 字节，不回显）: ' || return
+  admin_password_read "$tty_fd" admin_password_second '再次输入新密码（不回显）: ' || return
+  [[ ${#admin_password_first} -ge 12 && ${#admin_password_first} -le 72 && $admin_password_first == "$admin_password_second" ]] || { die '密码须为 12–72 字节且两次一致；未修改密码'; return 1; }
+  admin_password_read "$tty_fd" admin_confirm_input "确认仅修改 $admin_email_input，请输入 RESET $admin_email_input（不回显；其他输入取消）: " || return
+  [[ $admin_confirm_input == "RESET $admin_email_input" ]] || { note '已取消，未修改密码。'; return 1; }
+  exec {tty_fd}>&-
+  # Use the pinned image ID and the exact local database container's loopback
+  # namespace: no DNS/remote Docker context can redirect this local operation.
+  # Existing deployment credentials are reused; NEW passwords only cross stdin.
+  # No Compose up/run, migrations, maintenance switch or server restart occurs.
+  if ! printf '%s\n' "$admin_email_input" "$admin_password_first" "$admin_password_second" "$admin_confirm_input" |
+    docker run --rm -i --pull never --read-only --user 0:0 --cap-drop ALL --security-opt no-new-privileges:true --log-driver none --ulimit core=0 \
+      --network "container:$database_id" --env-file "$INSTALL_ROOT/.env" \
+      --env DATABASE_URL= --env DATABASE_HOST=127.0.0.1 --env DATABASE_PORT=5432 \
+      --env DATABASE_USER=msboost --env "DATABASE_NAME=$database_name" --env DATABASE_SSLMODE=disable \
+      --entrypoint /usr/local/bin/msboost-restore "$image_id" admin-password; then
+    die '本机改密未确认成功；服务未停止，配置未重建。请核对已安装版本支持此命令后重试。'
+    return 1
+  fi
+  admin_password_first=; admin_password_second=
+  note '.env 中 ADMIN_PASSWORD 仍是首次初始化值，不会覆盖已有管理员的新密码；无需编辑或展示它。'
+)
+
 manage_main() {
   local action version_given=0
   if [[ $# == 0 ]]; then action=$(menu); else action=$1; shift; fi
   case "$action" in help|--help|-h) usage; return 0 ;; exit) return 0 ;; stop) action=uninstall ;; esac
+  if [[ $action == admin-password && $# != 0 ]]; then die 'admin-password 不接受参数；邮箱和密码只能从本机终端输入'; return 2; fi
+  if [[ $action == backup-reconcile && $# != 0 ]]; then die 'backup-reconcile 不接受参数，只能从本机终端确认具体备份记录'; return 2; fi
+  if [[ $action == disaster-backup-maintenance && $# != 0 ]]; then die '手动维护备份不接受参数、自动确认或强制选项'; return 2; fi
+  if [[ $action == relay-recovery && $# != 0 ]]; then die 'relay-recovery 不接受参数，只能通过本机终端选择私有请求 / 结果文件'; return 2; fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --version|--source-dir|--domain|--ip|--email|--archive)
@@ -532,11 +619,34 @@ manage_main() {
       *) die "未知参数 $1"; return 2 ;;
     esac
   done
-  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-config|disaster-disable|disaster-restore) ;; *) usage; return 2 ;; esac
+  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-backup-maintenance|disaster-config|disaster-disable|disaster-restore|admin-password|backup-reconcile|relay-recovery) ;; *) usage; return 2 ;; esac
   require_platform || return
   require_release_version || return
   assert_root_path || return
   [[ -z $DISASTER_ARCHIVE || $action == disaster-restore ]] || { die '--archive 仅用于灾难恢复'; return 2; }
+  if [[ $action == relay-recovery ]]; then
+    local relay_module_dir relay_module_file relay_module_mode
+    relay_module_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    for relay_module_file in "$relay_module_dir" "$relay_module_dir/backup_activity_recovery.sh" "$relay_module_dir/relay_recovery.sh"; do
+      [[ ! -L $relay_module_file && $(stat -c %u "$relay_module_file") == 0 ]] || { die '中转恢复模块缺失或归属异常'; return 1; }
+      relay_module_mode=$(stat -c %a "$relay_module_file") || return
+      [[ $relay_module_mode =~ ^[0-7]{3,4}$ && $((8#$relay_module_mode & 0022)) == 0 ]] || { die '中转恢复模块可被其他用户写入'; return 1; }
+    done
+    [[ -f $relay_module_dir/backup_activity_recovery.sh && -f $relay_module_dir/relay_recovery.sh ]] || { die '中转恢复模块必须为普通文件'; return 1; }
+    source "$relay_module_dir/backup_activity_recovery.sh"
+    source "$relay_module_dir/relay_recovery.sh"
+  fi
+  if [[ $action == backup-reconcile ]]; then
+    local backup_activity_module backup_activity_file backup_activity_mode
+    backup_activity_module="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/backup_activity_recovery.sh"
+    [[ -f $backup_activity_module && ! -L $backup_activity_module ]] || { die '本版本尚未包含异常网页备份核对模块'; return 1; }
+    for backup_activity_file in "$(dirname "$backup_activity_module")" "$backup_activity_module"; do
+      [[ ! -L $backup_activity_file && $(stat -c %u "$backup_activity_file") == 0 ]] || { die '本机核对模块归属异常'; return 1; }
+      backup_activity_mode=$(stat -c %a "$backup_activity_file") || return
+      [[ $backup_activity_mode =~ ^[0-7]{3,4}$ && $((8#$backup_activity_mode & 0022)) == 0 ]] || { die '本机核对模块可被其他用户写入'; return 1; }
+    done
+    source "$backup_activity_module"
+  fi
   if [[ $action == disaster-* || $action == uninstall || $action == purge ]]; then
     local disaster_module
     disaster_module="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/disaster.sh"
@@ -570,7 +680,11 @@ manage_main() {
     uninstall) uninstall_site ;; purge) purge_site ;;
     status) assert_managed && compose_live ps ;;
     logs) assert_managed && compose_live logs --tail 200 server caddy database ;;
+    admin-password) admin_password_site ;;
+    backup-reconcile) backup_activity_reconcile_site ;;
+    relay-recovery) relay_recovery_site ;;
     disaster-backup) disaster_backup ;;
+    disaster-backup-maintenance) disaster_backup_maintenance ;;
     disaster-config) disaster_configure ;;
     disaster-disable) assert_managed && disaster_timer off && note '整站自动备份已停用；配置和已保存的本机/远程备份未删除。' ;;
     disaster-restore) disaster_restore ;;

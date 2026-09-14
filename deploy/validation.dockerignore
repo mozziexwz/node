@@ -1,0 +1,17 @@
+**
+!bin/
+!bin/msboost-server
+!bin/msboost-agent
+!bin/msboost-restore
+!apps/
+!apps/web/
+!apps/web/dist/
+!apps/web/dist/**
+!installers/
+!installers/node/
+!installers/node/msboost.sh
+!installers/reinstall/
+!installers/reinstall/reinstall.sh
+!installers/reinstall/manifest.json
+!deploy/
+!deploy/validation.Dockerfile

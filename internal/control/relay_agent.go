@@ -18,7 +18,11 @@ func (a *App) relayRenewEnrollment(w http.ResponseWriter, r *http.Request) {
 	}
 	token := commerceID() + commerceID()
 	expires := time.Now().Add(15 * time.Minute).UnixMilli()
+	keepLast := false
 	err = a.Store.Update(func(s *State) error {
+		if _, retired := s.Docs[relayRetirementCollection][r.PathValue("id")]; retired {
+			return errRelayRetirement
+		}
 		agent, ok := LoadDoc[RelayAgent](s, "relay_agents", r.PathValue("id"))
 		if !ok {
 			return errors.New("Agent不存在")
@@ -27,6 +31,10 @@ func (a *App) relayRenewEnrollment(w http.ResponseWriter, r *http.Request) {
 		agent.EnrollmentExpires = expires
 		agent.TokenHash = ""
 		agent.LastSeen = 0
+		keepLast = agent.ProtocolVersion == relayruntime.ProtocolV2
+		if keepLast {
+			agent.ReconcileState, agent.KeepLastConfirmed = "recovery_required", false
+		}
 		if err := SaveDoc(s, "relay_agents", agent.ID, agent); err != nil {
 			return err
 		}
@@ -34,6 +42,10 @@ func (a *App) relayRenewEnrollment(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		commerceError(w, 409, err)
+		return
+	}
+	if keepLast {
+		WriteJSON(w, 200, map[string]any{"enrollmentToken": token, "expiresAt": expires, "installArgs": a.relayInstallationInstructions(), "reconcileState": "recovery_required", "message": "旧管理令牌已撤销，但离线保留的转发可能仍在运行；端口与旧目标继续保留。须通过受信恢复核对或独立本机/网络隔离处理，重新安装不等于无损接管。"})
 		return
 	}
 	WriteJSON(w, 200, map[string]any{"enrollmentToken": token, "expiresAt": expires, "previousLeaseExpiresAt": time.Now().UnixMilli() + relayLeaseMS, "installArgs": a.relayInstallationInstructions(), "message": "旧令牌已撤销。请停止旧进程，最迟45秒旧租约失效后使用新注册令牌启动。"})
@@ -55,6 +67,9 @@ func (a *App) relayRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	id := ""
 	err := a.Store.Update(func(s *State) error {
 		for _, agent := range ListDocs[RelayAgent](s, "relay_agents") {
+			if _, retired := s.Docs[relayRetirementCollection][agent.ID]; retired {
+				continue
+			}
 			if agent.EnrollmentHash == commerceHash(in.EnrollmentToken) && agent.EnrollmentExpires > time.Now().UnixMilli() && agent.Enabled {
 				agent.TokenHash = commerceHash(token)
 				agent.EnrollmentHash = ""
@@ -78,6 +93,9 @@ func (a *App) relayAgentIdentity(s *State, r *http.Request) (RelayAgent, error) 
 	}
 	hash := commerceHash(token)
 	for _, agent := range ListDocs[RelayAgent](s, "relay_agents") {
+		if _, retired := s.Docs[relayRetirementCollection][agent.ID]; retired {
+			continue
+		}
 		if agent.TokenHash == hash && agent.Capability == "relay" {
 			return agent, nil
 		}
@@ -209,10 +227,19 @@ func (a *App) relaySyncAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UnixMilli()
 	out := relayruntime.SyncResponse{ServerTime: now, LeaseSeconds: relayLeaseMS / 1000, Rules: []relayruntime.Rule{}}
+	errorStatus := http.StatusUnauthorized
 	err := a.Store.Update(func(s *State) error {
 		agent, err := a.relayAgentIdentity(s, r)
 		if err != nil {
 			return err
+		}
+		if agent.ProtocolVersion == relayruntime.ProtocolV2 {
+			errorStatus = http.StatusConflict
+			return errors.New("该节点已启用 v2，拒绝静默回退到短租约；保留最后配置并使用 v2 同步")
+		}
+		if agent.ReconcileState == "recovery_required" {
+			errorStatus = http.StatusConflict
+			return errors.New("该节点处于恢复核对，禁止自动覆盖运行配置")
 		}
 		if agent.BootID != in.BootID {
 			for _, rule := range ListDocs[UserRule](s, "user_rules") {
@@ -292,7 +319,7 @@ func (a *App) relaySyncAgent(w http.ResponseWriter, r *http.Request) {
 			if !ok || !route.Enabled {
 				continue
 			}
-			rotateTLS := rule.TLSExpiresAt > 0 && rule.TLSExpiresAt-now < 7*commerceDay
+			rotateTLS := !relayRuleUsesV2(s, rule) && rule.TLSExpiresAt > 0 && rule.TLSExpiresAt-now < 7*commerceDay
 			if rotateTLS {
 				stages := append([]RouteStage{{AgentIDs: []string{route.EntryAgentID}, Protocol: "tcp", Strategy: "round"}}, route.Hops...)
 				stages = append(stages, route.Exit)
@@ -358,7 +385,7 @@ func (a *App) relaySyncAgent(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		commerceError(w, 401, err)
+		commerceError(w, errorStatus, err)
 		return
 	}
 	WriteJSON(w, 200, out)

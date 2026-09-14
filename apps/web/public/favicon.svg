@@ -1,1 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><title>MSBOOST 枫叶</title><rect width="48" height="48" rx="11" fill="#c86d32"/><path transform="translate(8 5) scale(.8)" d="m20 1 4.2 10 4.8-3-1.1 11 8-3.5-1.7 6 5.5 2-11.2 9.2 1.8 5.2-9-1.2V44h-2.6v-7.3L9.6 38l1.6-5.3L0 23.5l5.5-2-1.7-6 8 3.5L10.7 8l4.9 3L20 1Z" fill="white"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>MSBOOST 黑色描边枫叶</title>
+  <path d="M5 31a27 27 0 0 0 54 0" stroke="#000000" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M204 24C197 49 182 83 168 78C160 98 157 124 132 118C142 144 154 190 141 198C126 204 95 187 79 174C66 189 44 197 21 193C38 213 49 230 46 254C64 254 94 262 101 277C111 293 88 317 80 330C105 327 129 336 146 346C165 344 191 328 201 318C201 339 199 360 191 378C186 391 200 393 204 384C211 364 213 339 210 319C225 332 245 341 264 346C284 335 309 329 330 330C315 312 303 294 307 279C312 262 338 254 361 253C358 234 369 210 384 193C363 194 342 187 331 174C308 187 276 205 265 198C253 191 268 143 276 119C256 126 245 96 241 78C225 85 211 49 204 24Z" transform="translate(9 3) scale(.115)" fill="#ffffff" stroke="#000000" stroke-width="17.4" stroke-linejoin="round"/>
+</svg>

@@ -16,10 +16,20 @@ for(const [role,admin,subscribed] of [['admin',true,false],['member',false,false
     else {assert.ok(!items.includes('users'));assert.equal(items.includes('routes'),subscribed);}
   });
 }
-test('favicon reuses the approved maple silhouette',()=>{
+test('favicon and Maple share the outlined leaf and semicircle',()=>{
   const favicon=fs.readFileSync(new URL('../public/favicon.svg',import.meta.url),'utf8');
   const ui=fs.readFileSync(new URL('../src/ui.tsx',import.meta.url),'utf8');
-  const silhouette=ui.match(/<path d="([^"]+)"/)[1];
-  assert.ok(favicon.includes(silhouette));
+  const maple=ui.slice(ui.indexOf('export function Maple()'),ui.indexOf('export function Brand()'));
+  const paths=source=>[...source.matchAll(/<path\s+([\s\S]*?)\/>/g)].map(([,attributes])=>
+    Object.fromEntries([...attributes.matchAll(/([\w-]+)="([^"]*)"/g)].map(([,key,value])=>[
+      key.replace(/[A-Z]/g,char=>'-'+char.toLowerCase()),value,
+    ])));
+  assert.deepEqual(paths(favicon),paths(maple));
+  assert.equal(paths(favicon).length,2);
+  assert.equal(paths(favicon)[0].d,'M5 31a27 27 0 0 0 54 0');
+  assert.equal(paths(favicon)[1].fill,'#ffffff');
+  for(const path of paths(favicon))assert.equal(path.stroke,'#000000');
+  for(const source of [favicon,maple])assert.match(source,/viewBox="0 0 64 64"/);
   assert.match(favicon,/枫叶/);
+  assert.doesNotMatch(favicon,/<script|<image|href=/i);
 });

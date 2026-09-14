@@ -1,36 +1,42 @@
 #!/usr/bin/env bash
 # Download release-pinned standalone Agent assets; never put enrollment tokens in URLs.
+set +xv
 set -Eeuo pipefail
 umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 version=v0.2.3
-capability=''; server=''; token_file=''
+capability=''; server=''; token_file=''; offline_policy=lease; acknowledge_restart=0
 usage() {
   printf '%s\n' 'MSBOOST 执行机 / 中转节点安装入口（Debian 12，amd64/arm64）' \
     '用法：bash agent.sh --capability executor|relay --server https://panel.example.com [--version v0.2.3] [--token-file /root/private-token]' \
     'executor 为控制执行机，relay 为中转节点；请使用对应的注册令牌。' \
-    '未指定 --token-file 时隐藏输入令牌；控制面地址必须为 HTTPS。'
+    '未指定 --token-file 时隐藏输入令牌；控制面地址必须为 HTTPS。' \
+    'relay 可显式 --offline-policy keep_last；已有服务升级需 --acknowledge-relay-restart，首次迁移会中断原连接。' \
+    '默认 lease 保持旧版兼容；不得用此入口把已有 keep_last 状态降级。'
 }
 fail() { printf '错误：%s\n' "$*" >&2; exit 1; }
 step() { printf '\n[%s/3] %s\n' "$1" "$2" >&2; }
 while (( $# )); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --capability|--server|--version|--token-file)
+    --acknowledge-relay-restart) acknowledge_restart=1; shift ;;
+    --capability|--server|--version|--token-file|--offline-policy)
       (( $# >= 2 )) || fail "缺少 $1 参数"
-      case "$1" in --capability) capability=$2 ;; --server) server=${2%/} ;; --version) version=$2 ;; --token-file) token_file=$2 ;; esac
+      case "$1" in --capability) capability=$2 ;; --server) server=${2%/} ;; --version) version=$2 ;; --token-file) token_file=$2 ;; --offline-policy) offline_policy=$2 ;; esac
       shift 2 ;;
     *) fail "未知参数 $1" ;;
   esac
 done
 [[ "$capability" == executor || "$capability" == relay ]] || fail '请选择 executor（控制执行机）或 relay（中转节点）。'
+[[ $offline_policy == lease || $offline_policy == keep_last ]] || fail 'offline-policy 仅允许 lease 或 keep_last。'
+[[ $capability == relay || $offline_policy == lease && $acknowledge_restart == 0 ]] || fail '离线保留和中转重启确认只适用于 relay。'
 [[ "$server" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || fail '请填写 HTTPS 站点地址，不要包含路径或凭据；公网 HTTP 不适合传递令牌和 SSH 密码。'
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail '请指定固定正式版本 vX.Y.Z。'
 [[ "$(uname -s)" == Linux && "$(id -u)" == 0 ]] || fail '请在需要注册的 Linux 服务器上以 root 运行。'
 for tool in curl sha256sum mktemp; do command -v "$tool" >/dev/null || fail "缺少 $tool，请先安装该依赖。"; done
 case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) fail '当前支持 amd64/arm64 架构。' ;; esac
 stage=$(mktemp -d /tmp/msboost-agent-bootstrap.XXXXXXXX)
-cleanup() { [[ "$stage" == /tmp/msboost-agent-bootstrap.* && -d "$stage" && ! -L "$stage" ]] && rm -rf -- "$stage"; }
+cleanup() { if [[ "$stage" == /tmp/msboost-agent-bootstrap.* && -d "$stage" && ! -L "$stage" ]]; then rm -rf -- "$stage"; fi; }
 trap cleanup EXIT
 base="https://github.com/mozziexwz/node/releases/download/${version}"
 step 1 "下载固定版本 $version（$arch），不会在本机编译"
@@ -55,7 +61,10 @@ if [[ -z "$token_file" ]]; then
   unset token
 fi
 step 3 '安装并启动 Agent（已有受管安装会先保存私有备份）'
+relay_options=()
+if [[ $capability == relay && $offline_policy == keep_last ]]; then relay_options+=(--offline-policy keep_last); fi
+if (( acknowledge_restart )); then relay_options+=(--acknowledge-relay-restart); fi
 bash "$stage/install-agent.sh" --capability "$capability" --server "$server" \
   --agent "$stage/msboost-agent-linux-${arch}" --agent-sha256 "$agent_sha" \
-  --token-file "$token_file" --gost-version 3.3.0 || fail 'Agent 安装未完成，请根据上方阶段与错误处理后重试；不要公开令牌文件。'
+  --token-file "$token_file" --gost-version 3.3.0 "${relay_options[@]}" || fail 'Agent 安装未完成，请根据上方阶段与错误处理后重试；不要公开令牌文件。'
 printf '\n安装流程结束。请到后台确认执行机 / 节点在线；进程已启动不等于已成功连接控制面。\n'

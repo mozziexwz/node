@@ -7,6 +7,12 @@ TEST_WORK=$(mktemp -d "$TEST_REPO/.cache/manage-test.XXXXXXXX")
 trap '[[ -n $TEST_WORK && -d $TEST_WORK && ! -L $TEST_WORK ]] && rm -rf -- "$TEST_WORK"' EXIT
 source "$TEST_REPO/deploy/manage.sh"
 
+# Dedicated stdin/root/image contracts use only mocked Docker and terminal IO.
+bash "$TEST_REPO/deploy/admin_password_test.sh"
+bash "$TEST_REPO/deploy/backup_activity_recovery_test.sh"
+bash "$TEST_REPO/deploy/relay_recovery_test.sh"
+bash "$TEST_REPO/deploy/agent_migration_test.sh"
+
 # Git Bash cannot apply Unix ownership/modes to this managed Windows workspace.
 # Linux CI exercises real install/chmod; Windows still tests lifecycle decisions.
 if [[ $(uname -s) == MINGW* || $(uname -s) == MSYS* ]]; then
@@ -155,6 +161,8 @@ grep -Fq 'TRUSTED_PROXY_CIDRS: 172.30.86.2/32' "$TEST_REPO/deploy/compose.yml" |
 
 fixture normal
 install_site
+cmp -s "$INSTALL_ROOT/deploy/backup_activity_recovery.sh" "$TEST_REPO/deploy/backup_activity_recovery.sh" || fail 'installed backup reconciliation module missing or changed'
+cmp -s "$INSTALL_ROOT/deploy/relay_recovery.sh" "$TEST_REPO/deploy/relay_recovery.sh" || fail 'installed relay recovery module missing or changed'
 assert_start_sequence
 [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE) == ghcr.io/mozziexwz/node@sha256:* ]] || fail 'installed image was not pinned to its pulled digest'
 [[ $(env_get "$INSTALL_ROOT/.env" COOKIE_SECURE) == true ]] || fail 'domain install lacks secure cookie'

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>{{.Meta.Subject}}</title>
+<style>
+  body,table,td,a{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%}
+  table,td{mso-table-lspace:0pt;mso-table-rspace:0pt}
+  table{border-collapse:collapse}
+  @media screen and (max-width:620px){
+    .outer{padding:20px 12px!important}.pad{padding-left:24px!important;padding-right:24px!important}
+    .title{font-size:26px!important;line-height:36px!important}.code{font-size:36px!important;letter-spacing:6px!important}
+    .meta{font-size:12px!important}.tagline{display:none!important}
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;width:100%;background-color:#F4F2EE;color:#22272E;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei','PingFang SC','Noto Sans CJK SC',Arial,sans-serif;">
+<div style="display:none!important;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">{{.Meta.Preheader}}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:#F4F2EE;"><tr><td class="outer" align="center" style="padding:36px 16px;">
+{{msoStart}}
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;">
+<tr><td class="pad" style="padding:0 36px 22px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td style="font-size:22px;font-weight:800;letter-spacing:0.5px;color:#000000;">MSBOOST.</td>
+<td class="tagline" align="right" style="font-size:12px;color:#6C726F;">专注你的游戏连接</td>
+</tr></table></td></tr>
+<tr><td style="background-color:#FFFFFF;border:1px solid #E6E1DA;border-radius:16px;overflow:hidden;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr><td height="4" style="height:4px;line-height:4px;background-color:#D95422;font-size:0;">&nbsp;</td></tr>
+<tr><td class="pad" style="padding:32px 36px 0;">
+<p style="margin:0 0 12px;font-size:12px;font-weight:700;letter-spacing:1px;line-height:20px;color:#A74017;">{{.Meta.Category}} / MSBOOST</p>
+<h1 class="title" style="margin:0 0 20px;font-size:30px;line-height:42px;font-weight:700;letter-spacing:-0.7px;color:#20262E;">{{.Meta.Title}}</h1>
+<p style="margin:0 0 8px;font-size:15px;line-height:27px;color:#424953;">{{.Meta.Intro}}</p>
+<p style="margin:0;font-size:15px;line-height:27px;color:#424953;">{{.Meta.Instruction}}</p>
+</td></tr>
+{{if .Meta.UsesCode}}
+<tr><td class="pad" style="padding:24px 36px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#FFF6EE;border:1px solid #F0D9C8;border-radius:10px;">
+<tr><td align="center" style="padding:20px 12px 18px;">
+<p style="margin:0 0 8px;font-size:12px;line-height:20px;color:#795B46;">您的验证码</p>
+<p class="code" dir="ltr" style="margin:0 0 8px;font-family:Consolas,'SFMono-Regular','Courier New',monospace;font-size:44px;font-weight:700;letter-spacing:8px;line-height:56px;color:#9C3610;white-space:nowrap;">{{.Data.Code}}</p>
+<p style="margin:0;font-size:13px;line-height:22px;color:#795B46;">{{.Data.TTLMinutes}} 分钟内有效 · 仅限本次操作</p>
+</td></tr></table>
+<p class="meta" style="margin:12px 0 0;font-size:12px;line-height:21px;color:#70746E;">失效时间：{{.Data.ExpiresAtLabel}}<br>如已重新获取，请使用最新验证码。</p>
+</td></tr>
+{{else}}
+<tr><td class="pad" style="padding:24px 36px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F4F7F3;border:1px solid #DCE5D9;border-radius:10px;"><tr><td style="padding:18px 20px;">
+<p style="margin:0 0 6px;font-size:14px;font-weight:700;line-height:24px;color:#366044;">{{.Meta.StatusText}}</p>
+<p style="margin:0;font-size:12px;line-height:22px;color:#58665B;">{{.Meta.EventLabel}}：{{.Data.EventAtLabel}}</p>
+</td></tr></table></td></tr>
+{{end}}
+<tr><td class="pad" style="padding:0 36px 28px;">
+<p style="margin:0 0 7px;font-size:13px;font-weight:700;line-height:23px;color:#3B434B;">{{.Meta.NoticeTitle}}</p>
+<p style="margin:0;font-size:13px;line-height:24px;color:#687079;">{{.Meta.Notice}}</p>
+</td></tr>
+<tr><td class="pad" style="padding:20px 36px;background-color:#FBFAF7;border-top:1px solid #ECE8E1;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td style="font-size:12px;line-height:22px;color:#697069;">MSBOOST 账号服务{{if .Data.RecipientMask}}<br>接收邮箱：{{.Data.RecipientMask}}{{end}}</td>
+{{if .Data.SiteURL}}<td align="right" valign="top" style="font-size:12px;line-height:22px;"><a href="{{.Data.SiteURL}}" style="color:#A74017;text-decoration:underline;">访问 MSBOOST</a></td>{{end}}
+</tr></table></td></tr>
+</table></td></tr>
+<tr><td align="center" style="padding:20px 16px 0;font-size:11px;line-height:21px;color:#666D65;">本邮件由系统自动发送，请勿直接回复。<br>如需帮助，请联系站点管理员。<br><span style="color:#6A7168;">© {{.Data.Year}} MSBOOST</span></td></tr>
+</table>
+{{msoEnd}}
+</td></tr></table>
+</body>
+</html>

@@ -309,10 +309,14 @@ export function Backups() {
               t.authMode === "password" ? "SSH 密码" : "SSH 私钥",
               t.path,
               <div className="actions">
-                <Button onClick={() => {
-                  setTargetAuthMode(t.authMode || "private_key");
-                  setTarget(t);
-                }}>编辑</Button>
+                <Button
+                  onClick={() => {
+                    setTargetAuthMode(t.authMode || "private_key");
+                    setTarget(t);
+                  }}
+                >
+                  编辑
+                </Button>
                 <Button
                   onClick={async () => {
                     if (
@@ -341,9 +345,12 @@ export function Backups() {
           <h3>安全恢复（网页）</h3>
           <Notice tone="red">
             只恢复站点设置、文章附件、线路及节点定义。完整保留当前用户身份、余额权益、订单卡密、支付去重、工单审计、流量记录及用户规则。
-            当前用户规则正在关联的线路和节点保留当前版本，预检会列出。先开启维护模式、结束任务、暂停转发并等待租约失效，再预检。
+            当前用户规则正在关联的线路和节点保留当前版本，预检会列出。先开启维护模式并结束任务；v1
+            规则暂停后需等待节点确认或短租约失效。 keep_last
+            或混合模式不能用旧租约推定停止，恢复会保留相关资源并进入恢复核对。请先独立受信核对或隔离旧节点，再按预检结果操作。
             恢复前保存受保护的私有回滚副本；恢复后退出全部会话，撤销 Agent
-            凭据，暂停线路，保持维护。
+            凭据，停用控制面的线路定义，保持维护。Token
+            失效不代表旧业务已停止。支持恢复协议的 v2 节点须通过服务器本机 root 中转恢复入口逐规则核对；其他节点须独立确认停止，不能直接解除恢复冻结。
           </Notice>
           <div className="mt24">
             <input
@@ -412,6 +419,22 @@ export function Backups() {
                 {preflight.report?.preservedRoutes?.join("、") || "无"}；节点：
                 {preflight.report?.preservedNodes?.join("、") || "无"}。
               </Notice>
+              <section aria-label="恢复核对预检结果" className="mt16">
+                {preflight.report?.recoveryRequired && (
+                  <Notice tone="orange">
+                    本次恢复需要人工核对（recovery_required）。端口、旧目标及关联节点资源继续保留；不能因为管理凭据被撤销就重新分配端口或认定旧业务停止。
+                    待核对规则：
+                    {preflight.report?.recoveryRules?.join("、") ||
+                      "暂无关联规则；仍需核对旧节点"}
+                    。
+                  </Notice>
+                )}
+                {(preflight.report?.warnings || []).map((warning: string) => (
+                  <div className="mt8" key={warning}>
+                    <Notice tone="orange">{warning}</Notice>
+                  </div>
+                ))}
+              </section>
               {(preflight.report?.blockers || []).map((reason: string) => (
                 <Notice tone="red" key={reason}>
                   {reason}。处理后请重新预检。
@@ -425,7 +448,7 @@ export function Backups() {
                   if (
                     !file ||
                     !confirm(
-                      "确认按预检范围安全恢复？当前用户、财务与流量保留；全部会话退出、Agent 凭据失效、线路暂停。",
+                      "确认按预检范围安全恢复？当前用户、财务与流量保留；全部会话退出、Agent 凭据失效、控制面线路定义停用。keep_last 旧业务可能继续运行，相关资源保留并进入人工恢复核对；Token 失效不代表节点已停止。",
                     )
                   )
                     return;
@@ -456,6 +479,8 @@ export function Backups() {
             命令，将完整快照导入全新隔离 PostgreSQL 数据库或 SQLite
             目录；绝不在线覆写原库。
             备份之后的用户、付款及流量不会进入恢复库。旧库保留，恢复后默认维护、关闭支付，需停止旧服务后手动切换并人工核对订单，再恢复营业。
+            离线保留节点可能仍在运行，须保留端口及旧目标并独立受信核对或隔离；恢复数据库和撤销
+            Token 不构成旧业务停止或无损接管的证明。
           </Notice>
           <p className="mt16">
             <a
@@ -512,20 +537,50 @@ export function Backups() {
                 />
               ))}
             </div>
-            <Select label="SSH 认证方式" value={targetAuthMode} onChange={(e) => setTargetAuthMode(e.target.value)}>
+            <Select
+              label="SSH 认证方式"
+              value={targetAuthMode}
+              onChange={(e) => setTargetAuthMode(e.target.value)}
+            >
               <option value="password">SSH 密码</option>
               <option value="private_key">SSH 私钥</option>
             </Select>
             {targetAuthMode === "password" ? (
-              <Field key="password" label="SSH 密码" name="password" type="password" autoComplete="new-password" maxLength={512}
-                required={!target.id || targetAuthMode !== (target.authMode || "private_key")}
-                placeholder={target.id && targetAuthMode === target.authMode ? "留空保留已保存的密码" : "请输入 SSH 登录密码"} />
+              <Field
+                key="password"
+                label="SSH 密码"
+                name="password"
+                type="password"
+                autoComplete="new-password"
+                maxLength={512}
+                required={
+                  !target.id ||
+                  targetAuthMode !== (target.authMode || "private_key")
+                }
+                placeholder={
+                  target.id && targetAuthMode === target.authMode
+                    ? "留空保留已保存的密码"
+                    : "请输入 SSH 登录密码"
+                }
+              />
             ) : (
               <label className="field" key="private_key">
                 <span>备份专用 SSH 私钥</span>
-                <textarea name="privateKey" rows={6} autoComplete="off"
-                  required={!target.id || targetAuthMode !== (target.authMode || "private_key")}
-                  placeholder={target.id && targetAuthMode === (target.authMode || "private_key") ? "留空保留已保存的私钥" : "请输入备份专用 SSH 私钥"} />
+                <textarea
+                  name="privateKey"
+                  rows={6}
+                  autoComplete="off"
+                  required={
+                    !target.id ||
+                    targetAuthMode !== (target.authMode || "private_key")
+                  }
+                  placeholder={
+                    target.id &&
+                    targetAuthMode === (target.authMode || "private_key")
+                      ? "留空保留已保存的私钥"
+                      : "请输入备份专用 SSH 私钥"
+                  }
+                />
               </label>
             )}
             <Check
@@ -534,14 +589,25 @@ export function Backups() {
               defaultChecked={target.enabled}
             />
             <Notice>
-              可使用 root 或备份专用账号。凭据加密保存，不会回显；编辑时留空仅保留同一认证方式的凭据，切换方式必须重新填写。
-              缺失目录会以 0700 权限创建，备份文件权限为 0600；路径不能包含符号链接或其他账号可写的目录，账号须有相应权限。远端重新读取校验后才记为成功。
+              可使用 root
+              或备份专用账号。凭据加密保存，不会回显；编辑时留空仅保留同一认证方式的凭据，切换方式必须重新填写。
+              缺失目录会以 0700 权限创建，备份文件权限为
+              0600；路径不能包含符号链接或其他账号可写的目录，账号须有相应权限。远端重新读取校验后才记为成功。
             </Notice>
             <details className="mt16">
               <summary>如何核对 SSH 主机指纹？</summary>
-              <p className="mt8">请通过 VPS 服务商控制台等可信通道，在目标服务器查看主机公钥指纹。常见 Debian 12 的 ECDSA 主机公钥可使用：</p>
-              <pre className="code-panel mt8">ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub -E sha256</pre>
-              <p className="mt8">复制输出中的完整 SHA256:…，不是私钥。若服务器使用其他主机密钥，请核对实际协商密钥对应的指纹。指纹不符会在发送密码前中止连接；不要未经独立核对就信任网络扫描结果。</p>
+              <p className="mt8">
+                请通过 VPS
+                服务商控制台等可信通道，在目标服务器查看主机公钥指纹。常见
+                Debian 12 的 ECDSA 主机公钥可使用：
+              </p>
+              <pre className="code-panel mt8">
+                ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub -E sha256
+              </pre>
+              <p className="mt8">
+                复制输出中的完整
+                SHA256:…，不是私钥。若服务器使用其他主机密钥，请核对实际协商密钥对应的指纹。指纹不符会在发送密码前中止连接；不要未经独立核对就信任网络扫描结果。
+              </p>
             </details>
           </AsyncForm>
         </Modal>

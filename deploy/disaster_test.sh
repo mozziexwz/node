@@ -12,6 +12,12 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 trace() { printf '%s\n' "$*" >> "$TRACE"; }
 assert_has() { grep -Fqx -- "$2" "$1" || fail "missing trace: $2"; }
 assert_absent() { if grep -Fq -- "$2" "$1"; then fail "unexpected trace: $2"; fi; }
+assert_before() {
+  local first second
+  first=$(grep -nFx -- "$2" "$1" | head -n 1); first=${first%%:*}
+  second=$(grep -nFx -- "$3" "$1" | head -n 1); second=${second%%:*}
+  [[ -n $first && -n $second && $first -lt $second ]] || fail "trace order: $2 before $3"
+}
 expect_failure() { if "$@"; then fail 'expected operation to reject the unsafe/incomplete state'; fi; }
 
 # The production cleanup checks a fixed /root prefix. Test staging deliberately
@@ -37,6 +43,8 @@ if [[ $(uname -s) == MINGW* || $(uname -s) == MSYS* ]]; then
     if [[ $directory == 1 ]]; then mkdir -p -- "$@"; else cp -- "$1" "$2"; fi
   }
 fi
+id() { [[ ${1:-} == -u ]] || fail 'unexpected identity lookup'; printf '%s' "${MOCK_UID:-0}"; }
+uname() { case ${1:-} in -s) printf '%s' "${MOCK_SYSTEM:-Linux}" ;; -m) printf x86_64 ;; *) command uname "$@" ;; esac; }
 assert_root_path() { [[ $INSTALL_ROOT == "$CASE_ROOT"/installation && ! -L $INSTALL_ROOT ]]; }
 assert_managed() { assert_root_path && [[ -f $INSTALL_ROOT/.managed-by-msboost && $(<"$INSTALL_ROOT/.managed-by-msboost") == "$MARKER" && -f $INSTALL_ROOT/.env && ! -L $INSTALL_ROOT/.env && -d $INSTALL_ROOT/deploy ]]; }
 require_platform() { :; }
@@ -52,6 +60,22 @@ systemctl() { fail 'contract attempted real systemd management'; }
 disaster_tool() { DISASTER_TOOL=mock_disaster_tool; }
 load_release_image() { trace fallback-image; [[ $1 == "$(env_get "$STAGE/.env" MSBOOST_IMAGE_ID)" && $MOCK_FAIL != fallback ]] || return 1; }
 disaster_resume_clock() { printf '%s' "$MOCK_RESUME_ELAPSED"; }
+disaster_maintenance_open_tty() {
+  trace maintenance-tty
+  [[ $MOCK_FAIL != maintenance-tty ]] || return 1
+  exec {maintenance_tty_fd}</dev/null
+}
+disaster_maintenance_tty_valid() { [[ $MOCK_FAIL != maintenance-lost-tty ]]; }
+disaster_maintenance_read() {
+  trace maintenance-confirm
+  [[ $MOCK_FAIL != maintenance-eof ]] || return 1
+  maintenance_confirmation=$MOCK_MAINTENANCE_CONFIRM
+}
+sync() {
+  [[ $# == 2 && $1 == -f && $2 == "$CASE_ROOT"/staging.*/backup-pause.token && -s $2 ]] || fail 'unexpected token durability operation'
+  trace token-flushed
+  [[ $MOCK_FAIL != token-flush ]]
+}
 sleep() {
   [[ $1 == 1 || $1 == 2 ]] || fail 'resume sleep exceeded deadline granularity'
   MOCK_RESUME_ELAPSED=$((MOCK_RESUME_ELAPSED + $1))
@@ -98,6 +122,7 @@ docker() {
     run:*)
       [[ " $* " == *' --network none '* && " $* " == *' --read-only '* && " $* " == *' --entrypoint tar '* ]] || fail 'unexpected image execution'
       if [[ " $* " == *'target=/snapshot,readonly'* ]]; then
+        [[ -f $CASE_ROOT/pause-gate ]] || fail 'volume export without durable backup gate'
         [[ $MOCK_FAIL != volume-export ]] || return 1
         printf isolated-volume-archive
       else
@@ -123,20 +148,52 @@ compose_live() {
       fi ;;
     stop)
       [[ $* == 'stop --timeout 60 caddy server' || $* == 'stop --timeout 60 server' || $* == 'stop --timeout 60 caddy' ]] || fail 'stopped unexpected services'
+      [[ -f $CASE_ROOT/pause-gate ]] || fail 'control plane stopped before backup gate'
       : > "$CASE_ROOT/paused"
       [[ $MOCK_FAIL != stop ]] ;;
     start)
       [[ $* == 'start caddy server' || $* == 'start server' || $* == 'start caddy' ]] || fail 'resume uses unsupported flags or includes a previously stopped service'
+      [[ ! -f $CASE_ROOT/pause-gate ]] || fail 'control plane resumed before confirmed gate release'
       [[ $MOCK_FAIL != resume ]] || return 1
       rm -f -- "$CASE_ROOT/paused" ;;
     exec)
       [[ " $* " == *' database pg_dump '* && " $* " == *' --format=custom '* ]] || fail 'backup does not export PostgreSQL read-only'
+      [[ -f $CASE_ROOT/pause-gate ]] || fail 'database dump without backup gate'
       [[ $MOCK_FAIL != dump ]] || return 1
       [[ $MOCK_FAIL != empty-dump ]] || return 0
       printf isolated-pg-dump ;;
     run)
       [[ " $* " == *' --rm --no-deps -T '* && " $* " == *' --entrypoint /usr/local/bin/msboost-restore server '* ]] || fail 'application entrypoint or dependency started by helper'
-      if [[ " $* " == *' server export '* ]]; then
+      if [[ " $* " == *' server backup-pause '* ]]; then
+        local action=${*: -1} token extra risk
+        [[ $* == "run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause $action" && ( $action == begin || $action == begin-maintenance || $action == end ) ]] || fail 'backup gate has unsafe command or token argument'
+        IFS= read -r token || fail 'backup gate did not receive newline-terminated stdin token'
+        [[ $token =~ ^[a-f0-9]{64}$ && $token == "$(<"$DISASTER_WORK/backup-pause.token")" ]] || fail 'backup gate token did not come from the original private file'
+        if [[ $action == begin-maintenance ]]; then
+          IFS= read -r risk || fail 'maintenance gate missing stdin risk confirmation'
+          [[ $risk == BACKUP_WITH_RELAY_INTERRUPTION && $risk == "$maintenance_confirmation" ]] || fail 'maintenance gate bypassed precise confirmation'
+          assert_has "$TRACE" maintenance-tty
+          assert_has "$TRACE" maintenance-confirm
+        fi
+        if IFS= read -r extra; then fail 'extra backup gate stdin data'; fi
+        [[ -z ${extra:-} && $(wc -c < "$DISASTER_WORK/backup-pause.token") == 65 ]] || fail 'backup gate token has unexpected data'
+        trace "pause-$action"
+        if [[ $action == begin || $action == begin-maintenance ]]; then
+          [[ ${DISASTER_PAUSE_RELEASE:-0} == 1 ]] || fail 'begin has no uncertain-result cleanup intent'
+          [[ ! -f $CASE_ROOT/paused ]] || fail 'gate began after control plane stop'
+          [[ $MOCK_FAIL != begin-rejected && $MOCK_FAIL != begin-old-tool ]] || return 1
+          [[ $action != begin || $MOCK_FAIL != legacy ]] || return 1
+          printf '%s\n' "$token" > "$CASE_ROOT/pause-gate"
+          [[ $MOCK_FAIL != begin-uncertain && $MOCK_FAIL != begin-uncertain-end ]] || return 1
+        else
+          [[ ! -f $CASE_ROOT/pause-gate || $(<"$CASE_ROOT/pause-gate") == "$token" ]] || fail 'attempt to release another backup owner gate'
+          [[ $MOCK_FAIL != end && $MOCK_FAIL != begin-uncertain-end && $MOCK_FAIL != begin-old-tool ]] || return 1
+          rm -f -- "$CASE_ROOT/pause-gate"
+          if [[ $MOCK_FAIL == end-uncertain && ! -f $CASE_ROOT/end-uncertain-once ]]; then : > "$CASE_ROOT/end-uncertain-once"; return 1; fi
+        fi
+        printf '{"ok":true}\n'
+      elif [[ " $* " == *' server export '* ]]; then
+        [[ -f $CASE_ROOT/pause-gate ]] || fail 'state export without backup gate'
         [[ $MOCK_FAIL != state-export ]] || return 1
         printf isolated-encrypted-state
       else
@@ -177,6 +234,7 @@ mock_disaster_tool() {
     validate-volume) [[ $MOCK_FAIL != archive-member ]] ;;
     pack)
       [[ ! -f $CASE_ROOT/paused ]] || fail 'packing before service recovery'
+      [[ ! -f $CASE_ROOT/pause-gate ]] || fail 'packing before gate release'
       [[ -s $directory/state.msb && -s $directory/database.dump && -s $directory/deployment.tar ]] || fail 'snapshot missing data component'
       [[ $MOCK_FAIL != pack ]] || return 1
       printf verified-local-bundle > "$output" ;;
@@ -206,7 +264,8 @@ fixture() {
   CASE_KIND=backup
   MOCK_RUNNING=$'caddy\nserver\ndatabase'
   MOCK_FAIL= MOCK_COLLISION=0 MOCK_CONFIRM=RESTORE_NEW_MSBOOST MOCK_RESUME=healthy MOCK_RESUME_ELAPSED=0
-  DISASTER_TOOL= DISASTER_TOOL_DIR= DISASTER_TOOL_CONTAINER= DISASTER_WORK= DISASTER_RESUME=0
+  MOCK_UID=0 MOCK_SYSTEM=Linux MOCK_MAINTENANCE_CONFIRM=BACKUP_WITH_RELAY_INTERRUPTION
+  DISASTER_TOOL= DISASTER_TOOL_DIR= DISASTER_TOOL_CONTAINER= DISASTER_WORK= DISASTER_RESUME=0 DISASTER_PAUSE_RELEASE=0
   DISASTER_RUNNING=() STAGE= SNAPSHOT= BUILD=0
   DISASTER_ARCHIVE="$CASE_ROOT/source.tar.gz"; printf fixture-archive > "$DISASTER_ARCHIVE"
   {
@@ -225,6 +284,7 @@ installed_fixture() {
   printf '{}\n' > "$INSTALL_ROOT/disaster.json"
 }
 run_backup() { (trap disaster_cleanup EXIT; disaster_backup); }
+run_maintenance() { (trap disaster_cleanup EXIT; disaster_backup_maintenance "$@"); }
 run_restore() { (trap disaster_cleanup EXIT; disaster_restore); }
 
 for fault in none stop dump empty-dump state-export volume-export archive-member resume pack upload retention; do
@@ -233,6 +293,9 @@ for fault in none stop dump empty-dump state-export volume-export archive-member
   if [[ $fault == none ]]; then run_backup; else expect_failure run_backup; fi
   assert_has "$TRACE" 'compose stop --timeout 60 caddy server'
   assert_has "$TRACE" 'compose start caddy server'
+  assert_before "$TRACE" token-flushed pause-begin
+  assert_before "$TRACE" pause-begin 'compose stop --timeout 60 caddy server'
+  assert_before "$TRACE" pause-end 'compose start caddy server'
   assert_absent "$TRACE" 'compose start database'
   if [[ $fault == resume ]]; then
     [[ $(grep -c '^compose start ' "$TRACE") == 2 ]] || fail 'resume failure was not retried by real EXIT cleanup'
@@ -243,6 +306,42 @@ for fault in none stop dump empty-dump state-export volume-export archive-member
     assert_absent "$TRACE" 'helper retain'
   fi
 done
+
+# Fail closed before any pause for v1/mixed/unconfirmed chains, an old helper,
+# and a lost begin response. Cleanup still owns the exact persisted stdin token.
+for fault in begin-rejected begin-old-tool begin-uncertain token-flush; do
+  installed_fixture "backup-$fault"; MOCK_FAIL=$fault
+  expect_failure run_backup
+  assert_absent "$TRACE" 'compose stop'
+  assert_absent "$TRACE" 'compose start'
+  assert_absent "$TRACE" 'compose exec'
+  assert_absent "$TRACE" 'helper pack'
+  [[ ! -f $CASE_ROOT/pause-gate ]] || fail "failed begin left a recoverable gate after $fault"
+  if [[ $fault != token-flush ]]; then
+    assert_before "$TRACE" pause-begin pause-end
+  else assert_absent "$TRACE" pause-begin; fi
+done
+installed_fixture backup-end-failed; MOCK_FAIL=end
+expect_failure run_backup
+assert_has "$TRACE" 'compose stop --timeout 60 caddy server'
+[[ -f $CASE_ROOT/pause-gate && -f $CASE_ROOT/paused && $(grep -c '^pause-end$' "$TRACE") == 2 ]] || fail 'release failure lost the gate or failed to retry cleanup'
+assert_absent "$TRACE" 'compose start'
+assert_absent "$TRACE" 'helper pack'
+mapfile -t retained_tokens < <(find "$CASE_ROOT" -type f -name backup-pause.token)
+[[ ${#retained_tokens[@]} == 1 && $(<"${retained_tokens[0]}") == "$(<"$CASE_ROOT/pause-gate")" ]] || fail 'failed release did not retain exact recovery credential'
+if grep -Fq -- "$(<"${retained_tokens[0]}")" "$TRACE"; then fail 'token leaked into a command argument'; fi
+installed_fixture backup-end-uncertain; MOCK_FAIL=end-uncertain
+expect_failure run_backup
+[[ ! -f $CASE_ROOT/pause-gate && ! -f $CASE_ROOT/paused && $(grep -c '^pause-end$' "$TRACE") == 2 ]] || fail 'uncertain release did not retry idempotently'
+assert_before "$TRACE" pause-end 'compose start caddy server'
+assert_absent "$TRACE" 'helper pack'
+installed_fixture backup-begin-and-end-uncertain; MOCK_FAIL=begin-uncertain-end
+expect_failure run_backup
+[[ -f $CASE_ROOT/pause-gate && ! -f $CASE_ROOT/paused ]] || fail 'uncertain begin/end lost residual owner gate'
+assert_before "$TRACE" pause-begin pause-end
+assert_absent "$TRACE" 'compose stop'
+assert_absent "$TRACE" 'compose start'
+assert_absent "$TRACE" 'helper pack'
 installed_fixture backup-server-only
 MOCK_RUNNING=$'server\ndatabase'
 run_backup
@@ -253,6 +352,59 @@ MOCK_RUNNING=database
 run_backup
 assert_absent "$TRACE" 'compose stop'
 assert_absent "$TRACE" 'compose start'
+
+# Maintenance is a distinct, per-run true-TTY workflow. The default/timer
+# entrypoint never reads environment switches as a continuity waiver.
+installed_fixture maintenance-legacy-success; MOCK_FAIL=legacy
+run_maintenance
+assert_before "$TRACE" maintenance-confirm pause-begin-maintenance
+assert_before "$TRACE" pause-begin-maintenance 'compose stop --timeout 60 caddy server'
+assert_before "$TRACE" pause-end 'compose start caddy server'
+if grep -Fxq 'compose run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause begin' "$TRACE"; then fail 'maintenance silently downgraded to strict'; fi
+for fault in maintenance-tty maintenance-eof maintenance-lost-tty cancel nonroot nonlinux systemd invocation journal rejected; do
+  installed_fixture "maintenance-$fault"
+  (
+    case "$fault" in
+      cancel) MOCK_MAINTENANCE_CONFIRM=YES ;;
+      nonroot) MOCK_UID=1000 ;;
+      nonlinux) MOCK_SYSTEM=Windows ;;
+      systemd) SYSTEMD_EXEC_PID=123 ;;
+      invocation) INVOCATION_ID=synthetic-service ;;
+      journal) JOURNAL_STREAM=1:2 ;;
+      rejected) MOCK_FAIL=begin-rejected ;;
+      *) MOCK_FAIL=$fault ;;
+    esac
+    expect_failure run_maintenance
+  )
+  assert_absent "$TRACE" 'compose stop'
+  assert_absent "$TRACE" 'compose start'
+  assert_absent "$TRACE" 'helper pack'
+done
+installed_fixture maintenance-no-args
+expect_failure run_maintenance --force
+expect_failure manage_main disaster-backup-maintenance --yes
+assert_absent "$TRACE" 'compose stop'
+installed_fixture strict-timer-cannot-waive; MOCK_FAIL=legacy
+(
+  export DISASTER_MAINTENANCE=1 DISASTER_BACKUP_MODE=maintenance
+  maintenance_confirmation=BACKUP_WITH_RELAY_INTERRUPTION
+  INVOCATION_ID=synthetic-scheduled-backup
+  expect_failure run_backup
+)
+assert_has "$TRACE" pause-begin
+assert_absent "$TRACE" pause-begin-maintenance
+assert_absent "$TRACE" 'compose stop'
+assert_absent "$TRACE" maintenance-confirm
+grep -Fq 'ExecStart=/usr/local/bin/msboost disaster-backup' "$TEST_REPO/deploy/disaster.sh" || fail 'automatic backup entrypoint changed'
+if grep 'ExecStart=' "$TEST_REPO/deploy/disaster.sh" | grep -q 'maintenance'; then fail 'timer gained maintenance override'; fi
+installed_fixture maintenance-dump-failure; MOCK_FAIL=dump
+expect_failure run_maintenance
+assert_before "$TRACE" pause-end 'compose start caddy server'
+installed_fixture maintenance-release-failure; MOCK_FAIL=end
+expect_failure run_maintenance
+[[ -f $CASE_ROOT/pause-gate && -f $CASE_ROOT/paused ]] || fail 'maintenance lost original gate or paused-service evidence'
+assert_absent "$TRACE" 'compose start'
+assert_absent "$TRACE" 'helper pack'
 for fault in database-missing volume-owner; do
   installed_fixture "backup-$fault"
   if [[ $fault == database-missing ]]; then MOCK_RUNNING=$'caddy\nserver'; else MOCK_FAIL=volume-owner; fi

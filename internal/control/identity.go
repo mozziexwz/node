@@ -1,7 +1,6 @@
 package control
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -15,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
-	"net/smtp"
 	"net/url"
 	"sort"
 	"strconv"
@@ -83,6 +81,8 @@ type emailChallenge struct {
 	ExpiresAt int64  `json:"expiresAt"`
 	Attempts  int    `json:"attempts"`
 	Ready     bool   `json:"ready"`
+	// Reset codes are invalidated by any intervening password change.
+	CredentialsHash string `json:"credentialsHash,omitempty"`
 }
 
 func safeUser(u *User) *User {
@@ -145,63 +145,6 @@ func validPassword(password string) error {
 	return nil
 }
 
-func sendSMTP(ctx context.Context, config SMTPConfig, secret, recipient, body string) error {
-	address := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	dialer := &net.Dialer{Timeout: 15 * time.Second}
-	var conn net.Conn
-	var err error
-	tlsConfig := &tls.Config{ServerName: config.Host, MinVersion: tls.VersionTLS12}
-	if config.Encryption == "tls" {
-		conn, err = (&tls.Dialer{NetDialer: dialer, Config: tlsConfig}).DialContext(ctx, "tcp", address)
-	} else {
-		conn, err = dialer.DialContext(ctx, "tcp", address)
-	}
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	deadline := time.Now().Add(25 * time.Second)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
-	_ = conn.SetDeadline(deadline)
-	client, err := smtp.NewClient(conn, config.Host)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	if config.Encryption == "starttls" {
-		if ok, _ := client.Extension("STARTTLS"); !ok {
-			return errors.New("SMTP server does not support required STARTTLS")
-		}
-		if err = client.StartTLS(tlsConfig); err != nil {
-			return err
-		}
-	}
-	if err = client.Auth(smtp.PlainAuth("", config.Sender, secret, config.Host)); err != nil {
-		return err
-	}
-	if err = client.Mail(config.Sender); err != nil {
-		return err
-	}
-	if err = client.Rcpt(recipient); err != nil {
-		return err
-	}
-	w, err := client.Data()
-	if err != nil {
-		return err
-	}
-	from := (&mail.Address{Name: config.Name, Address: config.Sender}).String()
-	message := "From: " + from + "\r\nTo: " + recipient + "\r\nSubject: MSBOOST email verification\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + body + "\r\n"
-	if _, err = w.Write([]byte(message)); err != nil {
-		return err
-	}
-	if err = w.Close(); err != nil {
-		return err
-	}
-	return client.Quit()
-}
-
 // RegisterIdentity is extended below; all routes are called behind Authenticate.
 func (a *App) RegisterIdentity(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/me", a.me)
@@ -210,6 +153,8 @@ func (a *App) RegisterIdentity(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/logout", a.logout)
 	mux.HandleFunc("POST /api/auth/email/send", a.emailSend)
 	mux.HandleFunc("POST /api/auth/email/verify", a.emailVerify)
+	mux.HandleFunc("POST /api/auth/password/reset/request", a.passwordResetRequest)
+	mux.HandleFunc("POST /api/auth/password/reset/confirm", a.passwordResetConfirm)
 	mux.HandleFunc("GET /api/settings", a.publicSettings)
 	mux.HandleFunc("GET /api/admin/settings", a.adminSettings)
 	mux.HandleFunc("PUT /api/admin/settings", a.adminSettings)
@@ -564,10 +509,10 @@ func (a *App) emailSend(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, err.Error())
 		return
 	}
-	secret, err := a.Open(config.Secret)
-	if err == nil {
-		err = a.mailSender(r.Context(), config, string(secret), in.Email, "您的 MSBOOST 验证码为："+code+"\n10 分钟内有效。请勿向任何人透露此验证码。")
-	}
+	err = a.sendAccountEmail(r.Context(), config, in.Email, in.Purpose, EmailData{
+		Code: code, TTLMinutes: int((c.ExpiresAt - c.CreatedAt) / 60000),
+		ExpiresAtLabel: emailTimeLabel(c.ExpiresAt), Year: time.UnixMilli(c.CreatedAt).In(emailDisplayZone).Year(),
+	})
 	if err != nil {
 		category := mailFailureCategory(err)
 		_ = a.Store.Update(func(s *State) error {
@@ -898,10 +843,7 @@ func (a *App) smtpTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	secret, err := a.Open(config.Secret)
-	if err == nil {
-		err = a.mailSender(r.Context(), config, string(secret), in.Recipient, "这是一封 MSBOOST 邮件服务测试邮件。您的 SMTP 配置已完成实际发送验证。")
-	}
+	err = a.sendAccountEmail(r.Context(), config, in.Recipient, "smtp_test", EmailData{EventAtLabel: emailTimeLabel(time.Now().UnixMilli())})
 	if err != nil {
 		_ = a.Store.Update(func(s *State) error {
 			return identityAudit(s, actor.ID, "smtp.test.failed", in.Recipient, mailFailureCategory(err))

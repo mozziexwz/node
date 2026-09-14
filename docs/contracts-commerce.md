@@ -1,6 +1,6 @@
 # 商务与中转 API 契约
 
-实现位于 `internal/control/commerce*.go`、`payments*.go`、`relay*.go` 与 `internal/relayruntime`。JSON字段为camelCase，金额为整数分，时间戳为毫秒，流量为字节。所有用户请求以会话决定身份，写请求带 `X-CSRF-Token`，不能传入userId代替授权。错误为非2xx `{"error":"说明"}`，界面直接显示真实错误。
+实现位于 `internal/control/commerce*.go`、`payments*.go`、`relay*.go` 与 `internal/relayruntime`。本文描述当前源码，未发布的 v2 验收边界见 [整改状态](supplement-2.3-status.md)。JSON字段为camelCase，金额为整数分，时间戳为毫秒，流量为字节。所有用户请求以会话决定身份，写请求带 `X-CSRF-Token`，不能传入userId代替授权。错误为非2xx `{"error":"说明"}`，界面直接显示真实错误。
 
 ## 套餐和余额
 
@@ -40,9 +40,9 @@
 - `POST /api/admin/relay-agents`、`PUT /api/admin/relay-agents/{id}` 输入 `{name,address,addresses?:[],enabled,portRanges:[{start,end}]}`。address为主公网IP，addresses额外登记IPv4/IPv6；去重后含主地址最多16个。清空addresses仅保留主地址，不假称自动发现网卡。端口最多50段，1–65535不重叠。节点级requireFront已取消：旧值和旧请求字段忽略；仅保留隧道级requireFront。引用中的用户规则阻止变更地址集合。
 - 创建返回 `{agent,enrollmentToken,installArgs}`，一次性注册令牌15分钟有效。installArgs为 `{installer:"deploy/install-agent.sh",args:[...],tokenEnvironment:"MSBOOST_RELAY_ENROLLMENT_TOKEN",instructions}`；args使用安装器支持的 `--token-file`，需替换实际Agent路径和审核后SHA256，令牌单独保存到root私有0600文件，不放进命令行。不是给cmd/agent传入不存在的 `--enrollment-token` 参数，也不从网页自动执行shell。编辑不回显token。缩端口池、改IP、增强前置要求若破坏现有规则则阻止并说明。
 - `DELETE /api/admin/relay-agents/{id}`有路线/规则/租约引用时阻止。删除不卸载远端机器。
-- `POST /api/admin/relay-agents/{id}/enrollment` 重新签发15分钟注册令牌并撤销旧令牌，供令牌丢失或更换安装使用。返回旧租约最迟失效时间；停旧进程、等待旧租约清理后再启动新安装。
+- `POST /api/admin/relay-agents/{id}/enrollment` 重新签发15分钟注册令牌并撤销旧令牌。纯 v1 返回旧租约截止；v2 返回恢复核对警告，不承诺45秒停止，相关资源继续保留。重装会中断原连接；需要保留既有进程时使用本机受信恢复流程，不用注册令牌冒充热接管。
 - `GET /api/admin/user-rules` → `{rules}`，包括 `userEmail` 及脱敏诊断字段；界面支持邮箱/线路/状态筛选。
-- `GET/PATCH/DELETE /api/admin/user-rules/{ruleId}` 提供详情、`{paused:true|false}` 暂停/恢复及撤销。撤销沿用最后租约失效后归档的流程，重复删除不延长租约；管理员不能通过此接口取得用户客户端配置或认证秘密。线路/节点删除冲突给出具体关联与管理入口。
+- `GET/PATCH/DELETE /api/admin/user-rules/{ruleId}` 提供详情、`{paused:true|false}` 暂停/恢复及撤销。纯 v1 按最后租约失效后归档；v2 / 混合链路等待所有 v2 段精确 revoke 停止 ACK，未确认前不释放端口或旧目标。恢复核对期间禁止普通删除/恢复覆盖。管理员不能通过此接口取得用户客户端配置或认证秘密。线路/节点删除冲突给出具体关联与管理入口。
 
 ## 用户配置
 
@@ -52,9 +52,9 @@
 - front为可选自备前置；隧道requireFront时必填，节点旧字段不再继承。真实fingerprint从现有executor指纹探测获取。服务器分配本站端口 → Agent真实GOST绑定ACK → executor前置指向本站入口 → 成功后替换最终客户端入口和加密保存。调用可等待约数分钟，请前端显示实际准备状态，勿重复提交。SSH仅存在请求/执行器内存，失败撤销本站规则。
 - state为pending（等待绑定）、awaiting_front（本站准备/前置执行）、active（GOST监听ACK完成）、paused、failed、revoking、suspended、quota_exhausted。active只表示运行时监听准备好，不保证公网路径或游戏登录成功。
 - `PATCH /api/user/routes/{route}/rules` 输入 `{paused:true|false}`。
-- `DELETE /api/user/routes/{route}/rules` → 202 `{state:"revoking",maximumLeaseSeconds:45}`；立即删服务器下载密文，运行时主动撤销并受最后45秒租约限制。
+- `DELETE /api/user/routes/{route}/rules` → 202。纯 v1 返回 `{state:"revoking",maximumLeaseSeconds:45}`；涉及 v2 返回 `{state:"revoking",stopStatus:"pending",message}`，不返回虚假的租约截止。立即撤销服务器下载密文，v2 资源需等待明确停止确认。
 - `GET /api/user/routes/{route}/config` → 登录鉴权下载JSON，固定socks5Port10086；已有文件流量耗尽但未到期可下载，到期不可下载。不存在任何公共配置文件URL。
-- `POST /api/user/target/reset` 输入 `{confirm:true}`，撤销所有旧线路，`{state:"revoking",retryAfter:毫秒}`后再逐线配置新目标。
+- `POST /api/user/target/reset` 输入 `{confirm:true}`，撤销所有旧线路。纯 v1 返回 `{state:"revoking",retryAfter:时间戳毫秒}`；涉及 v2 返回 `{state:"revoking",stopStatus:"pending",message}`，全体旧实例确认撤销前不允许配置新目标。
 - `GET /api/user/traffic` → `{trafficUsed,trafficTotal,months:{"2026-09":字节},accounting}`。入口按规则保存的流量方向及倍率计费，多跳只计一次，各线路共用账户额度。整数千分倍率的小数字节余数随cursor持久化，同一epoch分批上报不会截断丢失；去重、溢出和旧权益保护继续有效。月历史不随买套餐清空。
 
 ## Agent运行契约和运维边界
@@ -63,12 +63,12 @@
 
 GOST每条规则独立子进程，固定配置与源IP白名单；多跳内部节点只允许上一跳候选源IP，前置模式入口仅允许前置源IP。部署网络必须确保节点出站源IP与登记address一致。域名目标首次创建时解析并检查所有地址为公网，然后固定IP，DNS变更需重配。控制流不承载游戏字节。已用官方GOST v3.3.0（官方checksum核验）通过本机回环真实双跳TCP、运行ACK、累计Observer和撤销关闭端口的集成测试；这不替代客户VPS公网路径验收。
 
-下游绑定ACK后才发布入口；GOST Observer提供真实监听状态和累计traffic。令牌不会授予SSH/DD能力。服务器按指定入口、累计字节、进程epoch与单调sequence去重。Observer样本在Agent私有目录持久化后才确认，断网保留待提交样本。离线超过租约独立watchdog杀进程；Linux父进程死亡信号避免Agent崩溃留下GOST。故障停止后需用户重试，不伪造成功。
+首次部署仍需下游绑定ACK后才发布入口；v2 已运行入口不因下游管理心跳过期而撤销。GOST Observer提供真实监听状态和累计traffic，令牌不会授予SSH/DD能力。纯 v1 离线超过租约由watchdog停止；v2 使用独立 `/api/relay-agent/v2/sync`，命令/流量分别明确 ACK，遗漏、坏响应和管理失联不删除既有配置。Linux父进程死亡保护仍保留。恢复、限额与状态字段详见 [Relay v2 契约](relay-v2-contract.md)。
 
-TLS跳使用GOST 3.3.0的tls listener与forward+tls连接器（不是只向UI增加协议选项）。每条用户规则、每个TLS节点生成独立ECDSA证书，服务端仅保存AES-GCM加密私钥；同步响应只向该节点交付自己的私钥，上一层只得到公开信任证书与节点DNS身份。GOST要求secure=true、固定CA和serverName，最低TLS1.2；不使用InsecureSkipVerify。证书有效期一年，剩余不足7天时轮换并更新规则版本/ACK，可能重建连接。运行时将证书/密钥写入私有临时文件，子进程正常结束或启动失败会清理；主机异常崩溃的遗留私有文件需运维检查。源IP白名单仍保护入站；当前不是双向客户端证书认证。
+TLS跳使用GOST 3.3.0的tls listener与forward+tls连接器。每条用户规则、每个TLS节点生成独立ECDSA证书，服务端仅保存AES-GCM加密私钥；同步响应只向该节点交付自己的私钥，上一层只得到公开信任证书与节点DNS身份。GOST要求secure=true、固定CA和serverName，最低TLS1.2；不使用InsecureSkipVerify。证书有效期一年，纯 v1 剩余不足7天时自动轮换；含 v2 的整链普通重连不轮换，须经 [root 显式证书维护](relay-recovery.md) 更新选中规则，可能重建其连接。过期证书不会降低验证要求。运行时将证书/密钥写入私有临时文件，正常结束或启动失败会清理；异常崩溃遗留需检查。源IP白名单仍保护入站；当前不是双向客户端证书认证。
 
-计量停止是5秒同步与45秒离线租约边界内收敛，非精确到最后一字节的分布式硬配额；异常断电可损失Observer最后约1秒尚未产出的样本。当前速率是每条规则双向分别限速；全账户共享速率、UDP、双向客户端证书认证、无损故障迁移没有宣称完成。FLVX未完整迁入或宣称兼容。生产需提供真实服务器、GOST版本、支付商户并完成公网联调。
+计量停止依赖控制面可达性；v1 另有45秒租约，v2 / keep_last 失联期间新发生的到期/封禁/超额决定延后执行，非精确到最后一字节的分布式硬配额。v2 旧权益样本计入原账务周期而不扣新套餐；跨月或时钟异常且无法精确拆分的区间进入待核对。异常断电可损失Observer最后尚未产出的样本，缓存耗尽必须显示计量降级。当前速率是每条规则双向分别限速；全账户共享速率、UDP、双向客户端证书认证、无损故障迁移没有宣称完成。FLVX未完整迁入或宣称兼容。
 
-v0.2.0 网页安全恢复不回滚商务数据：白名单只恢复站点设置、文章附件、线路与节点定义，完整保留当前用户身份、订单、卡密、流水、请求/支付去重、支付配置、权益、用户规则、计量和未知新集合。当前规则引用的线路节点保留当前拓扑；预检需带当前恢复范围摘要。恢复后保持维护、暂停规则、清除运行绑定并撤销 Agent 凭据；未过期配置可下载，需按新 Agent 重新配置转发。完整快照仅由离线 `msboost-restore` 导入全新库，绝不在线覆写旧库，见 [恢复指南](backup-recovery.md)。
+网页安全恢复不回滚商务数据：白名单只恢复站点设置、文章附件、线路与节点定义，完整保留当前用户身份、订单、卡密、流水、请求/支付去重、支付配置、权益、用户规则、计量和未知新集合。当前规则引用的线路节点保留当前拓扑；预检需带当前恢复范围摘要。恢复后保持维护并撤销 Agent 凭据；涉及 v2 时保留资源和运行关联，冻结自动覆盖，不能推定旧转发已停止。受保护接管不会自动开放支付或营业。完整快照仅由离线 `msboost-restore` 导入全新库，绝不在线覆写旧库，见 [恢复指南](backup-recovery.md) 与 [逐规则受信恢复](relay-recovery.md)。
 
 参考一手文档：[GOST转发](https://gost.run/tutorials/port-forwarding/)、[forward连接器](https://gost.run/en/reference/connectors/forward/)、[3.3.0对应TLS实现](https://github.com/go-gost/x/blob/v0.16.0/internal/util/tls/tls.go)、[Observer](https://v3.gost.run/en/concepts/observer/)、[速率限制](https://v3.gost.run/concepts/limiter/)、[准入控制](https://gost.run/en/concepts/admission/)、[易支付RSA签名](https://yzf.yzfpay.com/doc/sign_note.html)、[用户指定支付指南](https://dujiao-next.com/payment/guide)。

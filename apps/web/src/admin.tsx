@@ -2,6 +2,13 @@ import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import { api, post, array, download, copyText, RecordData } from "./api";
 import {
+  relayAccountingVisible,
+  relayNeedsRecovery,
+  relaySegmentStopText,
+  relayStatus,
+} from "./relay-status";
+import { RelayStatusDetail } from "./relay-status-view";
+import {
   Header,
   Button,
   Field,
@@ -190,7 +197,7 @@ const schemas: Record<string, Resource> = {
     columns: [
       ["name", "名称"],
       ["address", "公网 IP"],
-      ["online", "在线状态"],
+      ["online", "管理连接"],
       ["enabled", "启用"],
     ],
   },
@@ -288,7 +295,7 @@ export function ResourcePage({ kind }: { kind: string }) {
                       !confirm(
                         kind === "executors"
                           ? "生成新的安装令牌？旧令牌将立即失效，已有执行机需要重新安装。"
-                          : "生成新的节点注册令牌？仅在目标节点上运行安装脚本。",
+                          : "生成新的节点注册令牌？仅撤销管理凭据不保证旧转发停止；keep_last 节点可能继续运行，需独立受信核对或隔离旧节点。确认后仅在目标节点上运行安装脚本。",
                       )
                     )
                       return;
@@ -1080,7 +1087,12 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
   );
 }
 export function AdminRules() {
-  const { data, error, reload } = useData("/api/admin/user-rules");
+  const { data, error, reload } = useData("/api/admin/user-rules"),
+    {
+      data: accounting,
+      error: accountingError,
+      reload: reloadAccounting,
+    } = useData("/api/admin/relay-accounting");
   const [query, setQuery] = useState(""),
     [state, setState] = useState(""),
     [route, setRoute] = useState(""),
@@ -1090,19 +1102,21 @@ export function AdminRules() {
   const rules = array(data, "rules");
   const selected = rules.find((r) => r.id === selectedID);
   const states: Record<string, string> = {
-    active: "转发中",
+    active: "配置已确认",
     pending: "待确认",
     syncing: "同步中",
-    paused: "已暂停",
-    pausing: "暂停中",
-    revoking: "正在撤销",
+    paused: "暂停请求已记录",
+    pausing: "停止待确认",
+    revoking: "撤销待确认",
     failed: "执行失败",
     suspended: "账号停用",
     quota_exhausted: "流量耗尽",
     unavailable: "权益 / 线路不可用",
     awaiting_front: "前置机配置中",
+    recovery_required: "恢复核对中",
+    config_error: "配置异常，待核对",
   };
-  const status = (r: RecordData) => states[r.syncState || r.state] || r.state;
+  const status = (r: RecordData) => relayStatus(r).label;
   const rows = rules.filter(
     (r) =>
       (!query ||
@@ -1113,14 +1127,23 @@ export function AdminRules() {
       (!route || r.routeId === route),
   );
   useEffect(() => {
-    const timer = setInterval(reload, 5000);
+    const timer = setInterval(() => {
+      reload();
+      reloadAccounting();
+    }, 5000);
     return () => clearInterval(timer);
   }, []);
   async function change(r: RecordData, action: "pause" | "resume" | "delete") {
+    if (relayNeedsRecovery(r)) {
+      setMessage(
+        "此规则正在恢复核对；端口及旧目标保留，请先独立核对或隔离旧节点。",
+      );
+      return;
+    }
     if (
       !confirm(
         action === "delete"
-          ? `撤销 ${r.userEmail || r.userId} 在 ${r.routeName} 的转发并删除服务器配置？等待节点停止或租约到期后归档，不会立即释放端口。`
+          ? `请求撤销 ${r.userEmail || r.userId} 在 ${r.routeName} 的中转并删除服务器配置？待节点停止确认前，端口及旧目标继续占用。${relayStatus(r).mode === "lease" ? "v1 同时依据短租约状态核对。" : "v2 必须获得明确停止确认，不以旧租约时间推定停止。"}`
           : `${action === "pause" ? "暂停" : "恢复"} ${r.userEmail || r.userId} 在 ${r.routeName} 的转发？`,
       )
     )
@@ -1139,7 +1162,10 @@ export function AdminRules() {
     }
   }
   function actions(r: RecordData) {
-    const blocked = busy || ["revoking", "awaiting_front"].includes(r.state);
+    const blocked =
+      busy ||
+      relayNeedsRecovery(r) ||
+      ["revoking", "awaiting_front"].includes(r.state);
     return (
       <div className="actions">
         <Button
@@ -1151,7 +1177,7 @@ export function AdminRules() {
           {r.state === "paused" ? "恢复" : "暂停"}
         </Button>
         <Button
-          disabled={busy || r.state === "revoking"}
+          disabled={busy || relayNeedsRecovery(r) || r.state === "revoking"}
           onClick={() => void change(r, "delete")}
         >
           撤销 / 删除
@@ -1163,11 +1189,52 @@ export function AdminRules() {
     <>
       <Header
         title="用户中转"
-        sub="每条规则独立限速；修改后全部跳点 ACK 才确认生效。暂停与删除均等待节点停止或租约失效。"
+        sub="管理连接与业务运行分开展示。配置需全链路确认；停止与资源释放按各节点协议核对，不以失联直接推定业务停止。"
       >
-        <Button onClick={reload}>刷新</Button>
+        <Button
+          onClick={() => {
+            reload();
+            reloadAccounting();
+          }}
+        >
+          刷新
+        </Button>
       </Header>
       <ErrorNotice error={error || message} />
+      {accountingError && (
+        <Notice tone="orange">账务核对概览暂不可用：{accountingError}</Notice>
+      )}
+      {relayAccountingVisible(accounting) && (
+        <details className="card mt16" aria-label="账务核对概览">
+          <summary>账务核对概览（只读）</summary>
+          <Notice tone="orange">
+            历史周期流量按原权益周期归属，不混扣新套餐；待核对流量未自动调账，当前没有自动调账操作。
+          </Notice>
+          <p className="mt16">
+            待核对流量：
+            {Number(accounting?.reviewBytes || 0).toLocaleString("zh-CN")}{" "}
+            字节；待核对样本：{accounting?.reviewSamples || 0}；计量降级节点：
+            {accounting?.degradedAgents || 0}。
+          </p>
+          {accounting?.message && (
+            <p className="muted mt8">{accounting.message}</p>
+          )}
+          <Table
+            headers={[
+              "用户 ID",
+              "权益周期版本",
+              "已确认流量（字节）",
+              "待核对流量（字节）",
+            ]}
+            rows={array(accounting, "periods").map((period) => [
+              period.userId,
+              period.entitlementVersion,
+              Number(period.confirmedBytes || 0).toLocaleString("zh-CN"),
+              Number(period.reviewBytes || 0).toLocaleString("zh-CN"),
+            ])}
+          />
+        </details>
+      )}
       <div className="filterbar">
         <input
           aria-label="搜索用户中转"
@@ -1209,7 +1276,7 @@ export function AdminRules() {
             "线路",
             "目标",
             "每规则限速",
-            "同步状态",
+            "管理 / 运行报告",
             "计费流量",
             "操作",
           ]}
@@ -1224,6 +1291,16 @@ export function AdminRules() {
                 {" "}
                 · {r.readySegments}/{r.totalSegments} 已确认
               </small>
+              <small className="muted">
+                {relayStatus(r).controlLabel}；最后报告：
+                {relayStatus(r).runtimeLabel}（
+                {r.runtimeObservedAt ? date(r.runtimeObservedAt) : "无报告时间"}
+                ）
+                {relayStatus(r).control !== "online" ? "；当前业务待核实" : ""}
+              </small>
+              {relayStatus(r).stopText && (
+                <small>{relayStatus(r).stopText}</small>
+              )}
             </span>,
             (r.trafficBytes / 1e9).toFixed(2) + " GB",
             <div className="actions">
@@ -1234,7 +1311,7 @@ export function AdminRules() {
         />
       </div>
       {selectedID && (
-        <Modal title="用户转发详情" onClose={() => setSelectedID("")}>
+        <Modal title="用户中转详情" onClose={() => setSelectedID("")}>
           <ErrorNotice error={message} />
           {selected ? (
             <>
@@ -1251,15 +1328,16 @@ export function AdminRules() {
               <p className="mt16">
                 当前配置：上下行各 {selected.effectiveRateMbps} Mbps。
                 {selected.appliedRateMbps > 0
-                  ? `全部节点已确认 ${selected.appliedRateMbps} Mbps 生效。`
+                  ? `最近全链路已确认 ${selected.appliedRateMbps} Mbps 配置，不代表实时业务探测结果。`
                   : "尚未确认全链路生效。"}
               </p>
               <p className="mt8">
                 状态：{status(selected)}
-                {selected.stopDeadline
-                  ? `；最迟租约截止 ${date(selected.stopDeadline)}`
+                {relayStatus(selected).mode === "lease" && selected.stopDeadline
+                  ? `；v1 短租约截止 ${date(selected.stopDeadline)}`
                   : ""}
               </p>
+              <RelayStatusDetail rule={selected} />
               <Table
                 headers={[
                   "节点 ID",
@@ -1267,7 +1345,7 @@ export function AdminRules() {
                   "限速",
                   "ACK",
                   "ACK 时间",
-                  "租约截止",
+                  "停止确认 / v1 租约",
                 ]}
                 rows={(selected.segments || []).map((seg: RecordData) => [
                   seg.agentId,
@@ -1277,16 +1355,20 @@ export function AdminRules() {
                     {
                       ready: "已确认",
                       pending: "待确认",
-                      stopped: "已停止",
+                      stopped: "已报告停止",
                       failed: "执行失败",
                     } as Record<string, string>
                   )[seg.ackState] || seg.ackState,
                   date(seg.ackAt),
-                  date(seg.lastLease),
+                  seg.protocolVersion >= 2
+                    ? relaySegmentStopText(seg)
+                    : `${relaySegmentStopText(seg)}：${date(seg.lastLease)}`,
                 ])}
               />
               <Notice>
-                上下行各自限速，每条规则独立，不共享账号带宽。暂停保留配置；删除会撤销转发、清除配置，并在租约失效后归档。
+                上下行各自限速，每条规则独立。暂停与撤销请求不等于节点已停止；v1
+                按短租约核对，v2
+                需明确停止确认。恢复核对期间保留端口及旧目标，禁止直接恢复或删除规则。
               </Notice>
               <div className="mt16">{actions(selected)}</div>
             </>

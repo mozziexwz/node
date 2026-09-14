@@ -1,0 +1,67 @@
+{
+  "register": {
+    "Subject": "[MSBOOST] 注册验证码",
+    "Preheader": "请使用本邮件中的验证码完成注册，请勿向任何人透露。",
+    "Category": "创建账号",
+    "Title": "欢迎加入 MSBOOST",
+    "Intro": "您好！您正在使用此邮箱创建 MSBOOST 账号。",
+    "Instruction": "请返回注册页面，输入下方验证码完成邮箱验证。",
+    "NoticeTitle": "不是您本人操作？",
+    "Notice": "请忽略本邮件，无需回复。请勿向任何人透露验证码，MSBOOST 工作人员不会向您索取验证码。",
+    "UsesCode": true,
+    "EventLabel": "申请时间",
+    "StatusText": ""
+  },
+  "verify": {
+    "Subject": "[MSBOOST] 邮箱验证",
+    "Preheader": "请完成邮箱验证，确认此邮箱属于您本人。",
+    "Category": "邮箱验证",
+    "Title": "确认您的邮箱",
+    "Intro": "您好！您正在验证 MSBOOST 账号绑定的邮箱。",
+    "Instruction": "请返回您刚才操作的页面，输入下方验证码完成验证。",
+    "NoticeTitle": "保护您的账号",
+    "Notice": "验证码仅用于本次邮箱验证，请勿向任何人透露。如果这不是您的操作，请忽略本邮件。",
+    "UsesCode": true,
+    "EventLabel": "申请时间",
+    "StatusText": ""
+  },
+  "password_reset": {
+    "Subject": "[MSBOOST] 找回密码验证码",
+    "Preheader": "您正在申请重置密码；仅收到本邮件不会改变您的密码。",
+    "Category": "找回密码",
+    "Title": "重新设置您的密码",
+    "Intro": "您好！我们收到了您的 MSBOOST 账号密码重置申请。",
+    "Instruction": "请返回找回密码页面，输入下方验证码并设置新密码。",
+    "NoticeTitle": "不是您本人操作？",
+    "Notice": "请忽略本邮件，不要向任何人提供验证码。仅收到本邮件不会改变您的密码，MSBOOST 工作人员不会向您索取验证码。",
+    "UsesCode": true,
+    "EventLabel": "申请时间",
+    "StatusText": ""
+  },
+  "password_changed": {
+    "Subject": "[MSBOOST] 密码重置成功通知",
+    "Preheader": "您的账号密码已重置。若非本人操作，请尽快处理。",
+    "Category": "安全通知",
+    "Title": "您的密码已重置",
+    "Intro": "您好！您的 MSBOOST 账号密码已重置。",
+    "Instruction": "之后请使用新密码登录。为保护您的信息，本邮件不会包含新密码或旧密码。",
+    "NoticeTitle": "不是您本人操作？",
+    "Notice": "请尽快通过找回密码入口重新设置密码，并检查邮箱账号安全；必要时联系站点管理员。",
+    "UsesCode": false,
+    "EventLabel": "变更时间",
+    "StatusText": "密码更新完成"
+  },
+  "smtp_test": {
+    "Subject": "[MSBOOST] 邮件服务测试",
+    "Preheader": "这是一封测试邮件，请检查中文标题和正文显示。",
+    "Category": "服务测试",
+    "Title": "邮件服务测试",
+    "Intro": "您好！这是一封由 MSBOOST 管理后台发出的测试邮件。",
+    "Instruction": "收到本邮件，说明本次测试邮件已送达此邮箱。请检查中文标题、正文和排版是否显示正常。",
+    "NoticeTitle": "关于本次测试",
+    "Notice": "单次测试送达不代表所有后续邮件都能进入收件箱。无需回复本邮件，也无需输入任何验证码。",
+    "UsesCode": false,
+    "EventLabel": "测试时间",
+    "StatusText": "请人工确认显示效果"
+  }
+}

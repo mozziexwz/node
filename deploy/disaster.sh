@@ -86,13 +86,69 @@ disaster_resume_services() {
   done
 }
 
+disaster_pause_recovery_hint() {
+  local command
+  note '备份写入冻结可能仍然存在；它不会超时自动解除。不要删除原 token 文件或重新生成替代 token。'
+  note "私有恢复材料：$DISASTER_WORK/backup-pause.token（仅本机 root 可读，请勿上传或粘贴内容）。"
+  printf -v command 'MSBOOST_ENV_FILE=%q docker compose --project-name %q --env-file %q -f %q run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause end < %q' \
+    "$INSTALL_ROOT/.env" "$PROJECT" "$INSTALL_ROOT/.env" "$INSTALL_ROOT/deploy/compose.yml" "$DISASTER_WORK/backup-pause.token"
+  note '排除数据库 / Docker 故障后，在本机 root 终端执行以下命令，必须确认退出码为 0，再恢复原有控制面服务：'
+  note "$command"
+  note "备份前正在运行的控制面服务：${DISASTER_RUNNING[*]:-无}。此流程不会启动或重启客户 Agent / GOST。"
+}
+
+disaster_pause_begin() {
+  set +xv
+  local token mode=${1:-strict}
+  [[ -d $DISASTER_WORK && ! -L $DISASTER_WORK ]] || { die '备份门禁需要私有工作目录'; return 1; }
+  token=$(random_hex 32) || return
+  [[ $token =~ ^[a-f0-9]{64}$ ]] || { die '备份门禁随机凭据生成失败'; return 1; }
+  # Persist the only unlock credential before any database request. Exclusive
+  # creation plus the mktemp root-only parent prevents accidental replacement.
+  (umask 077; set -o noclobber; printf '%s\n' "$token" > "$DISASTER_WORK/backup-pause.token") || return
+  unset token
+  chmod 600 "$DISASTER_WORK/backup-pause.token" || return
+  sync -f "$DISASTER_WORK/backup-pause.token" || return
+  note "备份门禁私有工作目录：$DISASTER_WORK；异常退出时请保留其中的 backup-pause.token。"
+  # Record cleanup intent BEFORE begin: a failed/lost response does not prove
+  # that PostgreSQL rolled back. A missing gate makes end safely idempotent.
+  DISASTER_PAUSE_RELEASE=1
+  if [[ $mode == maintenance ]]; then
+    if ! printf '%s\n' "$(<"$DISASTER_WORK/backup-pause.token")" "$maintenance_confirmation" |
+      compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause begin-maintenance; then
+      die '手动维护备份门禁未确认成功，未执行停站；任务、备份活动、恢复冲突和无效记录不能通过风险确认绕过。'
+      return 1
+    fi
+    note '手动维护门禁已建立：你已接受旧链路因短租约中断的风险。此备份不承诺不断流，其他安全门禁仍有效。'
+  else
+    if ! compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause begin < "$DISASTER_WORK/backup-pause.token"; then
+      die '停站备份门禁未确认成功，未执行停站；旧工具、v1 / 混合链、未确认配置或恢复状态都会阻止备份。'
+      return 1
+    fi
+    note '停站备份门禁已建立，全部控制面业务写入暂时冻结；该检查仅核对已确认状态，不代表真实线路不断流验收已完成。'
+  fi
+}
+
+disaster_pause_end() {
+  [[ ${DISASTER_PAUSE_RELEASE:-0} == 1 ]] || return 0
+  [[ -f $DISASTER_WORK/backup-pause.token && ! -L $DISASTER_WORK/backup-pause.token ]] || { die '原备份门禁 token 文件缺失或类型无效，拒绝尝试替代凭据'; return 1; }
+  compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause end < "$DISASTER_WORK/backup-pause.token" || return
+  DISASTER_PAUSE_RELEASE=0
+}
+
 disaster_cleanup() {
   local code=$?
   trap - EXIT
   if [[ ${DISASTER_TOOL_CONTAINER:-} =~ ^[a-f0-9]{64}$ ]]; then docker rm "$DISASTER_TOOL_CONTAINER" >/dev/null || code=1; fi
+  # Never restart the control plane before confirmed unlock. This also handles
+  # an uncertain begin result, partial stop, failed export and an ordinary signal.
+  if ! disaster_pause_end; then
+    disaster_pause_recovery_hint
+    code=1
+  fi
   # A scheduled snapshot may pause only these two known containers. Resume the
   # exact services that were running, even if export/pack/disk/upload failed.
-  if [[ ${DISASTER_RESUME:-0} == 1 && ${#DISASTER_RUNNING[@]} -gt 0 ]]; then
+  if [[ ${DISASTER_PAUSE_RELEASE:-0} != 1 && ${DISASTER_RESUME:-0} == 1 && ${#DISASTER_RUNNING[@]} -gt 0 ]]; then
     if ! disaster_resume_services "${DISASTER_RUNNING[@]}"; then
       note '备份后服务重新启动失败，请立即检查 msboost status/logs。'; code=1
     fi
@@ -113,7 +169,43 @@ disaster_assert_volume() {
   case "$name" in msboost_app_data|msboost_caddy_data|msboost_caddy_config|msboost_database_data) ;; *) return 1 ;; esac
   [[ $(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$name") == "$PROJECT" ]] || { die "卷 $name 不属于本站"; return 1; }
 }
+disaster_maintenance_open_tty() {
+  if ! exec {maintenance_tty_fd}<>/dev/tty; then die '手动维护备份必须使用本机真实交互终端'; return 1; fi
+  disaster_maintenance_tty_valid || { die '手动维护备份不接受管道、文件或无终端输入'; return 1; }
+}
+disaster_maintenance_tty_valid() { [[ ${maintenance_tty_fd:-} =~ ^[0-9]+$ && -t $maintenance_tty_fd ]]; }
+disaster_maintenance_read() {
+  IFS= read -r -u "$maintenance_tty_fd" -p '逐次确认请输入 BACKUP_WITH_RELAY_INTERRUPTION（其他输入取消）: ' maintenance_confirmation || { die '确认已取消或结束，未执行停站'; return 1; }
+}
+disaster_backup_maintenance() {
+  set +xv
+  [[ $# == 0 ]] || { die '手动维护备份不接受参数或自动确认选项'; return 2; }
+  [[ $(id -u) == 0 && $(uname -s) == Linux ]] || { die '手动维护备份仅允许目标 Linux 服务器 root 执行'; return 1; }
+  [[ -z ${INVOCATION_ID:-} && -z ${SYSTEMD_EXEC_PID:-} && -z ${JOURNAL_STREAM:-} ]] || { die '手动维护备份禁止从 systemd 自动任务调用；定时备份仍使用严格门禁'; return 1; }
+  local maintenance_tty_fd maintenance_confirmation='' result=0
+  export -n maintenance_confirmation
+  disaster_maintenance_open_tty || return
+  note '风险：本次备份将短暂停止原有控制面服务，v1 / 混合链可能在短租约到期后断开，既有游戏连接可能中断，需要自行重连。'
+  note '这里只允许你明确接受链路离线能力不足的中断风险；执行任务、网页备份活动、恢复冲突、坏记录和所有并发门禁仍不可绕过。'
+  note '这是单次手动操作，不会放宽自动计划、迁移节点或停止客户 Agent / GOST。'
+  if ! disaster_maintenance_read || [[ $maintenance_confirmation != BACKUP_WITH_RELAY_INTERRUPTION ]]; then
+    exec {maintenance_tty_fd}>&-
+    note '已取消手动维护备份，未执行停站。'
+    return 1
+  fi
+  if ! disaster_backup maintenance; then result=1; fi
+  exec {maintenance_tty_fd}>&-
+  return "$result"
+}
 disaster_backup() {
+  # Ordinary/manual-safe and timer entrypoints always default to strict.
+  # Environment variables cannot opt into maintenance; that internal argument
+  # is accepted only during the wrapper's currently open, confirmed root TTY.
+  local mode=${1:-strict}
+  [[ $# -le 1 && ( $mode == strict || $mode == maintenance ) ]] || return 2
+  if [[ $mode == maintenance ]]; then
+    [[ ${maintenance_confirmation:-} == BACKUP_WITH_RELAY_INTERRUPTION ]] && disaster_maintenance_tty_valid || { die '缺少本轮真实终端风险确认，未执行停站'; return 1; }
+  fi
   assert_managed || return
   disaster_validate_environment "$INSTALL_ROOT/.env" || return
   disaster_tool || return
@@ -135,7 +227,8 @@ disaster_backup() {
   running=$(compose_live ps --status running --services) || return
   for volume in caddy server; do if grep -qx "$volume" <<< "$running"; then DISASTER_RUNNING+=("$volume"); fi; done
   grep -qx database <<< "$running" || { die '数据库未运行；先 repair 后备份'; return 1; }
-  note '整站快照会短暂停止控制面网页和后台写入，客户独立 VPS 服务不在操作范围内。'
+  if [[ $mode == strict ]]; then note '安全整站快照须先通过完整 v2 keep_last 链门禁；自动计划不会接受旧链路中断风险。客户独立 VPS 服务不在操作范围内。'; fi
+  disaster_pause_begin "$mode" || return
   if [[ ${#DISASTER_RUNNING[@]} -gt 0 ]]; then
     DISASTER_RESUME=1
     compose_live stop --timeout 60 "${DISASTER_RUNNING[@]}" || return
@@ -155,6 +248,8 @@ disaster_backup() {
     note "  → 校验数据卷归档：$volume"
     "$DISASTER_TOOL" disaster validate-volume --archive "$DISASTER_WORK/$volume.tar" || return
   done
+  note '  → 解除备份写入冻结'
+  if ! disaster_pause_end; then disaster_pause_recovery_hint; return 1; fi
   note '  → 恢复备份前正在运行的服务并检查健康'
   if [[ ${#DISASTER_RUNNING[@]} -gt 0 ]]; then disaster_resume_services "${DISASTER_RUNNING[@]}" || return; fi
   DISASTER_RESUME=0

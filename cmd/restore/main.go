@@ -1,5 +1,5 @@
-// msboost-restore stages a complete encrypted snapshot in a NEW database. It
-// never replaces the running database, changes Compose, or restarts services.
+// msboost-restore provides isolated recovery/export and a narrowly scoped local
+// administrator password command. No command changes Compose or restarts it.
 package main
 
 import (
@@ -15,6 +15,39 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "relay-recovery" {
+		if err := control.RunLocalRelayRecovery(connectionURL(false), os.Getenv("MASTER_KEY"), os.Getenv("PUBLIC_URL"), os.Args[2:], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "受信中转恢复："+err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "backup-activity" {
+		if err := control.RunLocalBackupActivity(connectionURL(false), os.Getenv("DATA_DIR"), os.Args[2:], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "异常网页备份："+err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "backup-pause" {
+		if err := control.RunLocalBackupPause(connectionURL(false), os.Args[2:], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "停站备份门禁："+err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "admin-password" {
+		if len(os.Args) != 2 {
+			fmt.Fprintln(os.Stderr, "admin-password 不接受参数；请从本机安装器的无回显终端交互执行。")
+			os.Exit(2)
+		}
+		if err := control.ChangeLocalAdminPassword(connectionURL(false), os.Stdin); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, "管理员密码已更新，原登录会话与未完成的密码恢复请求已失效。")
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "disaster" {
 		if err := disaster.Run(os.Args[2:], os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "整站备份工具："+err.Error())

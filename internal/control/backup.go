@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -375,7 +376,13 @@ func (b *BackupService) unpack(raw []byte) (*State, error) {
 	return &s, nil
 }
 func (b *BackupService) write(raw []byte) (BackupRecord, error) {
-	id := ID()
+	return b.writeWithID(raw, ID())
+}
+
+func (b *BackupService) writeWithID(raw []byte, id string) (BackupRecord, error) {
+	if !validBackupID(id) {
+		return BackupRecord{}, errors.New("备份标识无效")
+	}
 	dir := filepath.Join(b.app.Config.DataDir, "backups")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return BackupRecord{}, err
@@ -399,14 +406,34 @@ func (b *BackupService) write(raw []byte) (BackupRecord, error) {
 	sum := sha256.Sum256(raw)
 	return BackupRecord{ID: id, CreatedAt: time.Now().UnixMilli(), Size: len(raw), SHA256: hex.EncodeToString(sum[:]), Status: "verified", Targets: map[string]string{"local": "verified"}}, nil
 }
-func (b *BackupService) run(ctx context.Context) (BackupRecord, error) {
+func (b *BackupService) run(ctx context.Context) (record BackupRecord, runErr error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	var activityLock *backupActivityLock
+	// Registered before finalization so LIFO defer order keeps the kernel lock
+	// held through every external operation and the final database transaction.
+	defer func() {
+		if activityLock != nil {
+			if err := activityLock.Close(); err != nil {
+				runErr = errors.Join(runErr, errors.New("备份活动锁释放未确认，请核对原进程和备份状态"))
+			}
+		}
+	}()
 	var raw []byte
 	targets := []BackupTarget{}
-	err := b.app.Store.View(func(s *State) error {
+	operation := BackupOperation{ID: ID(), Kind: "site-backup", StartedAt: time.Now().UnixMilli()}
+	err := b.app.Store.Update(func(s *State) error {
+		if backupOperationPending(s) {
+			return errors.New("存在尚未核实结束的站点备份操作；请先核对 backup_operations，不能按超时自动解除")
+		}
 		var e error
+		// Pack under the same row lock that admits this operation. The snapshot
+		// does not include its own activity marker, and pause acquisition cannot
+		// interleave between the snapshot and the durable admission record.
 		raw, e = b.pack(s)
+		if e != nil {
+			return e
+		}
 		p, _ := LoadDoc[BackupPlan](s, "backup_plans", "default")
 		for _, id := range p.Targets {
 			v, ok := LoadDoc[BackupTarget](s, "backup_targets", id)
@@ -414,13 +441,35 @@ func (b *BackupService) run(ctx context.Context) (BackupRecord, error) {
 				targets = append(targets, v)
 			}
 		}
-		return e
+		// The first lock-file creation is also behind Store's pause gate and
+		// row lock, so it cannot write into app_data during a frozen snapshot.
+		activityLock, e = acquireBackupActivityLock(b.app.Config.DataDir, true)
+		if e != nil {
+			return e
+		}
+		operation.LockIdentity, operation.LockDevice, operation.LockInode = activityLock.Identity, activityLock.Device, activityLock.Inode
+		return beginBackupOperation(s, operation)
 	})
 	if err != nil {
 		return BackupRecord{}, err
 	}
-	record, err := b.write(raw)
+	completedNormally := false
+	defer func() {
+		// A panic is not a successful return: preserve the durable activity for
+		// explicit review, rather than finalizing an incompletely uploaded copy.
+		if !completedNormally {
+			return
+		}
+		if err := b.finishBackupOperation(operation, &record, runErr, activityLock); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("备份结果或活动标记未确认提交；请保留文件并核对 backup_operations: %w", err))
+		}
+	}()
+	// New activity identities also name their local/remote candidate copies,
+	// allowing manual review without guessing which random file belonged to a
+	// crashed run. Existence alone never changes the unknown result to success.
+	record, err = b.writeWithID(raw, operation.ID)
 	if err != nil {
+		completedNormally = true
 		return record, err
 	}
 	for _, target := range targets {
@@ -432,8 +481,8 @@ func (b *BackupService) run(ctx context.Context) (BackupRecord, error) {
 			record.Targets[target.ID] = "verified"
 		}
 	}
-	err = b.app.Store.Update(func(s *State) error { return SaveDoc(s, "backups", record.ID, record) })
-	return record, err
+	completedNormally = true
+	return record, nil
 }
 func (b *BackupService) upload(ctx context.Context, t BackupTarget, id string, raw []byte) error {
 	if err := validateBackupTarget(t); err != nil {
@@ -716,6 +765,7 @@ func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var rollback BackupRecord
+	var recoveryRequired bool
 	err = b.app.Store.Update(func(s *State) error {
 		if err := validateRestoreIdle(s); err != nil {
 			return err
@@ -739,6 +789,7 @@ func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 		if err := isolateRestoredState(merged, false); err != nil {
 			return err
 		}
+		recoveryRequired = restoredRelayRecoveryRequired(merged)
 		*s = *merged
 		if err := SaveDoc(s, "backups", rollback.ID, rollback); err != nil {
 			return err
@@ -750,18 +801,76 @@ func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 409, err.Error())
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"ok": true, "mode": "safe", "rollbackId": rollback.ID, "message": "安全恢复完成；当前用户、财务、流量与转发关联已保留。请重新登录并重新关联Agent，核对线路后解除维护。恢复前的私有回滚副本已保护，不会自动清理。"})
+	message := "安全恢复完成；当前用户、财务、流量与转发关联已保留。请重新登录并重新关联Agent，核对线路后解除维护。恢复前的私有回滚副本已保护，不会自动清理。"
+	if recoveryRequired {
+		message = "数据安全恢复完成，转发进入 recovery_required。旧节点可能仍在转发；端口、目标、实例和撤销记录已保留冻结，管理凭据已撤销。当前未提供受信无损接管，必须保留维护并人工核对，不能直接重新部署或释放资源。私有回滚副本已保护。"
+	}
+	WriteJSON(w, 200, map[string]any{"ok": true, "mode": "safe", "rollbackId": rollback.ID, "recoveryRequired": recoveryRequired, "message": message})
 }
 
-func prepareRestoredRelay(s *State, now int64) error {
+func prepareRestoredRelay(s *State, now int64, disaster bool) error {
+	retired, err := validateRelayRetirements(s, now)
+	if err != nil {
+		return err
+	}
+	recovery := disaster || restoreRelayNeedsRecovery(s)
+	protectedAgents := map[string]bool{}
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {
 		key := rule.UserID + ":" + rule.RouteID
-		rule.State = "paused"
-		rule.Segments = nil
-		rule.DeleteAfter = 0
-		rule.Version++
+		if restoreRuleNeedsRecovery(s, rule) || disaster && len(rule.Segments) > 0 {
+			// The snapshot cannot prove that an offline process has stopped. Keep
+			// its complete resource identity, including pending revocation intent.
+			// This is a reconciliation lock, NOT permission to take over the node.
+			rule.ReconcileState = "recovery_required"
+			for _, segment := range rule.Segments {
+				protectedAgents[segment.AgentID] = true
+			}
+			recovery = true
+		} else {
+			// Compatibility: current, positively v1-only safe restores still use
+			// the old expired-lease isolation path. Full restores never infer this
+			// for a populated segment merely from an old v1 snapshot.
+			rule.State = "paused"
+			rule.Segments = nil
+			rule.DeleteAfter = 0
+			rule.Version++
+		}
 		if err := SaveDoc(s, "user_rules", key, rule); err != nil {
 			return err
+		}
+	}
+	for _, agent := range ListDocs[RelayAgent](s, "relay_agents") {
+		if protectedAgents[agent.ID] || restoreAgentNeedsRecovery(s, agent) {
+			agent.ReconcileState = "recovery_required"
+			agent.KeepLastConfirmed = false
+			if err := SaveDoc(s, "relay_agents", agent.ID, agent); err != nil {
+				return err
+			}
+		}
+	}
+	if recovery {
+		control, _ := LoadDoc[map[string]any](s, "relay_v2_control", "default")
+		if control == nil {
+			control = map[string]any{}
+		}
+		control["epoch"], control["recoveryRequired"] = commerceID(), true
+		if err := SaveDoc(s, "relay_v2_control", "default", control); err != nil {
+			return err
+		}
+		for id, raw := range s.Docs["relay_v2_catalogs"] {
+			if _, terminal := retired[id]; terminal {
+				continue
+			}
+			var catalog map[string]any
+			if json.Unmarshal(raw, &catalog) != nil || catalog == nil {
+				return errors.New("恢复节点目录记录无效")
+			}
+			// Preserve the old epoch/revision for later comparison. A new control
+			// identity must not automatically authorize replay of old commands.
+			catalog["reconcileState"] = "recovery_required"
+			if err := SaveDoc(s, "relay_v2_catalogs", id, catalog); err != nil {
+				return err
+			}
 		}
 	}
 	for _, route := range ListDocs[Route](s, "routes") {
@@ -864,7 +973,7 @@ func (b *BackupService) Start(ctx context.Context) {
 				return
 			case <-ticker.C:
 				var due bool
-				_ = b.app.Store.Update(func(s *State) error {
+				err := b.app.Store.Update(func(s *State) error {
 					p, ok := LoadDoc[BackupPlan](s, "backup_plans", "default")
 					if !ok || !p.Enabled || p.NextAt > time.Now().UnixMilli() {
 						return nil
@@ -878,11 +987,12 @@ func (b *BackupService) Start(ctx context.Context) {
 					due = true
 					return SaveDoc(s, "backup_plans", "default", p)
 				})
-				if due {
+				if err == nil && due {
 					if _, err := b.run(ctx); err != nil {
-						_ = b.app.Store.Update(func(s *State) error {
-							return SaveDoc(s, "backups", ID(), BackupRecord{ID: ID(), CreatedAt: time.Now().UnixMilli(), Status: "failed", Error: "备份失败，请检查存储与远程目标"})
-						})
+						// run records an admitted operation's result atomically with
+						// activity removal. If that cannot commit, a second blind
+						// write must not hide the retained reconciliation marker.
+						log.Print("scheduled site backup failed; inspect backup history and backup_operations before retrying")
 					}
 				}
 			}

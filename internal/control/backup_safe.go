@@ -33,6 +33,9 @@ type RestorePreflight struct {
 	PreservedNodes       []string            `json:"preservedNodes"`
 	Blockers             []string            `json:"blockers"`
 	SettingKeys          []string            `json:"settingKeys"`
+	RecoveryRequired     bool                `json:"recoveryRequired"`
+	RecoveryRules        []string            `json:"recoveryRules"`
+	Warnings             []string            `json:"warnings"`
 }
 
 func cloneState(s *State) (*State, error) {
@@ -58,8 +61,12 @@ func restoreScopeFingerprint(s *State) (string, error) {
 			}
 			switch name {
 			case "relay_agents":
-				for _, key := range []string{"lastSeen", "online", "bootId", "version"} {
+				for _, key := range []string{"lastSeen", "online", "version", "controlStatus", "accountingDegraded"} {
 					delete(document, key)
+				}
+				agent, _ := LoadDoc[RelayAgent](s, "relay_agents", id)
+				if !restoreAgentNeedsRecovery(s, agent) {
+					delete(document, "bootId")
 				}
 			case "executors":
 				for _, key := range []string{"lastSeenAt", "lastIP", "ip", "online", "version"} {
@@ -69,12 +76,26 @@ func restoreScopeFingerprint(s *State) (string, error) {
 				// Acknowledgements, leases and cumulative meters are not a topology
 				// edit. Rule identity/version and configured target remain bound.
 				delete(document, "trafficBytes")
-				delete(document, "segments")
+				rule, _ := LoadDoc[UserRule](s, "user_rules", id)
+				if restoreRuleNeedsRecovery(s, rule) {
+					if segments, ok := document["segments"].([]any); ok {
+						for _, rawSegment := range segments {
+							if segment, ok := rawSegment.(map[string]any); ok {
+								for _, key := range []string{"ackState", "ackAt", "lastLease", "appliedGeneration", "stopConfirmed", "everReady", "runtimeObservedAt", "runtimeState"} {
+									delete(segment, key)
+								}
+							}
+						}
+					}
+				} else {
+					delete(document, "segments")
+				}
 			}
 			documents[id] = document
 		}
 		scope[name] = documents
 	}
+	scope["relay_v2_control"] = s.Docs["relay_v2_control"]
 	raw, err := json.Marshal(scope)
 	if err != nil {
 		return "", err
@@ -84,6 +105,12 @@ func restoreScopeFingerprint(s *State) (string, error) {
 }
 
 func validateRestoreIdle(s *State) error {
+	if backupPauseGatePresent(s) {
+		return ErrBackupPauseActive
+	}
+	if backupOperationPending(s) {
+		return errors.New("存在进行中或未核实结束的备份操作，不能通过恢复清除活动标记")
+	}
 	if !boolSetting(s, "maintenance") {
 		return errors.New("请先开启维护模式，然后重新预检")
 	}
@@ -98,7 +125,7 @@ func validateRestoreIdle(s *State) error {
 	}
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {
 		for _, segment := range rule.Segments {
-			if segment.LastLease > time.Now().UnixMilli() {
+			if !restoreSegmentMayKeepLast(s, segment) && segment.LastLease > time.Now().UnixMilli() {
 				return errors.New("请先暂停全部本站转发并等待租约失效")
 			}
 		}
@@ -107,7 +134,7 @@ func validateRestoreIdle(s *State) error {
 }
 
 func mergeSafeRestore(current, snapshot *State) (*State, RestorePreflight, error) {
-	report := RestorePreflight{CurrentUsers: len(current.Users), Differences: []RestoreDifference{}, PreservedCollections: []string{}, PreservedRoutes: []string{}, PreservedNodes: []string{}, Blockers: []string{}}
+	report := RestorePreflight{CurrentUsers: len(current.Users), Differences: []RestoreDifference{}, PreservedCollections: []string{}, PreservedRoutes: []string{}, PreservedNodes: []string{}, Blockers: []string{}, RecoveryRules: []string{}, Warnings: []string{}}
 	merged, err := cloneState(current)
 	if err != nil {
 		return nil, report, err
@@ -152,6 +179,20 @@ func mergeSafeRestore(current, snapshot *State) (*State, RestorePreflight, error
 	// Existing per-user configurations and their metering cannot be rewound.
 	// Keep their route topology even if the backup predates or differs from it.
 	protectedRoutes, protectedNodes := map[string]bool{}, map[string]bool{}
+	protectNode := func(id string) error {
+		if id == "" {
+			return nil
+		}
+		node, ok := current.Docs["relay_agents"][id]
+		if !ok {
+			return errors.New("当前转发资源引用的节点不存在，请先修复关联")
+		}
+		if !reflect.DeepEqual(node, merged.Docs["relay_agents"][id]) {
+			protectedNodes[id] = true
+		}
+		merged.Docs["relay_agents"][id] = node
+		return nil
+	}
 	for _, rule := range ListDocs[UserRule](current, "user_rules") {
 		route, ok := LoadDoc[Route](current, "routes", rule.RouteID)
 		if !ok {
@@ -162,17 +203,22 @@ func mergeSafeRestore(current, snapshot *State) (*State, RestorePreflight, error
 		}
 		merged.Docs["routes"][route.ID] = current.Docs["routes"][route.ID]
 		for _, id := range relayRouteAgents(route) {
-			if id == "" {
-				continue
+			if err := protectNode(id); err != nil {
+				return nil, report, err
 			}
-			node, ok := current.Docs["relay_agents"][id]
-			if !ok {
-				return nil, report, fmt.Errorf("当前线路 %s 引用的节点 %s 不存在，请先修复关联", route.ID, id)
+		}
+		// A kept segment may still belong to a previous route topology.
+		for _, segment := range rule.Segments {
+			if err := protectNode(segment.AgentID); err != nil {
+				return nil, report, err
 			}
-			if !reflect.DeepEqual(node, merged.Docs["relay_agents"][id]) {
-				protectedNodes[id] = true
+		}
+	}
+	for _, agent := range ListDocs[RelayAgent](current, "relay_agents") {
+		if restoreAgentNeedsRecovery(current, agent) {
+			if err := protectNode(agent.ID); err != nil {
+				return nil, report, err
 			}
-			merged.Docs["relay_agents"][id] = node
 		}
 	}
 	// A snapshot may refer to a current node that was not in its backup manifest.
@@ -226,8 +272,23 @@ func mergeSafeRestore(current, snapshot *State) (*State, RestorePreflight, error
 		}
 		report.Differences = append(report.Differences, diff)
 	}
+	if _, err := relayRetirementNow(merged); err != nil {
+		return nil, report, err
+	}
 	if err := validateRestoreReferences(merged); err != nil {
 		return nil, report, err
+	}
+	// Include recovered node definitions too: a deleted keep_last node may be
+	// absent from today's database but still hold old processes on its VPS.
+	report.RecoveryRequired = restoreRelayNeedsRecovery(merged)
+	for _, rule := range ListDocs[UserRule](merged, "user_rules") {
+		if restoreRuleNeedsRecovery(merged, rule) {
+			report.RecoveryRules = append(report.RecoveryRules, rule.ID)
+		}
+	}
+	sort.Strings(report.RecoveryRules)
+	if report.RecoveryRequired {
+		report.Warnings = append(report.Warnings, "离线保留节点可能仍在转发；恢复将保留资源并进入 recovery_required，撤销管理凭据不代表业务已停止。当前未提供受信无损接管，不能直接重新部署或释放端口。")
 	}
 	return merged, report, nil
 }
@@ -259,6 +320,13 @@ func validateRestoreReferences(s *State) error {
 		}
 		if _, ok := LoadDoc[Route](s, "routes", rule.RouteID); !ok {
 			return errors.New("用户转发引用的线路不存在")
+		}
+		for _, segment := range rule.Segments {
+			if segment.AgentID != "" {
+				if _, ok := LoadDoc[RelayAgent](s, "relay_agents", segment.AgentID); !ok {
+					return errors.New("用户转发保留资源引用的节点不存在")
+				}
+			}
 		}
 	}
 	for id, raw := range s.Docs["articles"] {
@@ -293,13 +361,27 @@ func validateRestoreReferences(s *State) error {
 }
 
 func isolateRestoredState(s *State, disaster bool) error {
+	// A snapshot's local orchestration gate is not ownership of the new site.
+	// Relay recovery isolation below is separate and must remain in force.
+	delete(s.Docs, backupPauseCollection)
+	delete(s.Docs, "backup_operations")
 	s.Sessions = map[string]*Session{}
 	s.Settings["maintenance"] = true
 	delete(s.Docs, "email_challenges")
 	delete(s.Docs, "executor_agents")
+	if err := prepareRestoredRelay(s, time.Now().UnixMilli(), disaster); err != nil {
+		return err
+	}
 	for _, agent := range ListDocs[RelayAgent](s, "relay_agents") {
 		agent.Enabled, agent.Online = false, false
-		agent.TokenHash, agent.EnrollmentHash, agent.BootID = "", "", ""
+		agent.TokenHash, agent.EnrollmentHash = "", ""
+		if agent.ReconcileState != "recovery_required" {
+			agent.BootID = ""
+		} else {
+			// Keep the last installation/instance identity as evidence only;
+			// retaining it does not retain an authentication credential.
+			agent.ControlStatus = "auth_error"
+		}
 		agent.EnrollmentExpires, agent.LastSeen = 0, 0
 		if err := SaveDoc(s, "relay_agents", agent.ID, agent); err != nil {
 			return err
@@ -314,9 +396,6 @@ func isolateRestoredState(s *State, disaster bool) error {
 		if err := SaveDoc(s, "executors", id, agent); err != nil {
 			return err
 		}
-	}
-	if err := prepareRestoredRelay(s, time.Now().UnixMilli()); err != nil {
-		return err
 	}
 	for key, raw := range s.Docs["tasks"] {
 		var task map[string]any

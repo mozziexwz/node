@@ -23,14 +23,17 @@ import (
 )
 
 type process struct {
-	rule    Rule
-	epoch   string
-	cmd     *exec.Cmd
-	cancel  context.CancelFunc
-	ack     Ack
-	traffic Traffic
-	expires time.Time
-	done    chan struct{}
+	rule            Rule
+	epoch           string
+	cmd             *exec.Cmd
+	cancel          context.CancelFunc
+	ack             Ack
+	traffic         Traffic
+	expires         time.Time
+	done            chan struct{}
+	stopping        bool
+	startedAt       int64
+	v2BillingPeriod string
 }
 type runtimeState struct {
 	mu            sync.Mutex
@@ -40,6 +43,8 @@ type runtimeState struct {
 	journal       string
 	observerToken string
 	observerURL   string
+	v2            *v2RuntimeState
+	v2Traffic     *v2TrafficState
 }
 
 func randomID() string {
@@ -198,6 +203,9 @@ func (s *runtimeState) observer(w http.ResponseWriter, r *http.Request) {
 		}
 		switch event.Type {
 		case "status":
+			if p.stopping {
+				continue
+			}
 			switch event.Status.State {
 			case "running":
 				p.ack.State = "ready"
@@ -206,9 +214,17 @@ func (s *runtimeState) observer(w http.ResponseWriter, r *http.Request) {
 				p.ack.State = "failed"
 				p.ack.Message = "GOST service failed"
 			case "closed":
-				p.ack.State = "stopped"
+				// A service event cannot prove the child has exited.
+				p.ack.State = "failed"
 			}
 		case "stats":
+			if s.cfg.OfflinePolicy == KeepLast {
+				s.recordV2TrafficLocked(p, event.Stats.InputBytes, event.Stats.OutputBytes, event.Stats.CurrentConns, time.Now().UnixMilli())
+				if event.Stats.InputBytes >= p.traffic.InputBytes && event.Stats.OutputBytes >= p.traffic.OutputBytes && event.Stats.CurrentConns >= 0 {
+					p.traffic.InputBytes, p.traffic.OutputBytes, p.traffic.Connections = event.Stats.InputBytes, event.Stats.OutputBytes, event.Stats.CurrentConns
+				}
+				continue
+			}
 			if event.Stats.InputBytes < p.traffic.InputBytes || event.Stats.OutputBytes < p.traffic.OutputBytes {
 				continue
 			}
@@ -219,9 +235,11 @@ func (s *runtimeState) observer(w http.ResponseWriter, r *http.Request) {
 			s.pending[p.epoch] = p.traffic
 		}
 	}
-	if err := s.persistLocked(); err != nil {
-		http.Error(w, "journal unavailable", 503)
-		return
+	if s.cfg.OfflinePolicy != KeepLast {
+		if err := s.persistLocked(); err != nil {
+			http.Error(w, "journal unavailable", 503)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	io.WriteString(w, `{"ok":true}`)
@@ -231,26 +249,57 @@ func (s *runtimeState) stopLocked(id string) {
 	if p == nil {
 		return
 	}
+	if p.stopping {
+		return
+	}
+	select {
+	case <-p.done:
+		p.stopping = true
+		p.ack.State = "stopped"
+		return
+	default:
+	}
 	p.cancel()
-	p.ack.State = "stopped"
+	p.stopping = true
+	p.ack.State = "stopping"
 	p.ack.Message = "rule removed or lease expired"
 }
 func (s *runtimeState) startLocked(ctx context.Context, rule Rule) error {
+	prepared, err := s.prepareProcess(rule)
+	if err != nil {
+		return err
+	}
+	return s.startPreparedLocked(ctx, rule, prepared)
+}
+
+type preparedProcess struct {
+	epoch, path string
+	cleanupTLS  func()
+}
+
+func (p *preparedProcess) cleanup() { p.cleanupTLS(); _ = os.Remove(p.path) }
+
+func (s *runtimeState) prepareProcess(rule Rule) (*preparedProcess, error) {
 	epoch := randomID()
 	raw, cleanupTLS, err := prepareGostConfig(rule, s.observerURL+"&epoch="+epoch, s.cfg.StateDir)
 	if err != nil {
 		cleanupTLS()
-		return err
+		return nil, err
 	}
 	path := filepath.Join(s.cfg.StateDir, "rule-"+epoch+".json")
 	if err = os.WriteFile(path, raw, 0600); err != nil {
 		cleanupTLS()
-		return err
+		return nil, err
 	}
+	return &preparedProcess{epoch: epoch, path: path, cleanupTLS: cleanupTLS}, nil
+}
+
+func (s *runtimeState) startPreparedLocked(ctx context.Context, rule Rule, prepared *preparedProcess) error {
+	epoch, path, cleanupTLS := prepared.epoch, prepared.path, prepared.cleanupTLS
 	child, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(child, s.cfg.GostBinary, "-C", path)
 	protectChild(cmd)
-	p := &process{rule: rule, epoch: epoch, cmd: cmd, cancel: cancel, ack: Ack{ID: rule.ID, Version: rule.Version, State: "pending"}, traffic: Traffic{ID: rule.ID, Version: rule.Version, Epoch: epoch, EntitlementVersion: rule.EntitlementVersion}, expires: time.Now().Add(30 * time.Second), done: make(chan struct{})}
+	p := &process{rule: rule, epoch: epoch, cmd: cmd, cancel: cancel, ack: Ack{ID: rule.ID, Version: rule.Version, State: "pending"}, traffic: Traffic{ID: rule.ID, Version: rule.Version, Epoch: epoch, EntitlementVersion: rule.EntitlementVersion}, expires: time.Now().Add(30 * time.Second), done: make(chan struct{}), startedAt: time.Now().UnixMilli()}
 	s.processes[rule.ID] = p
 	// Logging is not forwarded to the control plane; target details are private.
 	cmd.Stdout = io.Discard
@@ -265,10 +314,13 @@ func (s *runtimeState) startLocked(ctx context.Context, rule Rule) error {
 		return err
 	}
 	go func() {
-		defer cleanupTLS()
 		err := cmd.Wait()
+		cleanupTLS()
+		os.Remove(path)
 		s.mu.Lock()
-		if p.ack.State != "stopped" {
+		if p.stopping {
+			p.ack.State = "stopped"
+		} else {
 			p.ack.State = "failed"
 			if err == nil {
 				p.ack.Message = "GOST exited unexpectedly"
@@ -276,9 +328,8 @@ func (s *runtimeState) startLocked(ctx context.Context, rule Rule) error {
 				p.ack.Message = "GOST exited; check port conflicts and configuration"
 			}
 		}
-		s.mu.Unlock()
-		os.Remove(path)
 		close(p.done)
+		s.mu.Unlock()
 	}()
 	return nil
 }
@@ -314,7 +365,7 @@ func (s *runtimeState) apply(ctx context.Context, response SyncResponse) error {
 	}
 	for id, rule := range desired {
 		p := s.processes[id]
-		if p != nil && (p.rule.Version != rule.Version || p.ack.State == "stopped") {
+		if p != nil && (p.rule.Version != rule.Version || p.ack.State == "stopped" || p.ack.State == "stopping" || p.ack.State == "failed") {
 			select {
 			case <-p.done:
 				delete(s.processes, id)
@@ -335,6 +386,12 @@ func (s *runtimeState) apply(ctx context.Context, response SyncResponse) error {
 }
 
 func Run(ctx context.Context, cfg Config) error {
+	if cfg.OfflinePolicy == "" {
+		cfg.OfflinePolicy = "lease"
+	}
+	if cfg.OfflinePolicy != "lease" && cfg.OfflinePolicy != KeepLast {
+		return errors.New("offline policy must be lease or keep_last")
+	}
 	if runtime.GOOS != "linux" {
 		return errors.New("production relay runtime requires Linux process-death protection")
 	}
@@ -342,8 +399,25 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Scheme != "https" && !(parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || net.ParseIP(parsed.Hostname()) != nil && net.ParseIP(parsed.Hostname()).IsLoopback())) {
 		return errors.New("relay control URL must use HTTPS (HTTP only on loopback)")
 	}
+	if cfg.OfflinePolicy == KeepLast && (parsed.Opaque != "" || parsed.ForceQuery || parsed.RawPath != "" || parsed.Path != "" && parsed.Path != "/") {
+		return errors.New("v2 control URL must be an origin")
+	}
 	if cfg.StateDir == "" {
 		return errors.New("relay state directory is required")
+	}
+	if cfg.OfflinePolicy == "lease" {
+		if _, err := os.Lstat(filepath.Join(cfg.StateDir, v2StateFile)); err == nil || !errors.Is(err, os.ErrNotExist) {
+			return errors.New("refusing to downgrade a keep_last state directory to lease")
+		}
+	} else if err := ensureV2StateDir(cfg.StateDir); err != nil {
+		return err
+	}
+	if cfg.OfflinePolicy == KeepLast {
+		unlock, err := lockV2StateDir(cfg.StateDir)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 	}
 	if cfg.GostBinary == "" {
 		cfg.GostBinary = "gost"
@@ -359,7 +433,27 @@ func Run(ctx context.Context, cfg Config) error {
 		Token   string `json:"token"`
 		AgentID string `json:"agentId"`
 	}
-	if data, err := os.ReadFile(tokenPath); err == nil {
+	if cfg.OfflinePolicy == KeepLast {
+		// A root-authorized recovery persists credential and epoch together with
+		// runtime intent. Prefer that atomic checkpoint over the original token
+		// file, including after a crash between persistence and the live swap.
+		var trusted v2DiskState
+		if err := readV2PrivateJSON(filepath.Join(cfg.StateDir, v2StateFile), &trusted); err == nil {
+			if trusted.ManagementToken != "" {
+				if trusted.Schema != ProtocolV2 || trusted.OfflinePolicy != KeepLast || !validV2ID(trusted.AgentID) || !validRecoveryOrigin(trusted.ServerURL) || !validRecoveryToken(trusted.ManagementToken) || validateV2RecoveryCheckpoint(trusted) != nil {
+					return errors.New("invalid trusted v2 credential checkpoint")
+				}
+				cfg.ServerURL, token.AgentID, token.Token = trusted.ServerURL, trusted.AgentID, trusted.ManagementToken
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return errors.New("cannot read trusted v2 credential checkpoint")
+		}
+		if token.Token == "" {
+			if err := readV2PrivateJSON(tokenPath, &token); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return errors.New("v2 token file is not trusted private state")
+			}
+		}
+	} else if data, err := os.ReadFile(tokenPath); err == nil {
 		if err = json.Unmarshal(data, &token); err != nil {
 			return err
 		}
@@ -371,9 +465,16 @@ func Run(ctx context.Context, cfg Config) error {
 		if err := call(ctx, cfg, "", "/api/relay-agent/register", map[string]string{"enrollmentToken": cfg.EnrollmentToken}, &token); err != nil {
 			return err
 		}
-		if err := atomicPrivateJSON(tokenPath, token); err != nil {
+		writeToken := atomicPrivateJSON
+		if cfg.OfflinePolicy == KeepLast {
+			writeToken = writeV2PrivateJSON
+		}
+		if err := writeToken(tokenPath, token); err != nil {
 			return err
 		}
+	}
+	if cfg.OfflinePolicy == KeepLast {
+		return runV2(ctx, cfg, token.AgentID, token.Token)
 	}
 	s := &runtimeState{cfg: cfg, processes: map[string]*process{}, pending: map[string]Traffic{}, journal: filepath.Join(cfg.StateDir, "traffic-journal.json"), observerToken: randomID()}
 	if data, err := os.ReadFile(s.journal); err == nil {

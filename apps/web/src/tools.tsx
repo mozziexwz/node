@@ -548,7 +548,7 @@ export function ToolPage({
     [task, setTask] = useState<RecordData | null>(null);
   const { data: quotas, reload } = useData("/api/tasks");
   const title =
-    { deploy: "部署 MSBOOST", relay: "配置自备中转", dd: "DD 系统" }[kind] ||
+    { deploy: "部署 MSBOOST", relay: "配置中转服务器", dd: "DD 系统" }[kind] ||
     "";
   const gate =
     user.role !== "admin" &&
@@ -617,10 +617,10 @@ export function ToolPage({
         title={title}
         sub={
           kind === "deploy"
-            ? "在自备 VPS 上部署，并下载直连配置。"
+            ? "在你的VPS上部署游戏节点，并下载MSBOOST配置文件。"
             : kind === "relay"
-              ? "上传配置并填写中转服务器信息，系统自动分配端口。"
-              : "仅提供 Debian 12，默认保留当前 SSH 端口和密码。"
+              ? "上传MSBOOST配置文件，中转你或朋友的MSBOOST节点"
+              : "在线重装系统，默认保持当前SSH端口和密码。"
         }
       />
       {gate ? (
@@ -750,7 +750,7 @@ export function ToolPage({
                       ))}
                     </div>
                     <Notice>
-                      入口使用实际转发服务器的 IP；监听端口随机分配，每端口固定
+                      入口使用实际中转服务器的 IP；监听端口随机分配，每端口固定
                       5 Mbps。
                     </Notice>
                   </>
@@ -947,7 +947,9 @@ function CleanupPanel({
   }
   return (
     <details className="card mt24" data-testid="cleanup-panel">
-      <summary>{scope === "msboost" ? "卸载 MSBOOST" : "清理自备转发"}</summary>
+      <summary>
+        {scope === "msboost" ? "卸载 MSBOOST" : "清理中转服务器配置"}
+      </summary>
       <Notice tone="red">清理会停止相关服务并删除清单内配置。</Notice>
       <form
         onSubmit={(e) => {

@@ -23,6 +23,19 @@ test('landing title: two intact lines, orange second line, responsive layout', {
     const title=page.getByRole('heading',{level:1});
     await expect(title.locator(':scope > span')).toHaveText(['一键部署你的','独立IP游戏节点']);
     await page.evaluate(()=>document.fonts.ready);
+    const maples=page.locator('.brand > svg, .hero-steps .active > svg');
+    await expect(maples).toHaveCount(2);
+    for(const maple of await maples.all()) {
+      const geometry=await maple.evaluate(svg=>{
+        const box=svg.getBBox();
+        return {x:box.x,y:box.y,right:box.x+box.width,bottom:box.y+box.height,
+          strokes:[...svg.querySelectorAll('path')].map(path=>getComputedStyle(path).stroke)};
+      });
+      assert.deepEqual(geometry.strokes,['rgb(0, 0, 0)','rgb(0, 0, 0)'],'black leaf and semicircle on both white and orange backgrounds');
+      assert.ok(geometry.x>=2 && geometry.y>=2 && geometry.right<=62 && geometry.bottom<=62,'maple fits inside the viewBox with stroke padding');
+    }
+    await page.locator('.brand').first().screenshot({path:'../../.runtime/supplement23-brand.png'});
+    await page.locator('.hero-steps .active').screenshot({path:'../../.runtime/supplement23-logo-step.png'});
     for(const width of [1440,1050,900,784,761,760,375,320]) {
       await page.setViewportSize({width,height:900});
       const layout=await title.evaluate(element=>{
@@ -89,7 +102,7 @@ test('real server: browser permissions, admin pages, content and account flows',
     const me=await (await ctx.request.get('/api/me')).json();
     assert.equal(me.user.role,'admin');assert.ok(!me.user.passwordHash);
     assert.equal((await ctx.request.post('/api/admin/plans',{data:{}})).status(),403,'CSRF rejects missing token');
-    for (const label of ['部署 MSBOOST','配置自备中转','DD 系统','节点','隧道']) await expect(page.locator('.sidebar').getByRole('button',{name:label,exact:true})).toBeVisible();
+    for (const label of ['部署 MSBOOST','配置中转服务器','DD 系统','节点','隧道']) await expect(page.locator('.sidebar').getByRole('button',{name:label,exact:true})).toBeVisible();
     for (const hash of ['home','users','tasks','executors','agents','routes','rules','plans','cards','invitations','orders','payments','settings','backups','tickets','account']) {
       await page.goto(base+'/#'+hash);
       await expect(page.locator('.sidebar')).toBeVisible();

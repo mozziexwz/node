@@ -31,11 +31,12 @@ type OfflineRestoreOptions struct {
 	PostgresNewDatabase string
 }
 type OfflineRestoreResult struct {
-	Database    string `json:"database"`
-	Users       int    `json:"users"`
-	Collections int    `json:"collections"`
-	Maintenance bool   `json:"maintenance"`
-	Message     string `json:"message"`
+	Database         string `json:"database"`
+	Users            int    `json:"users"`
+	Collections      int    `json:"collections"`
+	Maintenance      bool   `json:"maintenance"`
+	RecoveryRequired bool   `json:"recoveryRequired"`
+	Message          string `json:"message"`
 }
 
 func OfflineRestore(opts OfflineRestoreOptions) (OfflineRestoreResult, error) {
@@ -152,7 +153,8 @@ func OfflineRestore(opts OfflineRestoreOptions) (OfflineRestoreResult, error) {
 		return result, err
 	}
 	result.Users, result.Collections, result.Maintenance = len(state.Users), len(state.Docs), true
-	result.Message = "完整快照已写入全新隔离数据库并读回校验。旧数据库未打开、未覆盖、未删除；站点保持维护，支付关闭，所有会话与 Agent 凭据已撤销。停止旧服务后手动切换并对账，不能直接恢复营业。"
+	result.RecoveryRequired = restoredRelayRecoveryRequired(state)
+	result.Message = "完整快照已写入全新隔离数据库并读回校验。旧数据库未打开、未覆盖、未删除；站点保持维护，支付关闭，所有会话与 Agent 凭据已撤销。转发进入 recovery_required：旧节点可能仍在运行，已保留端口、目标、实例及撤销关联，冻结自动覆盖。停止或可信隔离旧站点后，支持恢复协议的 v2 节点可通过本机 root 中转恢复入口逐规则核对和受信接管；其他节点需独立确认停止。财务与营业开关仍须人工核对，不能直接恢复营业。"
 	return result, nil
 }
 
