@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const base = process.env.MSBOOST_TEST_URL || 'http://127.0.0.1:8080';
 assert.match(base, /^http:\/\/(127\.0\.0\.1|localhost):\d+$/);
 const sample = {id:'synthetic-order_123',userId:'buyer',plan:{name:'合成测试套餐'},amountCents:1234,channelId:'synthetic-channel',state:'pending'};
+const detailName = count => `${sample.plan.name}（查询响应 ${count}）`;
 
 test('payment return: authenticated status, bounded polling, login continuation and readonly channel URLs', {timeout:60000}, async t => {
   const browser = await chromium.launch({headless:true,...(process.platform==='win32'?{channel:'chrome'}:{})});
@@ -16,7 +17,7 @@ test('payment return: authenticated status, bounded polling, login continuation 
     const page=await browser.newPage({baseURL:base});
     await page.clock.install();
     const requests=[],errors=[];
-    const model={signedIn,state,orderStatus,details:0,me:0,hang:false};
+    const model={signedIn,state,orderStatus,details:0,me:0,hang:false,deferDetails:false,pendingDetails:[]};
     page.on('pageerror',e=>errors.push(e.message));
     await page.route('**/*',async route=>{
       const url=new URL(route.request().url());
@@ -30,7 +31,9 @@ test('payment return: authenticated status, bounded polling, login continuation 
       if(path===`/api/orders/${sample.id}`) {
         model.details++;
         if(model.hang) return;
-        return route.fulfill(model.orderStatus===200?{json:{...sample,state:model.state,paymentUrl:'https://gateway.invalid/synthetic-checkout',reviewReason:model.state==='paid_review'?'付款通知超过订单有效期':undefined}}:{status:model.orderStatus,json:{error:'订单不存在'}});
+        const response=model.orderStatus===200?{json:{...sample,plan:{...sample.plan,name:detailName(model.details)},state:model.state,paymentUrl:'https://gateway.invalid/synthetic-checkout',reviewReason:model.state==='paid_review'?'付款通知超过订单有效期':undefined}}:{status:model.orderStatus,json:{error:'订单不存在'}};
+        if(model.deferDetails) {model.pendingDetails.push(()=>route.fulfill(response));return;}
+        return route.fulfill(response);
       }
       if(path==='/api/plans') return route.fulfill({json:{plans:[{id:'synthetic-plan',name:'合成测试套餐',priceCents:1234,days:1,trafficBytes:1000000000,enabled:true}]}});
       if(path==='/api/payment-channels') return route.fulfill({json:{channels:[{id:'synthetic-channel',name:'合成渠道'}]}});
@@ -43,6 +46,16 @@ test('payment return: authenticated status, bounded polling, login continuation 
       return route.fulfill({json:{}});
     });
     return {page,model,requests,errors};
+  }
+  async function detailSettled(page,model,count) {
+    await expect.poll(()=>model.details).toBe(count);
+    const panel=page.getByRole('region',{name:'支付返回结果'});
+    // Request arrival is not response.json completion. The next 5s timer is
+    // installed only after this particular result is consumed. Waiting for
+    // its unique rendered value and finally/busy state prevents advancing the
+    // fake clock while a slow intercepted response is still in flight.
+    await expect(panel).toContainText(detailName(count));
+    await expect(panel.getByRole('button',{name:'刷新付款状态',exact:true})).toBeEnabled();
   }
   try {
     await t.test('component reused without a key isolates a new order and refreshes each paid order',async()=>{
@@ -88,10 +101,10 @@ test('payment return: authenticated status, bounded polling, login continuation 
         const panel=page.getByRole('region',{name:'支付返回结果'});
         await expect(panel).toContainText('等待付款通知');
         await expect(panel).not.toContainText('已支付，权益已生效');
-        assert.equal(model.details,1);
+        await detailSettled(page,model,1);
         for(let i=2;i<=13;i++) {
           await page.clock.runFor(5000);
-          await expect.poll(()=>model.details).toBe(i);
+          await detailSettled(page,model,i);
         }
         await expect(panel).toContainText('本轮自动查询已结束');
         await page.clock.runFor(30000);
@@ -105,6 +118,29 @@ test('payment return: authenticated status, bounded polling, login continuation 
         assert.equal(model.details,14);
         assert.ok(requests.every(r=>r.method==='GET'));
         assert.ok(!requests.some(r=>r.path.includes('/notify')));
+        assert.deepEqual(errors,[]);
+      } finally {await page.close();}
+    });
+    await t.test('delayed response does not overlap reads; next poll starts after that response settles',async()=>{
+      const {page,model,requests,errors}=await fixture();
+      try {
+        model.deferDetails=true;
+        await page.goto(`/?order=${sample.id}&state=paid`);
+        const panel=page.getByRole('region',{name:'支付返回结果'});
+        await expect.poll(()=>model.details).toBe(1);
+        await expect(panel.getByRole('button',{name:'正在查询…',exact:true})).toBeDisabled();
+        await page.clock.runFor(5000);
+        assert.equal(model.details,1);
+        assert.equal(model.pendingDetails.length,1);
+        await expect(panel).not.toContainText(detailName(1));
+        await expect(panel).not.toContainText('已支付，权益已生效');
+        model.deferDetails=false;
+        await model.pendingDetails.shift()();
+        await detailSettled(page,model,1);
+        await page.clock.runFor(5000);
+        await detailSettled(page,model,2);
+        await expect(panel).toContainText('等待付款通知');
+        assert.ok(requests.every(r=>r.method==='GET'));
         assert.deepEqual(errors,[]);
       } finally {await page.close();}
     });

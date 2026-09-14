@@ -180,7 +180,9 @@ validate_source() {
   [[ -n $SOURCE_DIR && -d $SOURCE_DIR ]] || { die '需要校验过的 release bundle；请使用仓库根 install.sh'; return 1; }
   SOURCE_DIR=$(realpath -- "$SOURCE_DIR")
   local file
-  for file in install.sh deploy/manage.sh deploy/compose.yml deploy/compose.build.yml deploy/Caddyfile; do
+  # Current release sources must be complete before any host mutation. The
+  # copy helper remains optional for modules only when copying old snapshots.
+  for file in install.sh deploy/manage.sh deploy/compose.yml deploy/compose.build.yml deploy/Caddyfile deploy/disaster.sh deploy/backup_activity_recovery.sh deploy/relay_recovery.sh; do
     [[ -f $SOURCE_DIR/$file && ! -L $SOURCE_DIR/$file ]] || { die "部署包缺少普通文件 $file"; return 1; }
   done
 }

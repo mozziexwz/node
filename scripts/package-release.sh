@@ -4,6 +4,22 @@ version=${1:?Usage: package-release.sh vX.Y.Z}
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { printf 'Expected a stable semantic version.\n' >&2; exit 1; }
 root=$(git rev-parse --show-toplevel)
 cd "$root"
+# The archive uses HEAD while Go and the standalone installer read the working
+# tree. Refuse a mixed release before creating/overwriting any output artifact.
+# Ignored build outputs (.runtime, caches and dependencies) remain permitted.
+unreviewed=$(git ls-files --others --exclude-standard) || exit 1
+if ! git diff --quiet HEAD -- || [[ -n $unreviewed ]]; then
+  printf 'Release requires committed, clean sources; no artifacts were written.\n' >&2
+  exit 1
+fi
+release_commit=$(git rev-parse --verify "refs/tags/$version^{commit}") || {
+  printf 'Release version must name an existing reviewed tag; no tag is created.\n' >&2
+  exit 1
+}
+[[ $release_commit == "$(git rev-parse HEAD)" ]] || {
+  printf 'Release tag must identify HEAD; no artifacts were written.\n' >&2
+  exit 1
+}
 out="$root/.runtime/release"
 mkdir -p "$out"
 # Only reviewed, committed sources enter the bundle; no local .env, data or tools.

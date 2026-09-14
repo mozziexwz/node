@@ -12,6 +12,7 @@ bash "$TEST_REPO/deploy/admin_password_test.sh"
 bash "$TEST_REPO/deploy/backup_activity_recovery_test.sh"
 bash "$TEST_REPO/deploy/relay_recovery_test.sh"
 bash "$TEST_REPO/deploy/agent_migration_test.sh"
+bash "$TEST_REPO/deploy/release_package_test.sh"
 
 # Git Bash cannot apply Unix ownership/modes to this managed Windows workspace.
 # Linux CI exercises real install/chmod; Windows still tests lifecycle decisions.
