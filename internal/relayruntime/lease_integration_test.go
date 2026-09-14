@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -165,6 +166,19 @@ func TestRealGostLeaseExpiryClosesExistingConnection(t *testing.T) {
 	if _, err = io.ReadFull(conn, got); err != nil || !bytes.Equal(payload, got) {
 		t.Fatalf("real forwarding failed before expiry: %v", err)
 	}
+	// Record the exact existing configuration only AFTER the real process has
+	// forwarded traffic. startPreparedLocked removes this file only after
+	// cmd.Wait returns. A TCP EOF alone is not that process-reaping boundary:
+	// SIGKILL can close established sockets before closing the listener fd.
+	configs, err := filepath.Glob(filepath.Join(stateDir, "rule-*.json"))
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("cannot identify the running GOST configuration: files=%d err=%v", len(configs), err)
+	}
+	configPath := configs[0]
+	configInfo, err := os.Lstat(configPath)
+	if err != nil || !configInfo.Mode().IsRegular() {
+		t.Fatalf("running GOST configuration was not an existing regular file: %v", err)
+	}
 	select {
 	case <-blockedSync:
 	case err := <-done:
@@ -193,9 +207,34 @@ func TestRealGostLeaseExpiryClosesExistingConnection(t *testing.T) {
 	if elapsed := time.Since(granted); elapsed < 5*time.Second || elapsed > 8*time.Second {
 		t.Fatalf("unexpected lease enforcement timing: %s", elapsed)
 	}
-	if next, err := net.DialTimeout("tcp4", listenAddress, 500*time.Millisecond); err == nil {
-		next.Close()
-		t.Fatal("expired GOST listener still accepts new connections")
+	eofElapsed := time.Since(granted)
+	deadline := granted.Add(8 * time.Second)
+	for {
+		current, statErr := os.Lstat(configPath)
+		if errors.Is(statErr, os.ErrNotExist) {
+			break
+		}
+		if statErr != nil || !os.SameFile(configInfo, current) {
+			t.Fatalf("running GOST configuration changed instead of being reaped: %v", statErr)
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("GOST was not reaped within the original eight-second lease bound; TCP EOF at %s", eofElapsed)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	t.Log("real Run/apply/watchdog: blocked control sync, existing TCP EOF, new connection refused after six-second lease")
+	reapedElapsed := time.Since(granted)
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		t.Fatal("GOST process reaping exceeded the original eight-second lease bound")
+	}
+	if next, err := net.DialTimeout("tcp4", listenAddress, min(500*time.Millisecond, remaining)); err == nil {
+		next.Close()
+		t.Fatal("expired and reaped GOST listener still accepts new connections")
+	} else if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("expired GOST listener did not explicitly refuse a new connection: %v", err)
+	}
+	if time.Now().After(deadline) {
+		t.Fatal("new-connection refusal exceeded the original eight-second lease bound")
+	}
+	t.Logf("real Run/apply/watchdog: blocked control sync, existing TCP EOF=%s, process reaped=%s, new connection explicitly refused=%s, absolute bound=8s", eofElapsed, reapedElapsed, time.Since(granted))
 }

@@ -319,4 +319,38 @@ func TestAdminPasswordPostgresIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("LinuxRootExistingDatabaseEntry", func(t *testing.T) {
+		if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+			t.Skip("actual local administrator entry requires Linux root")
+		}
+		if err := server.Update(func(s *State) error {
+			s.Sessions["entry-old-session"] = &Session{UserID: "admin"}
+			return nil
+		}); err != nil {
+			t.Fatal("could not seed the isolated administrator session")
+		}
+		// Exercise the public root-only entry and a separate existing-DB
+		// connection. The private stdin frame must never enter a log or argv.
+		entryPassword := "Synthetic-Local-Entry-" + ID()
+		frame := "admin@example.com\n" + entryPassword + "\n" + entryPassword + "\nRESET admin@example.com\n"
+		if err := ChangeLocalAdminPassword(target, strings.NewReader(frame)); err != nil {
+			t.Fatal("Linux root administrator entry failed")
+		}
+		if err := server.View(func(s *State) error {
+			user := s.Users["admin"]
+			if user == nil || user.BalanceCents != 20 || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(entryPassword)) != nil {
+				t.Fatal("local entry changed the balance or did not persist the new hash")
+			}
+			if len(s.Sessions) != 0 {
+				t.Fatal("local entry did not revoke the existing administrator session")
+			}
+			encoded, err := json.Marshal(s)
+			if err != nil || bytes.Contains(encoded, []byte(entryPassword)) {
+				t.Fatal("local entry persisted plaintext or invalid state")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal("could not verify the isolated administrator state")
+		}
+	})
 }

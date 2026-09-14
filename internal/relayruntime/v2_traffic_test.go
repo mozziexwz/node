@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -12,16 +13,39 @@ func trafficV2Fixture(t *testing.T) (*runtimeState, *process, int64) {
 	t.Helper()
 	now := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC).UnixMilli()
 	p := &process{epoch: "process-epoch-unique", startedAt: now, rule: Rule{ID: "rule-identity-unique", Version: 1, EntitlementVersion: 1, Billing: true}, v2BillingPeriod: "grant-period-one"}
-	s := &runtimeState{cfg: Config{StateDir: t.TempDir(), OfflinePolicy: KeepLast}, processes: map[string]*process{p.rule.ID: p}}
+	dir := t.TempDir()
+	// testing.TempDir's numbered leaf uses 0777 subject to the runner's umask;
+	// its private parent does not satisfy the runtime's private-leaf contract.
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkV2PrivatePath(dir, true); err != nil {
+		t.Fatalf("traffic fixture must use the production private state permissions: %v", err)
+	}
+	s := &runtimeState{cfg: Config{StateDir: dir, OfflinePolicy: KeepLast}, processes: map[string]*process{p.rule.ID: p}}
 	if err := s.initV2TrafficLocked(); err != nil {
 		t.Fatal(err)
 	}
 	return s, p, now
 }
 
+func assertTrafficV2Checkpoint(t *testing.T, s *runtimeState, degraded bool) {
+	t.Helper()
+	var disk v2TrafficState
+	if err := readV2PrivateJSON(filepath.Join(s.cfg.StateDir, "traffic-v2-journal.json"), &disk); err != nil {
+		t.Fatalf("traffic fixture did not durably persist its private checkpoint: %v", err)
+	}
+	if s.v2Traffic.Degraded != degraded || disk.Degraded != degraded || disk.SchemaVersion != 2 ||
+		disk.GapInputBytes != s.v2Traffic.GapInputBytes || disk.GapOutputBytes != s.v2Traffic.GapOutputBytes ||
+		!reflect.DeepEqual(disk.Pending, s.v2Traffic.Pending) {
+		t.Fatal("persisted accounting checkpoint does not match the expected in-memory samples/warning")
+	}
+}
+
 func TestV2TrafficExplicitAckAndContinuedCumulativeCounters(t *testing.T) {
 	s, p, now := trafficV2Fixture(t)
 	s.recordV2TrafficLocked(p, 100, 200, 1, now+1000)
+	assertTrafficV2Checkpoint(t, s, false)
 	batch := s.v2TrafficBatchLocked()
 	if len(batch) != 1 || batch[0].Sequence != 1 {
 		t.Fatal("missing initial sample")
@@ -41,7 +65,9 @@ func TestV2TrafficExplicitAckAndContinuedCumulativeCounters(t *testing.T) {
 	if len(s.v2Traffic.Pending) != 0 {
 		t.Fatal("explicit acknowledged sample retained")
 	}
+	assertTrafficV2Checkpoint(t, s, false)
 	s.recordV2TrafficLocked(p, 150, 250, 1, now+2000)
+	assertTrafficV2Checkpoint(t, s, false)
 	next := s.v2TrafficBatchLocked()
 	if len(next) != 1 || next[0].Epoch != batch[0].Epoch || next[0].Sequence != 2 || next[0].InputBytes != 150 || next[0].OutputBytes != 250 {
 		t.Fatal("post-ACK counters reset and would be lost to deduplication")
@@ -64,11 +90,13 @@ func TestV2TrafficExplicitAckAndContinuedCumulativeCounters(t *testing.T) {
 func TestV2TrafficBoundariesNeverMixNewEntitlement(t *testing.T) {
 	s, p, now := trafficV2Fixture(t)
 	s.recordV2TrafficLocked(p, 100, 200, 1, now+1000)
+	assertTrafficV2Checkpoint(t, s, false)
 	p.v2BillingPeriod = "grant-period-two"
 	p.rule.EntitlementVersion = 2
 	p.rule.Version = 2
 	s.recordV2TrafficLocked(p, 110, 220, 1, now+2000)
 	s.recordV2TrafficLocked(p, 120, 230, 1, now+3000)
+	assertTrafficV2Checkpoint(t, s, false)
 	batch := s.v2TrafficBatchLocked()
 	if len(batch) != 3 {
 		t.Fatalf("want old, boundary-review and new samples, got %d", len(batch))
@@ -89,6 +117,7 @@ func TestV2TrafficBoundariesNeverMixNewEntitlement(t *testing.T) {
 	}
 	month := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
 	s.recordV2TrafficLocked(p, 130, 240, 1, month)
+	assertTrafficV2Checkpoint(t, s, false)
 	for _, sample := range s.v2Traffic.Pending {
 		if sample.CollectedUntil == month && !sample.Uncertain {
 			t.Fatal("cross-month interval pretends precise month allocation")
@@ -99,6 +128,7 @@ func TestV2TrafficBoundariesNeverMixNewEntitlement(t *testing.T) {
 func TestV2TrafficDiskFailureAndMemoryBoundDoNotExit(t *testing.T) {
 	s, p, now := trafficV2Fixture(t)
 	s.recordV2TrafficLocked(p, 10, 20, 1, now+1000)
+	assertTrafficV2Checkpoint(t, s, false)
 	batch := s.v2TrafficBatchLocked()
 	file := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(file, []byte("test"), 0600); err != nil {
@@ -133,11 +163,13 @@ func TestV2TrafficInvalidCounterWarningSurvivesRestart(t *testing.T) {
 	for _, negative := range []bool{true, false} {
 		s, p, now := trafficV2Fixture(t)
 		s.recordV2TrafficLocked(p, 10, 20, 1, now+1000)
+		assertTrafficV2Checkpoint(t, s, false)
 		input := int64(5)
 		if negative {
 			input = -1
 		}
 		s.recordV2TrafficLocked(p, input, 20, 1, now+2000)
+		assertTrafficV2Checkpoint(t, s, true)
 		loaded := &runtimeState{cfg: s.cfg}
 		if err := loaded.initV2TrafficLocked(); err != nil {
 			t.Fatal(err)
