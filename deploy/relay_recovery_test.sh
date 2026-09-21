@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Offline private-file/TTY/Docker transport contracts. No real service/network.
 set -Eeuo pipefail
+# A CI runner may itself be a systemd service. This suite simulates a local
+# interactive root session, so never inherit the runner's service markers.
+# Production keeps its automatic-task rejection; exercise each marker below.
+unset INVOCATION_ID SYSTEMD_EXEC_PID JOURNAL_STREAM
 TEST_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 mkdir -p "$TEST_REPO/.cache"
 TEST_WORK=$(mktemp -d "$TEST_REPO/.cache/relay-recovery-test.XXXXXXXX")
@@ -140,7 +144,7 @@ for fault in tty eof-recovery_action eof-recovery_input eof-recovery_output eof-
   assert_no_request; assert_private_console
   [[ ! -e $MOCK_OUTPUT ]] || fail 'rejected request created output'
 done
-for fault in bad-action existing-output input-empty input-relative output-relative systemd; do
+for fault in bad-action existing-output input-empty input-relative output-relative systemd-invocation systemd-exec systemd-journal; do
   fixture "$fault"
   (
     case "$fault" in
@@ -149,11 +153,17 @@ for fault in bad-action existing-output input-empty input-relative output-relati
       input-empty) : > "$MOCK_INPUT" ;;
       input-relative) MOCK_INPUT=relative.json ;;
       output-relative) MOCK_OUTPUT=relative.json ;;
-      systemd) INVOCATION_ID=synthetic-service ;;
+      systemd-invocation) INVOCATION_ID=synthetic-service ;;
+      systemd-exec) SYSTEMD_EXEC_PID=12345 ;;
+      systemd-journal) JOURNAL_STREAM=8:12345 ;;
     esac
     if relay_recovery_site > "$OUTPUT" 2>&1; then fail "accepted $fault"; fi
   ) || fail 'rejection assertion failed'
   assert_no_request; assert_private_console
+  if [[ $fault == systemd-* ]]; then
+    [[ ! -s $TRACE && ! -e $MOCK_OUTPUT ]] || fail 'automatic-task rejection happened after accessing Docker or publishing output'
+    grep -Fq '中转恢复禁止自动任务调用' "$OUTPUT" || fail 'automatic-task case was rejected by an unrelated guard'
+  fi
 done
 for fault in helper empty output-race publish-race flush-before flush-after; do
   fixture "$fault"; MOCK_FAIL=$fault

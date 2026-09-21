@@ -12,15 +12,15 @@
 apt-get update
 apt-get install -y ca-certificates curl tar
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/mozziexwz/node/v0.2.2/agent.sh \
+  https://raw.githubusercontent.com/mozziexwz/node/v0.2.4/agent.sh \
   -o /root/msboost-agent.sh
 bash /root/msboost-agent.sh \
   --capability executor \
   --server https://panel.example.com \
-  --version v0.2.2
+  --version v0.2.4
 ```
 
-节点将能力改为 `--capability relay`。控制面地址必须是完整 HTTPS 源站，不含路径、查询或用户名密码。`agent.sh` 默认 `v0.2.2`，仅接受稳定的固定 `vX.Y.Z` 版本，不取得开发分支或 `latest` 运行程序。
+节点将能力改为 `--capability relay`。控制面地址必须是完整 HTTPS 源站，不含路径、查询或用户名密码。当前源码的 `agent.sh` 默认候选 `v0.2.4`，需对应 Release 发布完成才可下载；仅接受固定 `vX.Y.Z` 版本，不取得开发分支或 `latest` 运行程序。
 
 脚本在真实终端显示隐藏输入提示，此时粘贴对应令牌并回车；令牌不会回显或进入命令行参数。节点注册令牌是短时单次用途，过期后在后台重新生成。执行器使用独立执行器令牌，二者不可混用。
 
@@ -35,6 +35,8 @@ bash /root/msboost-agent.sh \
 - 匹配服务器的 `msboost-agent-linux-amd64` 或 `msboost-agent-linux-arm64`
 
 通过 HTTPS 下载后，安装脚本与二进制分别核对清单哈希，匹配才执行。Release/资产不可用、哈希缺失/重复/不匹配、架构不支持时明确停止，不自动现场编译。哈希清单与资产共享 GitHub HTTPS/Release 信任边界，不等于独立发布签名。
+
+新版 Agent 入口仅允许 **v0.2.4 或更新**的固定稳定版本，在下载、读取令牌和系统操作前拒绝旧版本；旧安装器缺少共享程序锁及v2状态准入，不能靠让它先运行来自检兼容。这只限制新版入口，不影响网站或灾备的历史精确版本恢复，也不能阻止root主动运行历史脚本；已有v2节点不得这样绕过保护。默认lease仍受支持，不必为了更新安全安装器而启用keep_last。
 
 这里说明的是当前安装协议；某版本是否已发布，以相应 Release 资产实际可用性为准，不预先声明真实客户业务完成验收。
 
@@ -57,13 +59,13 @@ bash /root/msboost-agent.sh \
 
 安装先保存旧文件/服务状态，再更新和重启。服务启动失败时尝试恢复原程序、私有环境、systemd unit、启用状态和之前的运行状态，并保留备份。重跑前应确认使用的匹配令牌仍有效；不要用已消费节点注册令牌进行一次新的注册。
 
-### v0.2.2：升级既有 Agent
+### 升级既有 Agent
 
 **升级网站容器不会自动更新其他 VPS 上的 Agent。** v0.2.2 修复了 Debian `/run` 禁止执行导致的中转失败、GOST 凭据文件名缺少后缀以及 DD 缺少非交互用户名。必须更新执行机才能生效，仅更新网页无效。新诊断和清理对新版 GOST 凭据路径的兼容也需要新版执行机。同机两种能力共享 `/usr/local/bin/msboost-agent`，应在同一维护窗口更新并核验两个服务。
 
 1. 网站开启维护模式，暂停新任务和规则。等待所有已接受的 `queued` / `running` 执行任务结束，再操作执行机。**不要在任务仍运行时禁用执行机、重置令牌或重启服务**：可能导致结果无法回传，已交付的 DD/清理不会被撤回。`unknown` / `interrupted` 任务先从 VPS 控制台核实，不能用升级代替结果确认。
 2. 确认控制面域名不变，私密备份 Agent 环境与安装备份；更新节点还需保留整个 `/var/lib/msboost-relay`，特别是 `relay-token.json` 和流量日志。节点更新会中断其连接，需安排维护窗口。
-3. 重新使用上方固定 **`v0.2.2` 入口**安装同一种能力，复用对应的既有凭据。不要删除所有权标记、状态或令牌来强制重装。执行机可复用 `/etc/msboost-executor.env` 中的执行机令牌，以隐藏输入或仅含令牌的 `0600` 私有文件提供；**完整 `.env` 不能直接作为 `--token-file`**，也不要 `source` 或公开打印环境文件。
+3. 对应版本发布后重新使用上方固定 **`v0.2.4` 入口**安装同一种能力，复用对应的既有凭据。已有 keep_last 必须保留 `--offline-policy keep_last` 并显式确认重启，见下节；不要删除所有权标记、状态或令牌来强制重装。执行机可复用 `/etc/msboost-executor.env` 中的执行机令牌，以隐藏输入或仅含令牌的 `0600` 私有文件提供；**完整 `.env` 不能直接作为 `--token-file`**，也不要 `source` 或公开打印环境文件。
 4. 已注册节点更新时保持原控制面和状态目录。运行程序优先读取 `/var/lib/msboost-relay/relay-token.json`，不重新注册。bootstrap 仍要求格式正确的 enrollment 输入，可沿用受保护 `/etc/msboost-relay.env` 的原值作为安装输入；但已消费的注册令牌不能在状态丢失后再次注册。状态缺失、损坏或持久令牌被撤销时，应停止普通升级，检查备份和节点关联，由管理员安排明确重新注册，不能盲目清空目录。
 5. 安装器校验 Release、备份旧程序/环境/unit 并重启本次能力。随后检查本机服务、后台在线与实际同步。同机另一个能力也须在确认无执行任务后重启并核验。最后退出维护，以无破坏性任务验证交付；不要把 DD 或真实清理当作自动升级自测。
 
@@ -78,6 +80,8 @@ bash /root/msboost-agent.sh \
 按完整线路迁移并等待所有节点实际确认 keep_last/当前配置/停止语义后，再开启严格整站自动备份。网站升级不自动更新节点。原 v2 状态存在时拒绝静默降级；executor 和 relay 共用程序，也不能通过安装旧 executor 覆盖 v2 程序。首次迁移失败且已生成 v2 状态时，不自动启动旧 lease 程序回滚，保留兼容文件、停用失败服务和私有备份供修复；不删除状态或恢复旧库。
 
 受保护本机换管理凭据及灾难恢复接管见[受信中转恢复](relay-recovery.md)，不要用会重启 Agent 的安装命令代替热重载。
+
+Debian 12 / systemd 252 的 DynamicUser 在服务内部也保留 `/var/lib/msboost-relay` 符号链接。因此新版 keep_last 单元直接使用同一数据的真实路径 `/var/lib/private/msboost-relay`；保留 StateDirectory、0700、动态用户和所有符号链接/属主安全检查。不会搬移或清空旧数据，默认 lease 路径不变。root 恢复入口仍可使用受保护的公共目录别名。不要自行修改父目录权限、跟随任意链接或 chown 现有状态；其他 systemd 版本尤其 ID-map 挂载的适配需另行验收，不以 nobody UID 作通配放行。
 
 节点安装下载固定 **GOST v3.3.0**，按安装器内固定哈希校验后执行。执行器环境保存两种架构的固定地址/哈希，客户自备中转任务在目标机再次核验匹配资产。
 
@@ -104,7 +108,7 @@ journalctl -u msboost-relay --since '10 minutes ago' --no-pager
 
 本地服务 `active`、心跳或监听 ACK 仅说明对应阶段正常，不证明公网游戏路径、多跳计量或 DD 重装成功。开放业务前需在自有可丢弃 VPS 单独验证安装/修复/DD、断网租约失效、Agent 重启、客户端认证和实际计量，记录结果。
 
-网站的 `msboost uninstall`/`purge` 不处理独立 Agent 或客户 VPS 软件；停止控制面后托管转发依照租约失效机制撤销。Agent 运维与控制面数据清理是分开的操作。
+网站的 `msboost uninstall`/`purge` 不处理独立 Agent 或客户 VPS 软件；默认 lease 转发在控制面停止后依租约失效，keep_last 不把失联当作撤销，仍需受信明确停止或独立节点维护与核对。Agent 运维与控制面数据清理是分开的操作。
 
 ## 5. 显式源码或离线安装
 

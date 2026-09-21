@@ -35,6 +35,10 @@ install_agent_parse_args --capability relay --offline-policy keep_last --acknowl
 [[ $offline_policy == keep_last && $acknowledge_restart == 1 && $agent_file == /fixture/agent && $gost_version == 3.3.0 ]] || test_fail 'explicit migration flags lost'
 install_agent_parse_args --capability executor
 [[ $offline_policy == lease && $acknowledge_restart == 0 ]] || test_fail 'parser retained previous role values'
+[[ $(relay_service_state_dir relay keep_last) == /var/lib/private/msboost-relay ]] || test_fail 'keep_last unit would follow the DynamicUser public symlink'
+[[ $(relay_service_state_dir relay lease) == /var/lib/msboost-relay && $(relay_service_state_dir executor lease) == /var/lib/msboost-relay ]] || test_fail 'legacy service state path changed'
+reject relay_service_state_dir executor keep_last
+reject relay_service_state_dir relay unknown
 for args in '--capability relay --offline-policy' '--capability relay --offline-policy keep-last' '--capability relay --offline-policy auto' '--capability executor --offline-policy keep_last' '--capability executor --acknowledge-relay-restart' '--capability invalid' '--capability relay --force'; do
   read -r -a words <<< "$args"; reject install_agent_parse_args "${words[@]}"
 done
@@ -75,7 +79,9 @@ relay_migration_preflight executor lease 1 0 "$TEST_WORK/v2"
 unit_line='ExecStart=/usr/local/bin/msboost-agent --capability relay --state-dir /var/lib/msboost-relay --gost-binary /usr/local/libexec/msboost-agent/gost-v3.3.0 --offline-policy keep_last'
 good_unit="$TEST_WORK/good-unit"; printf '[Service]\n%s\n' "$unit_line" > "$good_unit"
 relay_unit_uses_v2 "$good_unit" || test_fail 'generated v2 unit rejected'
-for fault in lease comment prefix duplicate-policy duplicate-role duplicate-exec wrong-section continuation whitespace-exec spaced-exec unknown-executable unknown-arg crlf; do
+good_private_unit="$TEST_WORK/good-private-unit"; printf '[Service]\n%s\n' "${unit_line/\/var\/lib\/msboost-relay/\/var\/lib\/private\/msboost-relay}" > "$good_private_unit"
+relay_unit_uses_v2 "$good_private_unit" || test_fail 'private direct-path v2 unit rejected'
+for fault in lease comment prefix duplicate-policy duplicate-role duplicate-state duplicate-gost missing-state missing-gost duplicate-exec wrong-section continuation whitespace-exec spaced-exec unknown-executable unknown-arg wrong-state private-state-suffix private-state-traversal crlf; do
   bad_unit="$TEST_WORK/unit-$fault"
   case $fault in
     lease) printf '[Service]\n%s\n' "${unit_line/keep_last/lease}" ;;
@@ -83,6 +89,10 @@ for fault in lease comment prefix duplicate-policy duplicate-role duplicate-exec
     prefix) printf '[Service]\n%sXYZ\n' "$unit_line" ;;
     duplicate-policy) printf '[Service]\n%s --offline-policy lease\n' "$unit_line" ;;
     duplicate-role) printf '[Service]\n%s --capability executor\n' "$unit_line" ;;
+    duplicate-state) printf '[Service]\n%s --state-dir /var/lib/msboost-relay\n' "$unit_line" ;;
+    duplicate-gost) printf '[Service]\n%s --gost-binary /usr/local/libexec/msboost-agent/gost-v3.3.0\n' "$unit_line" ;;
+    missing-state) printf '[Service]\n%s\n' "${unit_line/--state-dir \/var\/lib\/msboost-relay /}" ;;
+    missing-gost) printf '[Service]\n%s\n' "${unit_line/--gost-binary \/usr\/local\/libexec\/msboost-agent\/gost-v3.3.0 /}" ;;
     duplicate-exec) printf '[Service]\n%s\n%s\n' "$unit_line" "$unit_line" ;;
     wrong-section) printf '[Unit]\n%s\n' "$unit_line" ;;
     continuation) printf '[Service]\n%s\\\n --offline-policy lease\n' "$unit_line" ;;
@@ -90,6 +100,9 @@ for fault in lease comment prefix duplicate-policy duplicate-role duplicate-exec
     spaced-exec) printf '[Service]\n%s\nExecStart =/bin/false\n' "$unit_line" ;;
     unknown-executable) printf '[Service]\n%s\n' "${unit_line/msboost-agent /msboost-agent-v1 }" ;;
     unknown-arg) printf '[Service]\n%s --config override.json\n' "$unit_line" ;;
+    wrong-state) printf '[Service]\n%s\n' "${unit_line/\/var\/lib\/msboost-relay/\/tmp\/msboost-relay}" ;;
+    private-state-suffix) printf '[Service]\n%s\n' "${unit_line/\/var\/lib\/msboost-relay/\/var\/lib\/private\/msboost-relay-other}" ;;
+    private-state-traversal) printf '[Service]\n%s\n' "${unit_line/\/var\/lib\/msboost-relay/\/var\/lib\/private\/..\/msboost-relay}" ;;
     crlf) printf '[Service]\r\n%s\r\n' "$unit_line" ;;
   esac > "$bad_unit"
   reject relay_unit_uses_v2 "$bad_unit"
@@ -97,7 +110,7 @@ done
 
 # Run the real EXIT cleanup with only fixture destinations and mocked systemctl.
 # Negative paths must preserve new files and must not daemon-reload/start v1.
-for scenario in relay-old-binary relay-lease-unit relay-comment-unit executor-old-binary relay-safe-v2 executor-safe-v2 legacy-no-v2; do
+for scenario in relay-old-binary relay-lease-unit relay-comment-unit executor-old-binary relay-safe-v2 relay-private-safe-v2 executor-safe-v2 legacy-no-v2; do
   case_dir="$TEST_WORK/rollback-$scenario"; mkdir -p "$case_dir/prior"
   backup="$case_dir/prior" binary="$case_dir/current-binary" envfile="$case_dir/current-env" unitfile="$case_dir/current-unit"
   stage="$case_dir/stage" capability=relay unit=msboost-relay.service
@@ -110,6 +123,7 @@ for scenario in relay-old-binary relay-lease-unit relay-comment-unit executor-ol
     relay-old-binary|executor-old-binary|legacy-no-v2) cp "$TEST_WORK/v1" "$backup/binary" ;;
     relay-lease-unit) cp "$TEST_WORK/unit-lease" "$backup/unit" ;;
     relay-comment-unit) cp "$TEST_WORK/unit-comment" "$backup/unit" ;;
+    relay-private-safe-v2) cp "$good_private_unit" "$backup/unit" ;;
   esac
   [[ $scenario != executor-* ]] || { capability=executor; unit=msboost-executor.service; cp "$TEST_WORK/unit-lease" "$backup/unit"; }
   [[ $scenario != legacy-no-v2 ]] || command rm -- "$private_state"
@@ -166,7 +180,7 @@ for mode in default-relay explicit-keep-last executor invalid-policy invalid-exe
     curl() {
       local url='' destination=''
       while (($#)); do case $1 in https://*) url=$1; shift ;; -o) destination=$2; shift 2 ;; *) shift ;; esac; done
-      [[ $url == https://github.com/mozziexwz/node/releases/download/v0.2.3/* && $destination == "$bootstrap_stage/"* ]] || exit 81
+      [[ $url == https://github.com/mozziexwz/node/releases/download/v0.2.4/* && $destination == "$bootstrap_stage/"* ]] || exit 81
       cp "$bootstrap_assets/${url##*/}" "$destination"
     }
     export -f uname id mktemp curl

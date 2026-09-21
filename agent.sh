@@ -4,13 +4,14 @@ set +xv
 set -Eeuo pipefail
 umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-version=v0.2.3
+version=v0.2.4
 capability=''; server=''; token_file=''; offline_policy=lease; acknowledge_restart=0
 usage() {
   printf '%s\n' 'MSBOOST 执行机 / 中转节点安装入口（Debian 12，amd64/arm64）' \
-    '用法：bash agent.sh --capability executor|relay --server https://panel.example.com [--version v0.2.3] [--token-file /root/private-token]' \
+    '用法：bash agent.sh --capability executor|relay --server https://panel.example.com [--version v0.2.4] [--token-file /root/private-token]' \
     'executor 为控制执行机，relay 为中转节点；请使用对应的注册令牌。' \
     '未指定 --token-file 时隐藏输入令牌；控制面地址必须为 HTTPS。' \
+    '此新版入口仅允许 v0.2.4 或更新的稳定版本；旧安装器缺少 v2 状态与共享程序保护。' \
     'relay 可显式 --offline-policy keep_last；已有服务升级需 --acknowledge-relay-restart，首次迁移会中断原连接。' \
     '默认 lease 保持旧版兼容；不得用此入口把已有 keep_last 状态降级。'
 }
@@ -31,7 +32,15 @@ done
 [[ $offline_policy == lease || $offline_policy == keep_last ]] || fail 'offline-policy 仅允许 lease 或 keep_last。'
 [[ $capability == relay || $offline_policy == lease && $acknowledge_restart == 0 ]] || fail '离线保留和中转重启确认只适用于 relay。'
 [[ "$server" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || fail '请填写 HTTPS 站点地址，不要包含路径或凭据；公网 HTTP 不适合传递令牌和 SSH 密码。'
-[[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail '请指定固定正式版本 vX.Y.Z。'
+[[ "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail '请指定固定稳定版本 vX.Y.Z，版本数字不得包含前导零。'
+# Every fetched installer must contain the shared-binary/v2 admission guards.
+# Checking only the current local state would race the other role's install;
+# executing an older installer to ask about its capabilities is not safe.
+# Compare decimal strings, never shell arithmetic: arbitrary large valid
+# semantic-version components cannot overflow and wrap below this floor.
+case "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}:${BASH_REMATCH[3]}" in
+  0:0:*|0:1:*|0:2:[0-3]) fail '此入口仅支持 v0.2.4 或更新版本；旧 Agent 安装器缺少 v2 状态与共享程序保护，已在下载和系统操作前拒绝。网站历史版本及灾难恢复不受影响。' ;;
+esac
 [[ "$(uname -s)" == Linux && "$(id -u)" == 0 ]] || fail '请在需要注册的 Linux 服务器上以 root 运行。'
 for tool in curl sha256sum mktemp; do command -v "$tool" >/dev/null || fail "缺少 $tool，请先安装该依赖。"; done
 case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) fail '当前支持 amd64/arm64 架构。' ;; esac

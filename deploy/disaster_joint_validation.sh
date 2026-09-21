@@ -171,6 +171,7 @@ if [[ $ACTION == upload-netns ]]; then
   [[ -f $WORK/sftp-ready ]]
   result=0
   bash "$SCRIPT" phase "$WORK" uploadfail </dev/null || result=$?
+  for ((i=0;i<50;i++)); do [[ ! -f $WORK/sftp-create-denied ]] || break; kill -0 "$SFTP_PID"; sleep 0.1; done
   printf 'stop\n' > "$WORK/sftp-stop"
   wait "$SFTP_PID"
   [[ $result != 0 && -f $WORK/sftp-used ]] || exit 1
@@ -375,7 +376,7 @@ for phase in dumpfail packfail uploadfail; do
   case "$phase" in
     dumpfail) [[ $(stat -c %s "$(<"$WORK/dumpfail.work")/database.dump") == 1024 ]]; ! grep -q '^state-export:' "$WORK/$phase.trace" ;;
     packfail) [[ $(<"$collision") == owned-pack-collision ]]; rm -- "$collision" ;;
-    uploadfail) [[ -f $WORK/sftp-used ]]; grep -q '无法独占创建远程临时文件' "$WORK/$phase.log"; verify_bundles uploadfail ;;
+    uploadfail) [[ -f $WORK/sftp-used && -f $WORK/sftp-create-denied && $(<"$WORK/sftp-create-denied") == open-write-create-excl-permission-denied ]]; grep -Fq '[disaster/upload]' "$WORK/$phase.log"; verify_bundles uploadfail ;;
   esac
 done
 signal_phase finish

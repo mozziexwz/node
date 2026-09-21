@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Offline lifecycle contracts: no real Docker, apt, network, systemd or /opt.
 set -Eeuo pipefail
+# The runner may be hosted by systemd, but successful maintenance cases model
+# an interactive root session. Explicit negative cases below keep exercising
+# all production service-marker guards and the strict scheduled-backup path.
+unset INVOCATION_ID SYSTEMD_EXEC_PID JOURNAL_STREAM
 TEST_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 mkdir -p "$TEST_REPO/.cache"
 TEST_WORK=$(mktemp -d "$TEST_REPO/.cache/disaster-test.XXXXXXXX")
@@ -374,8 +378,16 @@ for fault in maintenance-tty maintenance-eof maintenance-lost-tty cancel nonroot
       rejected) MOCK_FAIL=begin-rejected ;;
       *) MOCK_FAIL=$fault ;;
     esac
-    expect_failure run_maintenance
+    case "$fault" in
+      systemd|invocation|journal) expect_failure run_maintenance > "$CASE_ROOT/guard-output" 2>&1 ;;
+      *) expect_failure run_maintenance ;;
+    esac
   )
+  case "$fault" in
+    systemd|invocation|journal)
+      [[ ! -s $TRACE ]] || fail 'automatic-task rejection accessed a lifecycle helper'
+      grep -Fq '手动维护备份禁止从 systemd 自动任务调用' "$CASE_ROOT/guard-output" || fail 'automatic-task case hit an unrelated guard' ;;
+  esac
   assert_absent "$TRACE" 'compose stop'
   assert_absent "$TRACE" 'compose start'
   assert_absent "$TRACE" 'helper pack'

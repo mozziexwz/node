@@ -60,8 +60,21 @@ relay_binary_supports_v2() {
   grep -Eq -- '^[[:space:]]*--?offline-policy([=[:space:]]|$)' <<< "$help"
 }
 
+# systemd 252 keeps /var/lib/msboost-relay as a root-owned symlink even
+# inside the DynamicUser mount namespace. keep_last intentionally rejects
+# symlink state paths, so use the exact underlying StateDirectory location.
+# Both names identify the same existing state; do not move/chown user data or
+# weaken the runtime's private-directory/link/owner checks.
+relay_service_state_dir() {
+  case "$1:$2" in
+    relay:keep_last) printf '%s\n' /var/lib/private/msboost-relay ;;
+    relay:lease|executor:lease) printf '%s\n' /var/lib/msboost-relay ;;
+    *) return 1 ;;
+  esac
+}
+
 relay_unit_uses_v2() {
-  local line section='' count=0 policy=0 role=0 i
+  local line section='' count=0 policy=0 role=0 state_path=0 gost_path=0 i
   local -a words=()
   [[ -f $1 && ! -L $1 ]] || return 1
   while IFS= read -r line || [[ -n $line ]]; do
@@ -79,14 +92,14 @@ relay_unit_uses_v2() {
         case ${words[i]} in
           --capability) [[ ${words[i+1]} == relay && $role == 0 ]] || return 1; role=1 ;;
           --offline-policy) [[ ${words[i+1]} == keep_last && $policy == 0 ]] || return 1; policy=1 ;;
-          --state-dir) [[ ${words[i+1]} == /var/lib/msboost-relay ]] || return 1 ;;
-          --gost-binary) [[ ${words[i+1]} == /usr/local/libexec/msboost-agent/gost-v3.3.0 ]] || return 1 ;;
+          --state-dir) [[ $state_path == 0 && ( ${words[i+1]} == /var/lib/msboost-relay || ${words[i+1]} == /var/lib/private/msboost-relay ) ]] || return 1; state_path=1 ;;
+          --gost-binary) [[ $gost_path == 0 && ${words[i+1]} == /usr/local/libexec/msboost-agent/gost-v3.3.0 ]] || return 1; gost_path=1 ;;
           *) return 1 ;;
         esac
       done
     }
   done < "$1"
-  [[ $count == 1 && $role == 1 && $policy == 1 ]]
+  [[ $count == 1 && $role == 1 && $policy == 1 && $state_path == 1 && $gost_path == 1 ]]
 }
 
 relay_migration_preflight() {
@@ -251,6 +264,7 @@ fi
 unset token
 relay_policy_arg=''
 if [[ $capability == relay && $offline_policy == keep_last ]]; then relay_policy_arg=' --offline-policy keep_last'; fi
+relay_state_dir=$(relay_service_state_dir "$capability" "$offline_policy")
 cat > "$stage/unit" <<EOF
 [Unit]
 Description=MSBOOST ${capability} Agent
@@ -260,7 +274,7 @@ Wants=network-online.target
 Type=simple
 DynamicUser=true
 EnvironmentFile=${envfile}
-ExecStart=${binary} --capability ${capability} --state-dir /var/lib/msboost-relay --gost-binary ${managed}/gost-v3.3.0${relay_policy_arg}
+ExecStart=${binary} --capability ${capability} --state-dir ${relay_state_dir} --gost-binary ${managed}/gost-v3.3.0${relay_policy_arg}
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

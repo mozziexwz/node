@@ -75,7 +75,7 @@ MSBOOST 面向 MapleStory 游戏场景，用户自行准备和管理 VPS。平�
 
 ### 2.1 技术基础
 
-继续以 S1 指定的 FLVX v2.2.0-alpha4 的 Go 后端、Go Agent、go-gost、TCP/UDP、通信与统计等能力作为二开方向，参考 relay-panel 的交互。**本次没有重新审计该 FLVX Tag，不宣称已完成上游代码迁入或功能兼容。** 新多级转跳的页面依据 I3，实际运行协议需开发验收。
+继续以 S1 指定的 FLVX v2.2.0-alpha4 的 Go 后端、Go Agent、go-gost、TCP/UDP、通信与统计等能力作为二开方向，参考 relay-panel 的交互。规划编写时未重新审计该 Tag；后续补充2.3已增加[固定提交的六类断流风险定点对比](../flvx-2.2.0-alpha4-comparison.md)，不是上游全量审计、代码迁入或功能兼容证明。新多级转跳的页面依据 I3，实际运行协议需开发验收。
 
 建议：React + TypeScript + Vite，一个前端工程；Go 模块化单体 Server；Go Agent 按 executor/relay 能力授权；PostgreSQL 主存储。首期不把 Redis、Kafka、微服务作为前置条件。原稿 SQLite 兼容要求尚未明确撤销，保留在决策表中。
 

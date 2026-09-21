@@ -493,7 +493,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             终端运行下面命令，再粘贴令牌。令牌不会进入命令行历史；不要发给客户。节点注册令牌有有效期，过期可重新生成。
           </Notice>
           <pre className="code-panel mt16">
-            {`curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.3/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`}
+            {`curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.4/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`}
           </pre>
           {location.protocol !== "https:" && (
             <Notice tone="orange">
@@ -504,7 +504,7 @@ export function ResourcePage({ kind }: { kind: string }) {
           <Button
             onClick={() =>
               void copyText(
-                `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.3/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`,
+                `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.4/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`,
               ).catch((e) => setMessage(e.message))
             }
           >

@@ -1,4 +1,35 @@
-# MSBOOST v0.2.3 · 补充说明 2.2 整改
+# MSBOOST v0.2.4 · 补充说明 2.3 安装调试版
+
+本节随 v0.2.4 源码准备；只有对应标签的 CI、双架构镜像及 Release 资产全部发布成功后，下列安装/升级入口才可用。不会自动更新 msboost.de 或其他现有节点。
+
+- 允许正常及未验证会员找回密码，禁止管理员和禁用账户邮件找回；验证码限流、单次使用、失败次数及旧会话撤销已回归。
+- 管理脚本菜单12 / `msboost admin-password` 支持本机root交互修改已有管理员密码，不停止服务、不重建账号、不把新密码写入 `.env` 或命令行。
+- 统一五类品牌邮件及纯文本版本，完成补充UI、枫叶标识、底部联系邮箱、免费工具文案和不可变ID线路排序；保留已确认页面结构。
+- 新增显式试验 `keep_last`：持久命令、停止确认、离线保留、有界计量日志、恢复冻结及逐规则受信接管；增加网页备份原卷锁核销和受保护root恢复/TLS维护入口。
+- 修复 Debian 12/systemd 252 的 DynamicUser 公共状态链接与严格状态检查冲突：新 keep_last 单元使用同一私有目录的直接路径，保留权限和拒绝任意链接检查，不迁移/删除已有数据。
+- 预构建部署包、网站/Agent入口和版本检查统一，Compose优先固定镜像；同版Release备用镜像仍校验SHA256及架构/身份，不静默现场编译。
+- 新版Agent入口于下载前拒绝低于v0.2.4的旧安装器，防止显式旧版本绕过v2/共享程序保护；网站及灾备历史版本恢复不受影响。
+
+## 安装与升级
+
+```sh
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.4/install.sh -o /root/msboost-install.sh
+bash /root/msboost-install.sh
+```
+
+健康旧站先在维护窗口执行 `msboost upgrade --version v0.2.4`，成功后才能使用 `msboost admin-password`；仅下载入口或运行 `repair` 不会升级旧镜像。升级保留配置、管理员、主密钥和数据库，并先创建私有备份；请离机保存备份。
+
+**默认仍是 lease。** 网站升级不自动更新独立 Agent，也不自动开启 keep_last。旧节点必须按照[Agent迁移说明](https://github.com/mozziexwz/node/blob/v0.2.4/docs/agent-installation.md)逐整条线路维护升级；Agent/GOST重启会中断原连接。存在v2状态禁止静默降级。控制面失联时新的封禁、到期和超额无法实时下达到keep_last节点，恢复后再核对，不承诺离线期间实时撤销。
+
+## 验证边界
+
+本机 HTTP9项、浏览器35项、Go/脚本回归，以及临时Debian12的PG/Compose、真实GOST多跳/TLS、三拓扑5/30分钟、真实后端连续停站5/30分钟、撤销与丢ACK、受信恢复、私有磁盘故障和证书时间边界均有独立证据。完整记录及尚未完成项见[整改状态](https://github.com/mozziexwz/node/blob/v0.2.4/docs/supplement-2.3-status.md)与[验收矩阵](https://github.com/mozziexwz/node/blob/v0.2.4/docs/relay-v2-verification.md)。
+
+这不是全T01–T26、24小时、真实QQ投递、商户实扣、游戏登录、arm64真机或容量的生产合格声明。实际制品发布和部署结果须分别核验，不用源码测试替代。
+
+---
+
+## 历史：MSBOOST v0.2.3 · 补充说明 2.2 整改
 
 - 登录标题改为两行“一键部署你的 / 独立IP游戏节点”，第二行整行橙色。
 - 文章增加资讯、新文章靠前、独立置顶及组内最顶/最底排序；新建文章即可上传私有草稿附件，明确发布前不会公开。

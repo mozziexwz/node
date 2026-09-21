@@ -6,7 +6,7 @@
 msboost admin-password
 ```
 
-也可运行 `bash /opt/msboost/install.sh`，选择 **12）修改已有管理员密码**。GitHub Release 的 `msboost-install.sh` 是同一 `install.sh` 发布入口，也支持 `bash msboost-install.sh admin-password`。已经安装的管理脚本及应用镜像必须包含此功能；只下载新版入口而保留旧镜像不会给旧程序增加命令，请先正常升级。
+也可运行 `bash /opt/msboost/install.sh`，选择 **12）修改已有管理员密码**。部署文档把固定版本的 `install.sh` 下载后命名为 `msboost-install.sh`，它是同一入口，也支持 `bash msboost-install.sh admin-password`；并非另一个独立发布资产。已经安装的管理脚本及应用镜像必须包含此功能；只下载新版入口而保留旧镜像不会给旧程序增加命令，请先正常升级。
 
 1. 在本机终端输入目标**已有管理员**邮箱，输入不回显。
 2. 输入新密码两遍，每次均不回显；长度为 **12–72 字节**（汉字等 UTF-8 字符占多个字节）。

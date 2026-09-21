@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -421,7 +423,8 @@ func TestDisasterJointReadOnlySFTP(t *testing.T) {
 						}
 						// Real OS-backed SFTP in read-only mode. It can stat the
 						// safe directory but refuses creation of the upload file.
-						srv, err := sftp.NewServer(channel, sftp.ReadOnly())
+						observed := &jointSFTPObservation{ReadWriteCloser: channel, marker: filepath.Join(work, "sftp-create-denied"), opens: map[uint32]bool{}}
+						srv, err := sftp.NewServer(observed, sftp.ReadOnly())
 						if err != nil {
 							return
 						}
@@ -446,4 +449,112 @@ func TestDisasterJointReadOnlySFTP(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatal("SFTP fixture exceeded bounded lifetime")
+}
+
+// Passive framing observer: bytes and statuses are produced by the actual
+// official client and real read-only SFTP server, never modified or supplied
+// by this helper. Persist only matching request-ID/CREATE|EXCL/permission-denied
+// evidence, not packet contents, file paths, credentials or unrelated errors.
+type jointSFTPObservation struct {
+	io.ReadWriteCloser
+	mu      sync.Mutex
+	in, out []byte
+	opens   map[uint32]bool
+	marker  string
+}
+
+func (o *jointSFTPObservation) Read(p []byte) (int, error) {
+	n, err := o.ReadWriteCloser.Read(p)
+	o.observe(false, p[:n])
+	return n, err
+}
+
+func (o *jointSFTPObservation) Write(p []byte) (int, error) {
+	n, err := o.ReadWriteCloser.Write(p)
+	o.observe(true, p[:n])
+	return n, err
+}
+
+func (o *jointSFTPObservation) observe(outgoing bool, data []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	buffer := &o.in
+	if outgoing {
+		buffer = &o.out
+	}
+	*buffer = append(*buffer, data...)
+	for len(*buffer) >= 4 {
+		size := binary.BigEndian.Uint32((*buffer)[:4])
+		if size < 1 || size > 1<<20 {
+			*buffer = nil
+			return
+		}
+		if len(*buffer) < int(size)+4 {
+			return
+		}
+		packet := (*buffer)[4 : int(size)+4]
+		*buffer = (*buffer)[int(size)+4:]
+		if len(packet) < 9 {
+			continue
+		}
+		id := binary.BigEndian.Uint32(packet[1:5])
+		if !outgoing && packet[0] == 3 { // SSH_FXP_OPEN
+			pathSize := binary.BigEndian.Uint32(packet[5:9])
+			if uint64(pathSize)+13 <= uint64(len(packet)) {
+				flags := binary.BigEndian.Uint32(packet[9+int(pathSize) : 13+int(pathSize)])
+				if flags == 0x2a {
+					o.opens[id] = true
+				} // WRITE|CREAT|EXCL
+			}
+		}
+		if outgoing && packet[0] == 101 && o.opens[id] && binary.BigEndian.Uint32(packet[5:9]) == 3 { // SSH_FX_PERMISSION_DENIED
+			_ = os.WriteFile(o.marker, []byte("open-write-create-excl-permission-denied\n"), 0600)
+		}
+	}
+	if len(*buffer) == 0 {
+		*buffer = nil
+	}
+}
+
+func TestDisasterJointSFTPObservation(t *testing.T) {
+	frame := func(payload []byte) []byte {
+		b := make([]byte, 4)
+		binary.BigEndian.PutUint32(b, uint32(len(payload)))
+		return append(b, payload...)
+	}
+	open := func(id, flags uint32) []byte {
+		p := make([]byte, 14)
+		p[0] = 3
+		binary.BigEndian.PutUint32(p[1:5], id)
+		binary.BigEndian.PutUint32(p[5:9], 1)
+		p[9] = 'x'
+		binary.BigEndian.PutUint32(p[10:14], flags)
+		return frame(p)
+	}
+	status := func(id, code uint32) []byte {
+		p := make([]byte, 9)
+		p[0] = 101
+		binary.BigEndian.PutUint32(p[1:5], id)
+		binary.BigEndian.PutUint32(p[5:9], code)
+		return frame(p)
+	}
+	marker := filepath.Join(t.TempDir(), "proof")
+	o := &jointSFTPObservation{opens: map[uint32]bool{}, marker: marker}
+	o.observe(false, open(1, 2))
+	o.observe(true, status(1, 3))
+	o.observe(false, open(2, 0x2a))
+	o.observe(true, status(3, 3))
+	o.observe(true, status(2, 4))
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("unrelated/read-only/generic status accepted")
+	}
+	request := open(4, 0x2a)
+	o.observe(false, request[:3])
+	o.observe(false, request[3:])
+	response := status(4, 3)
+	o.observe(true, response[:7])
+	o.observe(true, response[7:])
+	if b, err := os.ReadFile(marker); err != nil || string(b) != "open-write-create-excl-permission-denied\n" {
+		t.Fatal("exact fragmented create rejection not observed")
+	}
 }
