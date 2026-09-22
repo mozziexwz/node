@@ -387,7 +387,7 @@ func (s *runtimeState) apply(ctx context.Context, response SyncResponse) error {
 
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.OfflinePolicy == "" {
-		cfg.OfflinePolicy = "lease"
+		cfg.OfflinePolicy = KeepLast
 	}
 	if cfg.OfflinePolicy != "lease" && cfg.OfflinePolicy != KeepLast {
 		return errors.New("offline policy must be lease or keep_last")

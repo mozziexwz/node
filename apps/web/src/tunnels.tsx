@@ -148,6 +148,7 @@ export function RouteBuilder() {
     "/api/admin/relay-agents",
   );
   const nodes = array(nodeData, "agents");
+  const routes = array(data, "routes");
   const [editing, setEditing] = useState<RecordData | null>(null);
   const [message, setMessage] = useState("");
   function open(route?: RecordData) {
@@ -183,6 +184,7 @@ export function RouteBuilder() {
             requireFront: false,
             enabled: false,
             rateMbps: 100000,
+            level: 1,
           },
     );
   }
@@ -215,6 +217,7 @@ export function RouteBuilder() {
         <Table
           headers={[
             "隧道",
+            "权益等级",
             "类型",
             "入口节点",
             "转发链",
@@ -222,8 +225,9 @@ export function RouteBuilder() {
             "状态",
             "操作",
           ]}
-          rows={array(data, "routes").map((route) => [
+          rows={routes.map((route, index) => [
             route.name,
+            <Badge>L{Math.max(1, Number(route.level) || 1)}</Badge>,
             route.type === "port_forward" ? "端口转发" : "隧道转发",
             nodes.find((node) => node.id === route.entryAgentId)?.name ||
               "节点不可用",
@@ -239,7 +243,65 @@ export function RouteBuilder() {
                   : "节点离线"}
             </Badge>,
             <div className="actions">
+              <Button
+                aria-label={`上移 ${route.name}`}
+                title="上移"
+                disabled={index === 0}
+                onClick={async () => {
+                  try {
+                    await post(`/api/admin/routes/${route.id}/move`, {
+                      direction: "up",
+                    });
+                    setMessage("");
+                    reload();
+                  } catch (e) {
+                    setMessage((e as Error).message);
+                  }
+                }}
+              >
+                <ArrowUp size={15} />
+              </Button>
+              <Button
+                aria-label={`下移 ${route.name}`}
+                title="下移"
+                disabled={index === routes.length - 1}
+                onClick={async () => {
+                  try {
+                    await post(`/api/admin/routes/${route.id}/move`, {
+                      direction: "down",
+                    });
+                    setMessage("");
+                    reload();
+                  } catch (e) {
+                    setMessage((e as Error).message);
+                  }
+                }}
+              >
+                <ArrowDown size={15} />
+              </Button>
               <Button onClick={() => open(route)}>编辑</Button>
+              <Button
+                className="danger"
+                onClick={async () => {
+                  if (
+                    !confirm(
+                      `确定一键删除隧道“${route.name}”的全部客户中转规则？此操作会停止并移除所有客户在该隧道上的配置，且不可撤销。`,
+                    )
+                  )
+                    return;
+                  try {
+                    await post(`/api/admin/routes/${route.id}/purge-rules`, {
+                      confirm: true,
+                    });
+                    reload();
+                    setMessage("");
+                  } catch (e) {
+                    setMessage((e as Error).message);
+                  }
+                }}
+              >
+                删除全部客户规则
+              </Button>
               <Button
                 onClick={async () => {
                   if (
@@ -296,6 +358,7 @@ export function RouteBuilder() {
                 requireFront: editing.requireFront,
                 enabled: editing.enabled,
                 rateMbps: Number(editing.rateMbps),
+                level: Math.max(1, Math.min(3, Number(editing.level) || 1)),
               };
               await post(
                 "/api/admin/routes" + (editing.id ? `/${editing.id}` : ""),
@@ -314,6 +377,15 @@ export function RouteBuilder() {
               required
               maxLength={100}
             />
+            <Select
+              label="权益等级"
+              value={Math.max(1, Number(editing.level) || 1)}
+              onChange={(e) => change({ level: Number(e.target.value) })}
+            >
+              <option value={1}>L1</option>
+              <option value={2}>L2</option>
+              <option value={3}>L3</option>
+            </Select>
             <Select
               label="隧道类型"
               value={editing.type}

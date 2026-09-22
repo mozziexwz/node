@@ -22,7 +22,7 @@ import {
   ErrorNotice,
   AsyncForm,
   useData,
-  money,
+  leaves,
   date,
 } from "./ui";
 
@@ -33,6 +33,8 @@ type Input = {
   default?: any;
   options?: [string, string][];
   optional?: boolean;
+  min?: number;
+  step?: number | string;
   convert?: (s: any) => any;
 };
 type Resource = {
@@ -44,19 +46,42 @@ type Resource = {
   method?: string;
   noDelete?: boolean;
 };
+function leafCents(value: unknown, minimum = 0): number {
+  const count = Number(value);
+  if (
+    !Number.isSafeInteger(count) ||
+    count < minimum ||
+    count > Math.floor(Number.MAX_SAFE_INTEGER / 100)
+  )
+    throw new Error(`枫叶需为不小于 ${minimum} 的安全整数`);
+  return count * 100;
+}
 const schemas: Record<string, Resource> = {
   plans: {
-    title: "套餐管理",
+    title: "权益管理",
     url: "/api/admin/plans",
     key: "plans",
     fields: [
-      { key: "name", label: "套餐名称" },
+      { key: "name", label: "权益名称" },
+      {
+        key: "level",
+        label: "权益等级",
+        default: 1,
+        options: [
+          ["1", "L1"],
+          ["2", "L2"],
+          ["3", "L3"],
+        ],
+        convert: Number,
+      },
       {
         key: "priceCents",
-        label: "售价（元）",
+        label: "所需枫叶",
         type: "number",
         default: 0,
-        convert: (v) => Math.round(Number(v) * 100),
+        min: 0,
+        step: 1,
+        convert: (v) => leafCents(v),
       },
       { key: "days", label: "天数（1–31）", type: "number", default: 30 },
       {
@@ -75,22 +100,39 @@ const schemas: Record<string, Resource> = {
       { key: "enabled", label: "上架", type: "checkbox", default: false },
       {
         key: "maxPurchasesPerUser",
-        label: "每人限购次数（0 不限购）",
+        label: "每人限兑次数（0 不限兑）",
         type: "number",
         default: 0,
+        min: 0,
+        step: 1,
+      },
+      {
+        key: "currentHoldersOnly",
+        label: "仅允许当前该权益有效用户兑换",
+        type: "checkbox",
+        default: false,
+      },
+      {
+        key: "trial",
+        label: "体验权益（每位用户仅可兑换一次）",
+        type: "checkbox",
+        default: false,
       },
     ],
     columns: [
-      ["name", "套餐"],
-      ["priceCents", "售价（元）"],
+      ["name", "权益"],
+      ["level", "等级"],
+      ["priceCents", "所需枫叶"],
       ["days", "天数"],
       ["rateMbps", "每规则限速"],
-      ["maxPurchasesPerUser", "每人限购"],
+      ["maxPurchasesPerUser", "每人限兑"],
+      ["currentHoldersOnly", "仅当前持有人"],
+      ["trial", "体验权益"],
       ["enabled", "已上架"],
     ],
   },
   payments: {
-    title: "支付渠道",
+    title: "兑换渠道",
     url: "/api/admin/payment-channels",
     key: "channels",
     fields: [
@@ -210,8 +252,9 @@ function show(value: any, key: string) {
         {value ? "在线" : "离线 / 未连接"}
       </Badge>
     );
-  if (key === "priceCents") return `¥ ${money(value)}`;
-  if (key === "maxPurchasesPerUser") return value ? `${value} 次` : "不限购";
+  if (key === "priceCents") return `${leaves(value)}枫叶`;
+  if (key === "level") return `L${value || 1}`;
+  if (key === "maxPurchasesPerUser") return value ? `${value} 次` : "不限兑";
   if (key.endsWith("At") || key === "lastSeen") return date(value);
   if (typeof value === "boolean")
     return <Badge tone={value ? "green" : ""}>{value ? "是" : "否"}</Badge>;
@@ -236,7 +279,7 @@ export function ResourcePage({ kind }: { kind: string }) {
       )
         v = "";
       if (kind === "plans" && row.id) {
-        if (f.key === "priceCents") v = row.priceCents / 100;
+        if (f.key === "priceCents") v = Math.trunc(row.priceCents / 100);
         if (f.key === "trafficBytes") v = row.trafficBytes / 1e9;
       }
       if (f.key === "portRanges" && Array.isArray(v))
@@ -262,6 +305,12 @@ export function ResourcePage({ kind }: { kind: string }) {
         </Button>
       </Header>
       <ErrorNotice error={error || message} />
+      {kind === "plans" && (
+        <Notice>
+          L3 权益可使用 L1、L2、L3 线路，L2 可使用 L1、L2 线路，L1 仅可使用 L1
+          线路。“仅允许当前该权益有效用户兑换”用于暂停接纳新用户，但保留当前有效持有人的续兑；体验权益则对每位用户终身限兑一次，不能续兑。两项不能同时启用。
+        </Notice>
+      )}
       {kind === "agents" && message && (
         <div className="actions mt16">
           <a className="btn" href="#routes">
@@ -275,10 +324,10 @@ export function ResourcePage({ kind }: { kind: string }) {
       {kind === "payments" && (
         <Notice>
           通知地址（异步回调）和返回地址（同步跳转）由本站 PUBLIC_URL 自动生成，
-          每次下单自动提交，无需手填。保存渠道后点击“编辑”查看并复制。
+          每次兑换自动提交，无需手填。保存渠道后点击“编辑”查看并复制。
           通知地址须公网 HTTPS
           可达；若支付商户后台要求域名或通知白名单，请填写对应地址。
-          同步返回仅查询订单，不作为付款凭据。保存后的密钥不回显。
+          同步返回仅查询兑换记录，不作为付款凭据。保存后的密钥不回显。
         </Notice>
       )}
       <div className="card flush mt16">
@@ -372,9 +421,9 @@ export function ResourcePage({ kind }: { kind: string }) {
                 </Button>
               </div>
               <p className="muted mt16">
-                这是本站自动生成的地址，不是支付网关地址。每笔订单会把{" "}
+                这是本站自动生成的地址，不是支付网关地址。每笔兑换会把{" "}
                 {"{orderId}"}{" "}
-                替换为实际订单号；模板不能直接作为测试付款链接。付款结果仅以异步验签后的服务端记录为准。
+                替换为实际兑换编号；模板不能直接作为测试付款链接。兑换结果仅以异步验签后的服务端记录为准。
               </p>
             </section>
           )}
@@ -431,9 +480,19 @@ export function ResourcePage({ kind }: { kind: string }) {
                     <Check
                       key={f.key}
                       checked={!!values[f.key]}
-                      onChange={(e) =>
-                        setValues({ ...values, [f.key]: e.target.checked })
-                      }
+                      onChange={(e) => {
+                        const next = {
+                          ...values,
+                          [f.key]: e.target.checked,
+                        };
+                        if (kind === "plans" && e.target.checked) {
+                          if (f.key === "trial")
+                            next.currentHoldersOnly = false;
+                          if (f.key === "currentHoldersOnly")
+                            next.trial = false;
+                        }
+                        setValues(next);
+                      }}
                       label={f.label}
                     />
                   ) : f.options ? (
@@ -472,10 +531,11 @@ export function ResourcePage({ kind }: { kind: string }) {
                         setValues({ ...values, [f.key]: e.target.value })
                       }
                       required={!f.optional}
+                      min={f.min}
                       autoComplete={
                         f.type === "password" ? "new-password" : undefined
                       }
-                      step={f.type === "number" ? "any" : undefined}
+                      step={f.type === "number" ? (f.step ?? "any") : undefined}
                     />
                   ),
                 )}
@@ -493,7 +553,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             终端运行下面命令，再粘贴令牌。令牌不会进入命令行历史；不要发给客户。节点注册令牌有有效期，过期可重新生成。
           </Notice>
           <pre className="code-panel mt16">
-            {`curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.4/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`}
+            {`curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.3.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`}
           </pre>
           {location.protocol !== "https:" && (
             <Notice tone="orange">
@@ -504,7 +564,7 @@ export function ResourcePage({ kind }: { kind: string }) {
           <Button
             onClick={() =>
               void copyText(
-                `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.4/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'`,
+                `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.3.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`,
               ).catch((e) => setMessage(e.message))
             }
           >
@@ -581,11 +641,11 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
   return (
     <>
       <Header
-        title={invitations ? "邀请码管理" : "卡密管理"}
+        title={invitations ? "邀请码管理" : "兑换码管理"}
         sub={
           invitations
             ? "邀请码仅用于注册；每码使用次数独立计算。"
-            : "卡密只兑换账户余额，不直接兑换套餐。"
+            : "兑换码只兑换枫叶，不直接兑换权益。"
         }
       >
         <Button primary onClick={() => setCreating(true)}>
@@ -652,8 +712,8 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
                 setSelected(e.target.checked ? rows.map((x) => x.id) : [])
               }
             />,
-            invitations ? "完整邀请码" : "完整卡密",
-            invitations ? "使用次数" : "面额",
+            invitations ? "完整邀请码" : "完整兑换码",
+            invitations ? "使用次数" : "枫叶",
             "状态",
             "批次",
             ...(!invitations ? ["使用用户", "使用时间"] : []),
@@ -675,7 +735,7 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
             <span className="mono">{c.code}</span>,
             invitations
               ? `${c.usedCount ?? c.uses?.length ?? 0} / ${c.maxUses}`
-              : `¥ ${money(c.amountCents)}`,
+              : `${leaves(c.amountCents)}枫叶`,
             (
               {
                 active: "未使用 / 启用",
@@ -705,7 +765,7 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
       </div>
       {creating && (
         <Modal
-          title={invitations ? "批量生成邀请码" : "批量生成卡密"}
+          title={invitations ? "批量生成邀请码" : "批量生成兑换码"}
           onClose={() => setCreating(false)}
         >
           <AsyncForm
@@ -718,7 +778,7 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
                       maxUses: Number(f.get("maxUses")),
                       note: String(f.get("batch")),
                     }
-                  : { amountCents: Math.round(Number(f.get("amount")) * 100) }),
+                  : { amountCents: leafCents(f.get("amount"), 1) }),
                 batch: String(f.get("batch")),
               })
             }
@@ -747,11 +807,11 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
               />
             ) : (
               <Field
-                label="每张面额（元）"
+                label="每个兑换码枫叶"
                 name="amount"
                 type="number"
-                min={0.01}
-                step="0.01"
+                min={1}
+                step="1"
                 defaultValue={10}
                 required
               />
@@ -807,9 +867,9 @@ const featureNames: Record<string, string> = {
   deploy: "部署 MSBOOST",
   relay: "自备中转配置",
   dd: "DD 系统",
-  paidCreate: "新增增值转发",
-  planSale: "套餐销售",
-  cards: "卡密兑换",
+  paidCreate: "新增捐赠权益转发",
+  planSale: "权益兑换",
+  cards: "兑换码兑换",
   paywx: "微信支付",
   payali: "支付宝支付",
   monitor: "用户线路监控",
@@ -819,7 +879,7 @@ const featureNames: Record<string, string> = {
   maintenance: "维护模式",
   registrationEmailVerificationRequired: "注册时必须验证邮箱",
   freeToolsRequireVerifiedEmail: "免费工具仅限已验证邮箱用户",
-  purchaseRequireVerifiedEmail: "购买套餐必须验证邮箱",
+  purchaseRequireVerifiedEmail: "兑换权益必须验证邮箱",
 };
 export function Settings({ onRefresh }: { onRefresh: () => void }) {
   const { data, error, reload } = useData("/api/admin/settings");
@@ -1208,7 +1268,7 @@ export function AdminRules() {
         <details className="card mt16" aria-label="账务核对概览">
           <summary>账务核对概览（只读）</summary>
           <Notice tone="orange">
-            历史周期流量按原权益周期归属，不混扣新套餐；待核对流量未自动调账，当前没有自动调账操作。
+            历史周期流量按原权益周期归属，不混扣新权益；待核对流量未自动调账，当前没有自动调账操作。
           </Notice>
           <p className="mt16">
             待核对流量：

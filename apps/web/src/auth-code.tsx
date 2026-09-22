@@ -65,8 +65,24 @@ export function qqEmailInput(value: string) {
   return email;
 }
 
-export function validateNewPassword(password: string, confirmation: string) {
-  const bytes = new TextEncoder().encode(password).length;
-  if (bytes < 12 || bytes > 72) throw new Error("密码需为 12–72 字节");
+export function validateNewPassword(
+  password: string,
+  confirmation: string,
+  email = "",
+) {
+  if (Array.from(password).length < 8) throw new Error("密码至少8字符");
+  if (new TextEncoder().encode(password).length > 72)
+    throw new Error("密码不能超过72字节");
+  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedPassword = password.toLowerCase();
+  const emailLocalPart = normalizedEmail.split("@", 1)[0];
+  if (
+    normalizedEmail &&
+    (normalizedPassword === normalizedEmail ||
+      normalizedPassword === emailLocalPart)
+  )
+    throw new Error("密码不能与邮箱或邮箱前缀相同");
+  if (/\d{6,}/u.test(password))
+    throw new Error("密码不能包含连续6位或以上数字");
   if (password !== confirmation) throw new Error("两次密码不一致");
 }

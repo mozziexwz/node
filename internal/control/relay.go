@@ -2,9 +2,12 @@ package control
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"sort"
@@ -70,6 +73,8 @@ type Route struct {
 	AddressPreference         string       `json:"addressPreference"`
 	EntryAddresses            []string     `json:"entryAddresses,omitempty"`
 	EntryAuto                 bool         `json:"entryAuto"`
+	Level                     int          `json:"level"`
+	Order                     int          `json:"order"`
 }
 type RelaySegment struct {
 	AgentID                  string            `json:"agentId"`
@@ -112,6 +117,9 @@ type UserRule struct {
 	FrontTaskID               string         `json:"frontTaskId,omitempty"`
 	RequestID                 string         `json:"requestId"`
 	TrafficBytes              int64          `json:"trafficBytes"`
+	InputBytes                int64          `json:"inputBytes"`
+	OutputBytes               int64          `json:"outputBytes"`
+	TrafficEntitlementVersion int64          `json:"trafficEntitlementVersion"`
 	EntitlementVersion        int64          `json:"entitlementVersion"`
 	TrafficMode               string         `json:"trafficMode"`
 	TrafficMultiplierPermille int64          `json:"trafficMultiplierPermille"`
@@ -130,6 +138,8 @@ type TrafficCursor struct {
 	OutputBytes int64 `json:"outputBytes"`
 	Remainder   int64 `json:"remainder,omitempty"`
 }
+
+type relayDiagnosticProbeFunc func(context.Context, string, string) (int64, error)
 
 // Rates are per forwarding rule and per direction, never a shared account pool.
 func relayRate(user *User, route Route) int64 {
@@ -194,7 +204,7 @@ func relayRuleView(s *State, rule UserRule, admin bool, now int64) RelayRuleView
 	}
 	switch rule.State {
 	case "active", "pending":
-		if !relayEntitled(u, now) || !route.Enabled {
+		if !relayEntitled(u, now) || !route.Enabled || !userCanUseRoute(u, route) {
 			out.SyncState = "unavailable"
 		} else if !policyCurrent || out.TotalSegments == 0 || out.ReadySegments != out.TotalSegments {
 			out.SyncState, out.State = "syncing", "pending"
@@ -338,8 +348,8 @@ func relayEffective(s *State, route Route) (bool, bool) {
 	return required, online
 }
 func relayValidateRoute(s *State, route Route) error {
-	if route.Name == "" || len(route.Name) > 100 || route.EntryAgentID == "" || len(route.Hops) > 8 || route.RateMbps < 1 || route.RateMbps > 100000 {
-		return errors.New("线路名称、入口、速率或跳数无效")
+	if route.Name == "" || len(route.Name) > 100 || route.EntryAgentID == "" || len(route.Hops) > 8 || route.RateMbps < 1 || route.RateMbps > 100000 || route.Level < 1 || route.Level > 3 {
+		return errors.New("线路名称、入口、速率、等级或跳数无效")
 	}
 	if err := relayAddress(route.EntryAddress); err != nil {
 		return err
@@ -421,6 +431,10 @@ func relaySanitizedRule(rule UserRule) UserRule {
 	return rule
 }
 func relayReservePort(s *State, agent RelayAgent) (int, error) {
+	return relayReservePortWithReader(s, agent, cryptorand.Reader)
+}
+
+func relayReservePortWithReader(s *State, agent RelayAgent, random io.Reader) (int, error) {
 	used := map[int]bool{}
 	now := time.Now().UnixMilli()
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {
@@ -430,17 +444,81 @@ func relayReservePort(s *State, agent RelayAgent) (int, error) {
 			}
 		}
 	}
-	for _, pr := range agent.PortRanges {
-		for p := pr.Start; p <= pr.End; p++ {
-			if !used[p] {
-				return p, nil
+	// A normal archive contains exact stopped proof and releases its port. A
+	// restored/recovery-retained archive without that terminal proof must remain
+	// reserved until reconciliation proves the old listener is gone.
+	for _, rule := range ListDocs[UserRule](s, "relay_rule_archive") {
+		if rule.State == "revoked" && relayRuleRevoked(rule, now) {
+			continue
+		}
+		for _, seg := range rule.Segments {
+			if seg.AgentID == agent.ID {
+				used[seg.Runtime.ListenPort] = true
 			}
 		}
 	}
-	return 0, errors.New("Agent端口池已耗尽")
+	available := make([]int, 0)
+	for _, pr := range agent.PortRanges {
+		for p := pr.Start; p <= pr.End; p++ {
+			if !used[p] {
+				available = append(available, p)
+			}
+		}
+	}
+	if len(available) == 0 {
+		return 0, errors.New("Agent端口池已耗尽")
+	}
+	index, err := cryptorand.Int(random, big.NewInt(int64(len(available))))
+	if err != nil {
+		return 0, errors.New("安全随机端口分配失败")
+	}
+	return available[index.Int64()], nil
+}
+
+func orderedRoutes(s *State) []Route {
+	routes := ListDocs[Route](s, "routes")
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Order != routes[j].Order {
+			return routes[i].Order < routes[j].Order
+		}
+		return routes[i].ID < routes[j].ID
+	})
+	return routes
+}
+
+func routeLevel(level int) int { return entitlementLevel(level) }
+func userCanUseRoute(user *User, route Route) bool {
+	return user != nil && entitlementLevel(user.Level) >= routeLevel(route.Level)
 }
 func relayEntitled(u *User, now int64) bool {
 	return u != nil && u.Status == "active" && u.ExpiresAt > now && u.TrafficUsed < u.TrafficTotal
+}
+
+func ruleTrafficEntitlementVersion(rule UserRule) int64 {
+	if rule.TrafficEntitlementVersion != 0 {
+		return rule.TrafficEntitlementVersion
+	}
+	return rule.EntitlementVersion
+}
+
+// resetUserRuleTraffic clears the counters shown for the new entitlement but
+// deliberately preserves cumulative agent cursors. Keeping those baselines is
+// what prevents the agent's old lifetime totals from being charged again.
+func resetUserRuleTraffic(s *State, userID string, nextEntitlementVersion int64) error {
+	for _, collection := range []string{"user_rules", "relay_rule_archive"} {
+		for key := range s.Docs[collection] {
+			rule, ok := LoadDoc[UserRule](s, collection, key)
+			if !ok || rule.UserID != userID {
+				continue
+			}
+			rule.TrafficBytes, rule.InputBytes, rule.OutputBytes = 0, 0, 0
+			rule.TrafficEntitlementVersion = nextEntitlementVersion
+			if err := SaveDoc(s, collection, key, rule); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 func relayRevoke(rule *UserRule, now int64, deleteConfig bool) {
 	rule.State = "revoking"
@@ -462,6 +540,7 @@ func (a *App) RegisterRelay(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/user/routes/{route}/rules", a.relayEditRule)
 	mux.HandleFunc("DELETE /api/user/routes/{route}/rules", a.relayDeleteRule)
 	mux.HandleFunc("GET /api/user/routes/{route}/config", a.relayDownload)
+	mux.HandleFunc("POST /api/user/routes/{route}/diagnose", a.relayDiagnose)
 	mux.HandleFunc("POST /api/user/target/reset", a.relayResetTarget)
 	mux.HandleFunc("GET /api/user/traffic", a.relayTraffic)
 	mux.HandleFunc("GET /api/admin/relay-agents", a.relayAgents)
@@ -473,6 +552,8 @@ func (a *App) RegisterRelay(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/admin/routes", a.relaySaveRoute)
 	mux.HandleFunc("PUT /api/admin/routes/{id}", a.relaySaveRoute)
 	mux.HandleFunc("DELETE /api/admin/routes/{id}", a.relayDeleteRoute)
+	mux.HandleFunc("POST /api/admin/routes/{id}/move", a.relayMoveRoute)
+	mux.HandleFunc("POST /api/admin/routes/{id}/purge-rules", a.relayPurgeRouteRules)
 	mux.HandleFunc("GET /api/admin/user-rules", a.relayUserRules)
 	mux.HandleFunc("GET /api/admin/relay-accounting", a.relayAccountingV2)
 	mux.HandleFunc("GET /api/admin/user-rules/{id}", a.relayAdminRule)
@@ -505,11 +586,12 @@ func (a *App) relayRoutes(w http.ResponseWriter, r *http.Request) {
 			user = s.Users[user.ID]
 			userRate = user.RateMbps
 		}
-		for _, route := range ListDocs[Route](s, "routes") {
+		for _, route := range orderedRoutes(s) {
 			if err := normalizeRelayRoute(s, &route); err != nil && !admin {
 				continue
 			}
-			if admin || route.Enabled {
+			route.Level = routeLevel(route.Level)
+			if admin || route.Enabled && userCanUseRoute(user, route) {
 				route.RequireFront, route.Online = relayEffective(s, route)
 				if !admin {
 					route.RateMbps = relayRate(user, route)
@@ -528,9 +610,6 @@ func (a *App) relayRoutes(w http.ResponseWriter, r *http.Request) {
 		commerceError(w, 500, err)
 		return
 	}
-	// ListDocs traverses a map. Use immutable identity, not name or heartbeat,
-	// so periodic refreshes do not move otherwise unchanged route cards.
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	WriteJSON(w, 200, map[string]any{"routes": out, "userRateMbps": userRate, "rateScope": "per_rule_per_direction", "protocols": []string{"tcp", "tls"}, "strategies": []string{"round", "rand", "fifo"}, "leaseSeconds": relayLeaseMS / 1000})
 }
 func (a *App) relayAgents(w http.ResponseWriter, r *http.Request) {
@@ -703,6 +782,10 @@ func (a *App) relaySaveRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	route.ID = r.PathValue("id")
 	err := a.Store.Update(func(s *State) error {
+		if route.Level < 0 || route.Level > 3 {
+			return errors.New("线路等级须为 L1、L2 或 L3")
+		}
+		route.Level = routeLevel(route.Level)
 		if err := normalizeRelayRoute(s, &route); err != nil {
 			return err
 		}
@@ -720,9 +803,14 @@ func (a *App) relaySaveRoute(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			route.Version = old.Version + 1
+			route.Order = old.Order
 		} else {
 			route.ID = commerceID()
 			route.Version = 1
+			route.Order = 1
+			for _, existing := range ListDocs[Route](s, "routes") {
+				route.Order = max(route.Order, existing.Order+1)
+			}
 		}
 		route.Online = false
 		return SaveDoc(s, "routes", route.ID, route)
@@ -756,6 +844,106 @@ func (a *App) relayDeleteRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (a *App) relayMoveRoute(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.Admin(r); err != nil {
+		commerceError(w, 403, err)
+		return
+	}
+	var in struct {
+		Direction string `json:"direction"`
+	}
+	if err := Decode(r, &in); err != nil || in.Direction != "up" && in.Direction != "down" {
+		commerceError(w, 400, errors.New("direction 只能为 up 或 down"))
+		return
+	}
+	var moved Route
+	err := a.Store.Update(func(s *State) error {
+		routes := orderedRoutes(s)
+		index := -1
+		for i := range routes {
+			if routes[i].ID == r.PathValue("id") {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return errors.New("线路不存在")
+		}
+		target := index - 1
+		if in.Direction == "down" {
+			target = index + 1
+		}
+		if target < 0 || target >= len(routes) {
+			return errors.New("线路已在该方向尽头")
+		}
+		routes[index], routes[target] = routes[target], routes[index]
+		for i := range routes {
+			routes[i].Order = i + 1
+			if err := SaveDoc(s, "routes", routes[i].ID, routes[i]); err != nil {
+				return err
+			}
+		}
+		moved = routes[target]
+		return nil
+	})
+	if err != nil {
+		commerceError(w, 409, err)
+		return
+	}
+	WriteJSON(w, 200, moved)
+}
+
+func (a *App) relayPurgeRouteRules(w http.ResponseWriter, r *http.Request) {
+	admin, err := a.Admin(r)
+	if err != nil {
+		commerceError(w, 403, err)
+		return
+	}
+	var in struct {
+		Confirm bool `json:"confirm"`
+	}
+	if err = Decode(r, &in); err != nil || !in.Confirm {
+		commerceError(w, 400, errors.New("请明确确认撤销该线路的全部用户配置"))
+		return
+	}
+	count, keepLast := 0, false
+	err = a.Store.Update(func(s *State) error {
+		if _, ok := LoadDoc[Route](s, "routes", r.PathValue("id")); !ok {
+			return errors.New("线路不存在")
+		}
+		for _, rule := range ListDocs[UserRule](s, "user_rules") {
+			if rule.RouteID == r.PathValue("id") && relayRecoveryRequired(s, rule) {
+				return errors.New("线路包含处于恢复核对的配置，禁止批量撤销")
+			}
+		}
+		for key := range s.Docs["user_rules"] {
+			rule, ok := LoadDoc[UserRule](s, "user_rules", key)
+			if !ok || rule.RouteID != r.PathValue("id") {
+				continue
+			}
+			keepLast = keepLast || relayRuleUsesV2(s, rule)
+			if rule.State != "revoking" {
+				relayRevoke(&rule, time.Now().UnixMilli(), true)
+			}
+			rule.SealedConfig = ""
+			if err := SaveDoc(s, "user_rules", key, rule); err != nil {
+				return err
+			}
+			count++
+		}
+		return commerceAudit(s, admin.ID, "route.purge_rules", r.PathValue("id"))
+	})
+	if err != nil {
+		commerceError(w, 409, err)
+		return
+	}
+	message := "已发起全部配置撤销；资源将在租约结束后释放"
+	if keepLast {
+		message = "已向全部节点下发停止意图；收到 v2 停止确认前继续保留端口和墓碑记录"
+	}
+	WriteJSON(w, 202, map[string]any{"ok": true, "count": count, "state": "revoking", "stopStatus": "pending", "message": message})
 }
 func (a *App) relayUserRules(w http.ResponseWriter, r *http.Request) {
 	admin := strings.Contains(r.URL.Path, "/admin/")
@@ -896,14 +1084,17 @@ func (a *App) relayCreateRule(w http.ResponseWriter, r *http.Request) {
 			return errors.New("站点维护期间暂停新线路配置")
 		}
 		if !boolSetting(s, "paidCreate") {
-			return errors.New("增值线路新建暂时关闭")
+			return errors.New("捐赠权益线路新建暂时关闭")
 		}
 		if !relayEntitled(user, now) {
-			return errors.New("套餐无效、流量耗尽或账号已暂停")
+			return errors.New("权益无效、流量耗尽或账号已暂停")
 		}
 		route, ok := LoadDoc[Route](s, "routes", r.PathValue("route"))
 		if !ok || !route.Enabled {
 			return errors.New("线路不可用")
+		}
+		if !userCanUseRoute(user, route) {
+			return errors.New("当前权益等级不足，无法配置此线路")
 		}
 		if err := normalizeRelayRoute(s, &route); err != nil {
 			return err
@@ -949,7 +1140,7 @@ func (a *App) relayCreateRule(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		out = UserRule{ID: commerceID(), UserID: u.ID, RouteID: route.ID, RouteName: route.Name, TargetHash: targetHash, TargetHost: info.TargetHost, TargetPort: info.TargetPort, Version: 1, State: "pending", EntryAddress: route.EntryAddress, CreatedAt: now, RequestID: in.RequestID}
+		out = UserRule{ID: commerceID(), UserID: u.ID, RouteID: route.ID, RouteName: route.Name, TargetHash: targetHash, TargetHost: info.TargetHost, TargetPort: info.TargetPort, Version: 1, State: "pending", EntryAddress: route.EntryAddress, CreatedAt: now, RequestID: in.RequestID, TrafficEntitlementVersion: entitlementVersion(s, u.ID)}
 		out.EntitlementVersion = entitlementVersion(s, u.ID)
 		out.TrafficMode, out.TrafficMultiplierPermille = route.TrafficMode, route.TrafficMultiplierPermille
 		if in.Front != nil {
@@ -1046,7 +1237,8 @@ func (a *App) relayCreateRule(w http.ResponseWriter, r *http.Request) {
 				if err == nil {
 					err = a.Store.Update(func(s *State) error {
 						current, ok := LoadDoc[UserRule](s, "user_rules", key)
-						if !ok || current.ID != out.ID || current.State != "awaiting_front" || !relayEntitled(s.Users[u.ID], time.Now().UnixMilli()) {
+						currentRoute, routeOK := LoadDoc[Route](s, "routes", current.RouteID)
+						if !ok || current.ID != out.ID || current.State != "awaiting_front" || !relayEntitled(s.Users[u.ID], time.Now().UnixMilli()) || !routeOK || !userCanUseRoute(s.Users[u.ID], currentRoute) {
 							return errors.New("配置期间本站授权已改变，前置规则不再生效")
 						}
 						current.SealedConfig = sealed
@@ -1109,11 +1301,14 @@ func (a *App) relayEditRule(w http.ResponseWriter, r *http.Request) {
 			rule.State = "paused"
 		} else {
 			if !relayEntitled(s.Users[rule.UserID], time.Now().UnixMilli()) {
-				return errors.New("套餐不可用")
+				return errors.New("权益不可用")
 			}
 			route, exists := LoadDoc[Route](s, "routes", rule.RouteID)
 			if !exists || !route.Enabled {
 				return errors.New("线路已停用或不存在，不能恢复")
+			}
+			if !userCanUseRoute(s.Users[rule.UserID], route) {
+				return errors.New("当前权益等级不足，不能恢复此线路")
 			}
 			if len(rule.Segments) == 0 {
 				return errors.New("这是备份恢复保留的下载配置，请删除后重新配置线路以绑定新的Agent")
@@ -1193,11 +1388,15 @@ func (a *App) relayDownload(w http.ResponseWriter, r *http.Request) {
 	err = a.Store.View(func(s *State) error {
 		user := s.Users[u.ID]
 		if user == nil || user.ExpiresAt <= time.Now().UnixMilli() {
-			return errors.New("套餐已到期，服务器配置已失效")
+			return errors.New("权益已到期，服务器配置已失效")
 		}
 		rule, ok := LoadDoc[UserRule](s, "user_rules", u.ID+":"+r.PathValue("route"))
 		if !ok || rule.SealedConfig == "" || rule.State == "revoking" {
 			return errors.New("配置不存在或已撤销")
+		}
+		route, routeOK := LoadDoc[Route](s, "routes", rule.RouteID)
+		if !routeOK || !userCanUseRoute(user, route) {
+			return errors.New("当前权益等级不足，配置已失效")
 		}
 		var err error
 		raw, err = a.Open(rule.SealedConfig)
@@ -1208,9 +1407,130 @@ func (a *App) relayDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename=msboost-relay.json; filename*=UTF-8''%E5%A2%9E%E5%80%BC%E4%B8%AD%E8%BD%AC.json")
+	w.Header().Set("Content-Disposition", "attachment; filename=msboost-relay.json; filename*=UTF-8''MSBOOST%E4%B8%AD%E8%BD%AC%E9%85%8D%E7%BD%AE.json")
 	w.Header().Set("Cache-Control", "no-store, private")
 	w.Write(raw)
+}
+
+func (a *App) relayDiagnose(w http.ResponseWriter, r *http.Request) {
+	u, err := a.User(r)
+	if err != nil {
+		commerceError(w, 401, err)
+		return
+	}
+	if !a.allow("relay-diagnose:"+u.ID, 20, time.Minute) {
+		commerceError(w, 429, errors.New("诊断过于频繁，请稍后重试"))
+		return
+	}
+	var rule UserRule
+	runtimeReady := false
+	err = a.Store.View(func(s *State) error {
+		var ok bool
+		rule, ok = LoadDoc[UserRule](s, "user_rules", u.ID+":"+r.PathValue("route"))
+		if !ok || rule.UserID != u.ID || rule.RouteID != r.PathValue("route") || rule.State != "active" || rule.EntryAddress == "" || rule.EntryPort < 1 || rule.EntryPort > 65535 {
+			return errors.New("没有可诊断的在线中转配置")
+		}
+		route, ok := LoadDoc[Route](s, "routes", rule.RouteID)
+		if !ok || !route.Enabled || !relayEntitled(s.Users[u.ID], time.Now().UnixMilli()) || !userCanUseRoute(s.Users[u.ID], route) {
+			return errors.New("当前中转配置不可用")
+		}
+		view := relayRuleView(s, rule, false, time.Now().UnixMilli())
+		runtimeReady = view.SyncState == "active" && view.TotalSegments > 0 && view.ReadySegments == view.TotalSegments
+		return nil
+	})
+	if err != nil {
+		commerceError(w, 409, err)
+		return
+	}
+	path := fmt.Sprintf("入口(%s)->目标(MSBOOST)", rule.RouteName)
+	failure := func(latency int64, message string) {
+		WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "failed", "latencyMs": latency, "packetLossPercent": 100, "scope": "tcp_path", "error": message})
+	}
+	if !runtimeReady {
+		failure(0, "线路节点尚未全部确认在线，无法证明到达目标 MSBOOST")
+		return
+	}
+	target, targetErr := relayDiagnosticTarget(rule)
+	if targetErr != nil {
+		failure(0, "缺少已验证的目标 MSBOOST 探测地址")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	entries, entryErr := resolveRelayTarget(ctx, rule.EntryAddress, rule.EntryPort)
+	if entryErr != nil || len(entries) == 0 {
+		failure(0, "入口地址不可用，请稍后重试")
+		return
+	}
+	sort.Strings(entries)
+	probe := a.relayProbe
+	if probe == nil {
+		probe = relayCompositeDiagnosticProbe
+	}
+	latency, probeErr := probe(ctx, entries[0], target)
+	if probeErr != nil {
+		failure(latency, probeErr.Error())
+		return
+	}
+	WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "success", "latencyMs": latency, "packetLossPercent": 0, "scope": "tcp_path", "latencyScope": "entry_connect", "message": "仅为控制面视角的 TCP 路径样本；延迟是入口建连时间，不验证每跳/Mieru/游戏协议", "error": ""})
+}
+
+// relayDiagnosticTarget returns only an immutable, provision-time resolved
+// public target from the terminal forwarding segment. Request data can never
+// select or override this address.
+func relayDiagnosticTarget(rule UserRule) (string, error) {
+	if len(rule.Segments) == 0 || rule.TargetPort < 1 || rule.TargetPort > 65535 {
+		return "", errors.New("missing terminal segment")
+	}
+	targets := append([]string(nil), rule.Segments[len(rule.Segments)-1].Runtime.Targets...)
+	sort.Strings(targets)
+	for _, address := range targets {
+		host, rawPort, err := net.SplitHostPort(address)
+		if err != nil || net.ParseIP(host) == nil || executor.PublicIP(host) != nil {
+			continue
+		}
+		port, err := strconv.Atoi(rawPort)
+		if err == nil && port == rule.TargetPort {
+			return net.JoinHostPort(net.ParseIP(host).String(), rawPort), nil
+		}
+	}
+	return "", errors.New("missing validated public target")
+}
+
+// relayCompositeDiagnosticProbe combines three bounded control-plane samples:
+// current rule ACK state (checked by the caller), direct target TCP
+// reachability, and an entry TCP connection that does not immediately close.
+// It intentionally does not claim a per-hop or Mieru protocol probe.
+func relayCompositeDiagnosticProbe(ctx context.Context, entry, target string) (int64, error) {
+	dialer := &net.Dialer{}
+	targetConn, err := dialer.DialContext(ctx, "tcp", target)
+	if err != nil {
+		return 0, errors.New("目标 MSBOOST 连接失败，请检查目标服务")
+	}
+	_ = targetConn.Close()
+	started := time.Now()
+	entryConn, err := dialer.DialContext(ctx, "tcp", entry)
+	latency := time.Since(started).Milliseconds()
+	if err != nil {
+		return latency, errors.New("入口连接失败，请稍后重试")
+	}
+	defer entryConn.Close()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err = entryConn.SetReadDeadline(deadline); err != nil {
+		return latency, errors.New("入口连接状态无法确认")
+	}
+	var one [1]byte
+	_, err = entryConn.Read(one[:])
+	if err == nil {
+		return latency, nil
+	}
+	if networkError, ok := err.(net.Error); ok && networkError.Timeout() && ctx.Err() == nil {
+		return latency, nil
+	}
+	return latency, errors.New("入口 TCP 连接未能保持，请检查中转节点和目标 MSBOOST")
 }
 func (a *App) relayResetTarget(w http.ResponseWriter, r *http.Request) {
 	u, err := a.User(r)

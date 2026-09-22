@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -36,6 +37,8 @@ type User struct {
 	TrafficTotal    int64  `json:"trafficTotal"`
 	TrafficUsed     int64  `json:"trafficUsed"`
 	RateMbps        int64  `json:"rateMbps"`
+	Level           int    `json:"level"`
+	PlanID          string `json:"planId"`
 }
 
 type Session struct {
@@ -91,6 +94,7 @@ func safeUser(u *User) *User {
 	}
 	copy := *u
 	copy.PasswordHash = ""
+	copy.Level = entitlementLevel(copy.Level)
 	return &copy
 }
 
@@ -100,11 +104,26 @@ func (a *App) initialize() error {
 	}
 	var hash []byte
 	var err error
+	bootstrapAdmin := false
 	if a.Config.AdminEmail != "" {
+		bootstrapAdmin = true
+		if err = a.Store.View(func(s *State) error {
+			for _, user := range s.Users {
+				if user.Role == "admin" {
+					bootstrapAdmin = false
+					break
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if bootstrapAdmin {
 		if _, err = mail.ParseAddress(a.Config.AdminEmail); err != nil {
 			return errors.New("invalid ADMIN_EMAIL")
 		}
-		if err = validPassword(a.Config.AdminPassword); err != nil {
+		if err = validPassword(a.Config.AdminPassword, a.Config.AdminEmail); err != nil {
 			return err
 		}
 		hash, err = bcrypt.GenerateFromPassword([]byte(a.Config.AdminPassword), bcrypt.DefaultCost)
@@ -119,6 +138,15 @@ func (a *App) initialize() error {
 				s.Settings[k] = v
 			}
 		}
+		// Legacy accounts predate named entitlement levels. Preserve their
+		// effective L1 access without rewriting financial history.
+		now := time.Now().UnixMilli()
+		for _, u := range s.Users {
+			if u.Level < 1 || u.Level > 3 {
+				u.Level = 1
+			}
+			inferCurrentPlanID(s, u, now)
+		}
 		if len(hash) > 0 {
 			for _, u := range s.Users {
 				if u.Role == "admin" {
@@ -131,16 +159,38 @@ func (a *App) initialize() error {
 					return errors.New("bootstrap email already belongs to a non-admin user")
 				}
 			}
-			u := &User{ID: ID(), Email: email, Role: "admin", Status: "active", PasswordHash: string(hash), CreatedAt: time.Now().UnixMilli(), RateMbps: 1}
+			u := &User{ID: ID(), Email: email, Role: "admin", Status: "active", PasswordHash: string(hash), CreatedAt: time.Now().UnixMilli(), RateMbps: 1, Level: 1}
 			s.Users[u.ID] = u
 		}
 		return nil
 	})
 }
 
-func validPassword(password string) error {
-	if len(password) < 12 || len(password) > 72 {
-		return errors.New("密码需为 12–72 字节")
+func validPassword(password, email string) error {
+	if !utf8.ValidString(password) || utf8.RuneCountInString(password) < 8 {
+		return errors.New("密码至少需要 8 个字符")
+	}
+	if len(password) > 72 {
+		return errors.New("密码不能超过 72 字节")
+	}
+	normalizedEmail := strings.TrimSpace(email)
+	localPart := normalizedEmail
+	if at := strings.IndexByte(normalizedEmail, '@'); at >= 0 {
+		localPart = normalizedEmail[:at]
+	}
+	if normalizedEmail != "" && (strings.EqualFold(password, normalizedEmail) || localPart != "" && strings.EqualFold(password, localPart)) {
+		return errors.New("密码不能与邮箱或邮箱前缀相同")
+	}
+	digits := 0
+	for i := 0; i < len(password); i++ {
+		if password[i] >= '0' && password[i] <= '9' {
+			digits++
+			if digits >= 6 {
+				return errors.New("密码不能包含连续 6 位或更多数字")
+			}
+		} else {
+			digits = 0
+		}
 	}
 	return nil
 }
@@ -314,7 +364,7 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "请先同意用户协议与隐私政策")
 		return
 	}
-	if err := validPassword(in.Password); err != nil {
+	if err := validPassword(in.Password, in.Email); err != nil {
 		Fail(w, 400, err.Error())
 		return
 	}
@@ -360,7 +410,7 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) {
 			}
 			verified = time.Now().UnixMilli()
 		}
-		u := &User{ID: ID(), Email: in.Email, Role: "member", Status: "active", PasswordHash: string(hash), EmailVerifiedAt: verified, CreatedAt: time.Now().UnixMilli(), RateMbps: 1}
+		u := &User{ID: ID(), Email: in.Email, Role: "member", Status: "active", PasswordHash: string(hash), EmailVerifiedAt: verified, CreatedAt: time.Now().UnixMilli(), RateMbps: 1, Level: 1}
 		s.Users[u.ID] = u
 		if invite != nil {
 			invite.Uses = append(invite.Uses, InvitationUse{User: u.Email, At: u.CreatedAt})
@@ -880,6 +930,7 @@ type adminUserInput struct {
 	TrafficTotal *int64  `json:"trafficTotal"`
 	TrafficUsed  *int64  `json:"trafficUsed"`
 	RateMbps     *int64  `json:"rateMbps"`
+	Level        *int    `json:"level"`
 	Reason       string  `json:"reason"`
 }
 
@@ -958,8 +1009,19 @@ func (a *App) saveAdminUser(w http.ResponseWriter, r *http.Request, actor *User,
 	}
 	var hash []byte
 	var err error
+	passwordEmail := ""
+	if in.Email != nil {
+		passwordEmail = strings.ToLower(strings.TrimSpace(*in.Email))
+	} else if id != "" && in.Password != "" {
+		_ = a.Store.View(func(s *State) error {
+			if existing := s.Users[id]; existing != nil {
+				passwordEmail = existing.Email
+			}
+			return nil
+		})
+	}
 	if in.Password != "" {
-		if err = validPassword(in.Password); err != nil {
+		if err = validPassword(in.Password, passwordEmail); err != nil {
 			Fail(w, 400, err.Error())
 			return
 		}
@@ -974,7 +1036,7 @@ func (a *App) saveAdminUser(w http.ResponseWriter, r *http.Request, actor *User,
 	err = a.Store.Update(func(s *State) error {
 		u := s.Users[id]
 		if created {
-			u = &User{ID: ID(), Role: "member", Status: "active", CreatedAt: time.Now().UnixMilli(), RateMbps: 1}
+			u = &User{ID: ID(), Role: "member", Status: "active", CreatedAt: time.Now().UnixMilli(), RateMbps: 1, Level: 1}
 		} else if u == nil {
 			return errors.New("用户不存在")
 		}
@@ -997,6 +1059,11 @@ func (a *App) saveAdminUser(w http.ResponseWriter, r *http.Request, actor *User,
 		}
 		if u.Email == "" {
 			return errors.New("请填写邮箱")
+		}
+		if in.Password != "" {
+			if err := validPassword(in.Password, u.Email); err != nil {
+				return err
+			}
 		}
 		if in.Role != nil {
 			role := *in.Role
@@ -1028,14 +1095,23 @@ func (a *App) saveAdminUser(w http.ResponseWriter, r *http.Request, actor *User,
 			}
 			u.RateMbps = *in.RateMbps
 		}
+		if in.Level != nil {
+			if *in.Level < 1 || *in.Level > 3 {
+				return errors.New("权益等级须为 L1、L2 或 L3")
+			}
+			u.Level = *in.Level
+		}
 		for _, v := range []*int64{in.BalanceCents, in.ExpiresAt, in.TrafficTotal, in.TrafficUsed} {
 			if v != nil && *v < 0 {
-				return errors.New("余额、权益时间和流量不能为负")
+				return errors.New("枫叶、权益时间和流量不能为负")
 			}
+		}
+		if in.BalanceCents != nil && *in.BalanceCents%100 != 0 {
+			return errors.New("枫叶必须为整数，不能包含小数")
 		}
 		if in.BalanceCents != nil && *in.BalanceCents != u.BalanceCents {
 			if strings.TrimSpace(in.Reason) == "" {
-				return errors.New("调整余额必须填写原因")
+				return errors.New("调整枫叶必须填写原因")
 			}
 			if err := appendLedger(s, u, *in.BalanceCents-u.BalanceCents, "admin", actor.ID, in.Reason, time.Now().UnixMilli()); err != nil {
 				return err
@@ -1053,6 +1129,13 @@ func (a *App) saveAdminUser(w http.ResponseWriter, r *http.Request, actor *User,
 		if u.TrafficUsed > u.TrafficTotal {
 			return errors.New("已用流量不能超过总流量")
 		}
+		explicitTrafficReset := in.TrafficUsed != nil && *in.TrafficUsed == 0
+		nextEntitlementVersion := entitlementVersion(s, u.ID) + 1
+		if explicitTrafficReset {
+			if err := resetUserRuleTraffic(s, u.ID, nextEntitlementVersion); err != nil {
+				return err
+			}
+		}
 		if len(hash) > 0 {
 			u.PasswordHash = string(hash)
 			revokeSessions(s, u.ID)
@@ -1060,8 +1143,8 @@ func (a *App) saveAdminUser(w http.ResponseWriter, r *http.Request, actor *User,
 		if u.Role != before.Role || u.Status != before.Status {
 			revokeSessions(s, u.ID)
 		}
-		if u.ExpiresAt != before.ExpiresAt || u.TrafficTotal != before.TrafficTotal || u.TrafficUsed != before.TrafficUsed || u.RateMbps != before.RateMbps {
-			if err := SaveDoc(s, "entitlement_versions", u.ID, entitlementVersion(s, u.ID)+1); err != nil {
+		if u.ExpiresAt != before.ExpiresAt || u.TrafficTotal != before.TrafficTotal || u.TrafficUsed != before.TrafficUsed || u.RateMbps != before.RateMbps || u.Level != before.Level || explicitTrafficReset {
+			if err := SaveDoc(s, "entitlement_versions", u.ID, nextEntitlementVersion); err != nil {
 				return err
 			}
 		}
@@ -1115,7 +1198,14 @@ func (a *App) adminPassword(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, err.Error())
 		return
 	}
-	if err = validPassword(in.Password); err != nil {
+	var targetEmail string
+	_ = a.Store.View(func(s *State) error {
+		if target := s.Users[r.PathValue("id")]; target != nil {
+			targetEmail = target.Email
+		}
+		return nil
+	})
+	if err = validPassword(in.Password, targetEmail); err != nil {
 		Fail(w, 400, err.Error())
 		return
 	}
@@ -1128,6 +1218,9 @@ func (a *App) adminPassword(w http.ResponseWriter, r *http.Request) {
 		u := s.Users[r.PathValue("id")]
 		if u == nil {
 			return errors.New("用户不存在")
+		}
+		if err := validPassword(in.Password, u.Email); err != nil {
+			return err
 		}
 		u.PasswordHash = string(hash)
 		revokeSessions(s, u.ID)

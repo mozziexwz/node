@@ -1040,7 +1040,7 @@ export function TasksPage({ user }: { user: RecordData }) {
       </Header>
       <ErrorNotice error={error || message} />
       <Notice tone="orange">
-        免费配置请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复；增值线路文件请到线路页从服务器下载。
+        免费配置请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复；捐赠权益线路文件请到线路页使用“中转配置下载”。
       </Notice>
       <div className="card flush mt24">
         <Table

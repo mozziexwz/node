@@ -97,8 +97,8 @@ test('real server: browser permissions, admin pages, content and account flows',
     await expect(page.locator('.sidebar')).toBeVisible();
     await expect(page).toHaveURL(/#tutorials$/);
     await expect(page.locator('.side-nav').getByRole('heading',{name:'免费部署工具',exact:true})).toBeVisible();
-    await expect(page.locator('.side-nav').getByRole('heading',{name:'增值业务管理',exact:true})).toBeVisible();
-    assert.ok((await page.locator('.nav-group').allTextContents()).findIndex(t=>t.includes('免费部署工具'))<(await page.locator('.nav-group').allTextContents()).findIndex(t=>t.includes('增值业务管理')));
+    await expect(page.locator('.side-nav').getByRole('heading',{name:'捐赠权益管理',exact:true})).toBeVisible();
+    assert.ok((await page.locator('.nav-group').allTextContents()).findIndex(t=>t.includes('免费部署工具'))<(await page.locator('.nav-group').allTextContents()).findIndex(t=>t.includes('捐赠权益管理')));
     const me=await (await ctx.request.get('/api/me')).json();
     assert.equal(me.user.role,'admin');assert.ok(!me.user.passwordHash);
     assert.equal((await ctx.request.post('/api/admin/plans',{data:{}})).status(),403,'CSRF rejects missing token');
@@ -117,12 +117,12 @@ test('real server: browser permissions, admin pages, content and account flows',
     await expect(page.getByRole('button',{name:'确认安全恢复',exact:true})).toHaveCount(0);
     await page.screenshot({path:'../../.runtime/remediation-backups.png',fullPage:true});
     await page.goto(base+'/#users');
-    for (const heading of ['邮箱验证','余额（元）','剩余天数','总流量（GB）','已用流量（GB）','规则速率（Mbps）']) await expect(page.getByRole('columnheader',{name:heading})).toBeVisible();
+    for (const heading of ['邮箱验证','枫叶','剩余天数','总流量（GB）','已用流量（GB）','规则速率（Mbps）']) await expect(page.getByRole('columnheader',{name:heading})).toBeVisible();
     await page.getByRole('button',{name:'添加用户',exact:true}).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     const dialogBox=await page.getByRole('dialog').boundingBox();
     assert.ok(dialogBox.x>0 && dialogBox.y>=0 && dialogBox.y+dialogBox.height<=1000,'dialog remains within viewport');
-    await expect(page.getByLabel('套餐剩余天数')).toBeVisible();
+    await expect(page.getByLabel('权益剩余天数')).toBeVisible();
     await page.getByRole('button',{name:'关闭窗口'}).click();
     await page.goto(base+'/#tutorials');
     await page.getByRole('button',{name:'新建文章',exact:true}).click();
@@ -152,7 +152,7 @@ test('real server: browser permissions, admin pages, content and account flows',
     await page.screenshot({path:'../../.runtime/mobile.png',fullPage:true});
     const member=await browser.newContext({baseURL:base});
     const userEmail=String(Date.now()).slice(-10)+'@qq.com';
-    const signup=await request('/api/auth/register',{email:userEmail,password:'Acceptance-Test-'+Date.now(),agree:true},'POST',member);
+    const signup=await request('/api/auth/register',{email:userEmail,password:'Acceptance-Test-Alpha!',agree:true},'POST',member);
     assert.equal(signup.status(),201,await signup.text());
     const user=(await signup.json()).user;assert.ok(!user.passwordHash);assert.equal(user.emailVerifiedAt,0);
     assert.equal((await member.request.get('/api/admin/users')).status(),403);
@@ -166,7 +166,7 @@ test('real server: browser permissions, admin pages, content and account flows',
     await expect(mp.getByRole('heading',{level:1})).toContainText('部署');
     for (const field of await mp.locator('input[type=password]').all()) await expect(field).toHaveValue('');
     await expect(mp.locator('.side-nav').getByRole('heading',{name:'免费部署工具',exact:true})).toBeVisible();
-    await expect(mp.locator('.side-nav').getByRole('heading',{name:'增值服务',exact:true})).toBeVisible();
+    await expect(mp.locator('.side-nav').getByRole('heading',{name:'捐赠权益',exact:true})).toBeVisible();
     const cleanup=mp.getByTestId('cleanup-panel');
     await cleanup.locator('summary').filter({hasText:'卸载 MSBOOST'}).click();
     await expect(cleanup.getByRole('button',{name:'继续',exact:true})).toBeVisible();

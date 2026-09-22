@@ -21,6 +21,7 @@ import {
   Eraser,
   Maximize,
   Minimize,
+  Pin,
 } from "lucide-react";
 import { api, post, array, downloadFile, RecordData } from "./api";
 import {
@@ -146,7 +147,7 @@ export function Articles({ admin = false }: { admin?: boolean }) {
         title="公告/教程"
         sub={
           admin
-            ? "新文章默认在前；置顶文章优先显示，上下排序在各组内调整。"
+            ? "新文章默认在前；固定文章优先显示，上下排序在各组内调整。"
             : "先了解操作流程，再开始部署。"
         }
       >
@@ -234,9 +235,17 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                   </button>
                 </div>
                 <strong>{a.title}</strong>
-                {a.pinned && <Badge tone="orange">置顶</Badge>}
+                {a.pinned && (
+                  <span
+                    className="article-pin"
+                    aria-label="已固定到顶部"
+                    title="已固定到顶部"
+                  >
+                    <Pin size={14} fill="currentColor" />
+                  </span>
+                )}
               </div>,
-              a.category,
+              `[${a.category}]`,
               <Badge tone={a.published ? "green" : ""}>
                 {a.published ? "已发布" : "草稿"}
               </Badge>,
@@ -255,7 +264,8 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                   编辑
                 </Button>
                 <Button disabled={moving} onClick={() => void pin(a)}>
-                  {a.pinned ? "取消置顶" : "置顶"}
+                  <Pin size={14} />
+                  {a.pinned ? "取消固定" : "固定到顶部"}
                 </Button>
                 <Button
                   onClick={async () => {
@@ -289,8 +299,15 @@ export function Articles({ admin = false }: { admin?: boolean }) {
               >
                 <strong>{a.title}</strong>
                 <small>
-                  {a.pinned ? "置顶 · " : ""}
-                  {a.category}
+                  {a.pinned && (
+                    <Pin
+                      className="article-pin-inline"
+                      size={12}
+                      fill="currentColor"
+                      aria-label="已固定到顶部"
+                    />
+                  )}
+                  [{a.category}]
                 </small>
               </button>
             ))}
@@ -299,7 +316,18 @@ export function Articles({ admin = false }: { admin?: boolean }) {
             {current ? (
               <>
                 <div className="between">
-                  <Badge tone="orange">{current.category}</Badge>
+                  <div className="actions">
+                    {current.pinned && (
+                      <span
+                        className="article-pin"
+                        aria-label="已固定到顶部"
+                        title="已固定到顶部"
+                      >
+                        <Pin size={14} fill="currentColor" />
+                      </span>
+                    )}
+                    <Badge tone="orange">[{current.category}]</Badge>
+                  </div>
                   <small>{date(current.updatedAt)}</small>
                 </div>
                 <h2 className="mt16">{current.title}</h2>
@@ -664,21 +692,24 @@ export function Articles({ admin = false }: { admin?: boolean }) {
     </>
   );
 }
-export function Tickets() {
+export function Tickets({ admin = false }: { admin?: boolean }) {
   const { data, error, reload } = useData("/api/tickets"),
     [selected, setSelected] = useState<RecordData | null>(null),
-    [creating, setCreating] = useState(false);
+    [creating, setCreating] = useState(false),
+    [ticketError, setTicketError] = useState("");
   return (
     <>
       <Header
         title="工单"
         sub="请说明问题和任务编号，不要填写 SSH 密码或配置认证信息。"
       >
-        <Button primary onClick={() => setCreating(true)}>
-          新建工单
-        </Button>
+        {!admin && (
+          <Button primary onClick={() => setCreating(true)}>
+            新建工单
+          </Button>
+        )}
       </Header>
-      <ErrorNotice error={error} />
+      <ErrorNotice error={error || ticketError} />
       <div className="card flush">
         <Table
           headers={[
@@ -702,7 +733,21 @@ export function Tickets() {
               {t.replyCount === 0 && t.lastReplyRole ? " · 新建" : ""}
             </Badge>,
             date(t.lastReplyAt),
-            <Button onClick={() => setSelected(t)}>查看 / 回复</Button>,
+            <Button
+              onClick={async () => {
+                setSelected(t);
+                setTicketError("");
+                try {
+                  await post(`/api/tickets/${t.id}/read`, {});
+                  reload();
+                  window.dispatchEvent(new Event("msboost:tickets-changed"));
+                } catch (e) {
+                  setTicketError((e as Error).message);
+                }
+              }}
+            >
+              查看 / 回复
+            </Button>,
           ])}
         />
       </div>

@@ -4,6 +4,8 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { api, RecordData } from "./api";
 export const money = (n: number = 0) => (n / 100).toFixed(2);
+export const leaves = (cents: number = 0) =>
+  String(Math.trunc((Number(cents) || 0) / 100));
 export const date = (n: number | string) =>
   n ? new Date(n).toLocaleString("zh-CN", { hour12: false }) : "—";
 export const gb = (n: number = 0) => (n / 1e9).toFixed(2);

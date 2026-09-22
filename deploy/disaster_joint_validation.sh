@@ -271,7 +271,7 @@ local_docker image tag "$IMAGE_ID" "$ALIAS"
 cp -a -- "$ASSETS/deploy" "$WORK/site/deploy"
 install -m 600 "$ASSETS/install.sh" "$WORK/site/install.sh"
 printf 'MSBOOST_DEPLOY_V1\n' > "$WORK/site/.managed-by-msboost"
-printf 'MSBOOST_VERSION=%s\nMSBOOST_IMAGE=%s\nMSBOOST_IMAGE_ID=%s\nPOSTGRES_IMAGE=%s\nCADDY_IMAGE=%s\nMSBOOST_DATABASE_NAME=msboost\nMSBOOST_DOMAIN=8.8.8.8\nMSBOOST_SITE_ADDRESS=http://8.8.8.8\nPUBLIC_URL=http://8.8.8.8\nCOOKIE_SECURE=false\nADMIN_EMAIL=123456789@qq.com\nADMIN_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nMASTER_KEY=%s\n' "$VERSION" "$ALIAS" "$IMAGE_ID" "$POSTGRES_IMAGE" "$CADDY_IMAGE" "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "$(openssl rand -hex 32)" > "$WORK/site/.env"
+printf 'MSBOOST_VERSION=%s\nMSBOOST_IMAGE=%s\nMSBOOST_IMAGE_ID=%s\nPOSTGRES_IMAGE=%s\nCADDY_IMAGE=%s\nMSBOOST_DATABASE_NAME=msboost\nMSBOOST_DOMAIN=8.8.8.8\nMSBOOST_SITE_ADDRESS=http://8.8.8.8\nPUBLIC_URL=http://8.8.8.8\nCOOKIE_SECURE=false\nADMIN_EMAIL=123456789@qq.com\nADMIN_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nMASTER_KEY=%s\n' "$VERSION" "$ALIAS" "$IMAGE_ID" "$POSTGRES_IMAGE" "$CADDY_IMAGE" "$(random_admin_password)" "$(openssl rand -hex 24)" "$(openssl rand -hex 32)" > "$WORK/site/.env"
 printf '{"version":1,"localDir":"%s/backups","retentionDays":30,"time":"02:30"}\n' "$WORK" > "$WORK/site/disaster.json"
 {
   printf 'services:\n  server:\n    labels:\n      msboost.joint: %s\n  database:\n    labels:\n      msboost.joint: %s\n  caddy:\n    ports: !override []\n    labels:\n      msboost.joint: %s\nnetworks:\n  control:\n    internal: true\n    labels:\n      msboost.joint: %s\nvolumes:\n' "$JOINT_PROJECT" "$JOINT_PROJECT" "$JOINT_PROJECT" "$JOINT_PROJECT"

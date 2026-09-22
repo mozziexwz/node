@@ -1,25 +1,25 @@
 # MSBOOST 部署与运维
 
-默认目标为 **Debian 12，amd64 或 arm64**。安装器下载指定 GitHub Release 的部署包并校验 SHA256，默认使用预构建镜像 `ghcr.io/mozziexwz/node:v0.2.4`，不要求在 VPS 编译 Go 或网页。
+默认目标为 **Debian 12，amd64 或 arm64**。v0.3.0 当前是候选版本；对应标签、Release 资产、双架构镜像和 CI 全部成功后，安装器才从公开 Release 下载部署包并校验 SHA256，默认使用预构建镜像 `ghcr.io/mozziexwz/node:v0.3.0`，不要求在 VPS 编译 Go 或网页。候选源码中的版本号本身不等于已经发布。
 
 本文按当前 `install.sh`、`deploy/manage.sh`、Compose 和 `agent.sh` 编写。安装优先从 GHCR 拉取镜像；GHCR 包暂为私有或访问失败时，使用同版本 Release 的预构建镜像归档。两种渠道都不可用才明确失败，不会静默改为源码构建。实际发布状态以对应版本资产为准；本文不声明客户 VPS、支付或游戏链路已经通过验收。
 
 ## 1. Debian 12 一键安装
 
-在承载网站的 VPS 上以 root 运行。推荐先将真实域名解析到该 VPS，开放 TCP 80、443，并确保服务器能够访问 Docker、GitHub 和 GHCR。安装目录固定为 `/opt/msboost`，Compose 项目名为 `msboost`。
+推荐在全新 Debian 12 VPS 上以 root 安装 v0.3.0。先将真实域名解析到该 VPS，开放 TCP 80、443，并确保服务器能够访问 Docker、GitHub 和 GHCR。安装目录固定为 `/opt/msboost`，Compose 项目名为 `msboost`。下列入口只应在 v0.3.0 Release 及对应资产确实公开后使用；发布前需要立即安装时仍使用已发布的 v0.2.4 固定入口。
 
 ```sh
 apt-get update
 apt-get install -y ca-certificates curl tar
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/mozziexwz/node/v0.2.4/install.sh \
+  https://raw.githubusercontent.com/mozziexwz/node/v0.3.0/install.sh \
   -o /root/msboost-install.sh
 bash /root/msboost-install.sh install \
   --domain panel.example.com \
   --email 12345678@qq.com
 ```
 
-将示例域名、邮箱替换为自己的值。执行 `bash /root/msboost-install.sh` 不带动作参数时显示交互菜单。首次安装默认版本为 `v0.2.4`；也可传入明确的 `--version vX.Y.Z`。
+将示例域名、邮箱替换为自己的值。执行 `bash /root/msboost-install.sh` 不带动作参数时显示交互菜单。v0.3.0 入口的首次安装默认版本为 `v0.3.0`；也可传入明确的 `--version vX.Y.Z`。
 
 安装入口下载该 Release 的 `msboost-deploy-vX.Y.Z.tar.gz` 和 `SHA256SUMS`，核验部署包哈希后才解包执行；拒绝归档里的绝对路径、路径穿越、链接和设备文件。清单与部署包共享 GitHub HTTPS/Release 信任边界，SHA256 不等于独立发布签名。
 
@@ -61,8 +61,8 @@ HTTP 会明文传输密码、Cookie 和业务数据，只适合临时界面调�
 这是旧安装器读取操作系统信息时覆盖项目版本号的缺陷。不要再选择「彻底清理」；在 root 终端下载新入口，使用专门恢复参数：
 
 ```sh
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.2.4/install.sh -o /root/msboost-install-v0.2.4.sh && \
-  bash /root/msboost-install-v0.2.4.sh upgrade --version v0.2.4 --recover-incomplete
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.3.0/install.sh -o /root/msboost-install-v0.3.0.sh && \
+  bash /root/msboost-install-v0.3.0.sh upgrade --version v0.3.0 --recover-incomplete
 ```
 
 恢复会确认 `.env` 记录正是旧版污染值、没有原应用 imageID、没有 MSBOOST 容器/四个数据卷/专用网络；任何一项不符都会停止。不会删除数据、重置密钥，也不会跳过已有业务数据库的备份。原始 `.env` 和部署脚本先保存到 `/opt/msboost/backups/deploy-*`，然后保留全部密码、主密钥及站点配置继续安装。备份含秘密，请离机安全保管。
@@ -99,7 +99,7 @@ curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexw
 源码构建必须显式选择：
 
 ```sh
-msboost upgrade --version v0.2.4 --build
+msboost upgrade --version v0.3.0 --build
 ```
 
 该路径使用校验过的完整 Release 源码，叠加 `deploy/compose.build.yml`，为本次构建生成唯一的 `msboost-local:版本-随机后缀` 标签，会占用更多资源。GHCR/Release 镜像下载失败都不会自动触发编译。`repair` 不执行构建；本地构建镜像丢失时需明确重新构建该版本。
@@ -131,8 +131,8 @@ Compose 默认运行预构建 MSBOOST、PostgreSQL 17 和 Caddy。仅 Caddy 的 
 
 | 字段 | 用途 |
 |---|---|
-| `MSBOOST_VERSION` | 固定发布版本，默认 `v0.2.4` |
-| `MSBOOST_IMAGE` | 默认从 `ghcr.io/mozziexwz/node:v0.2.4` 获取，取得后固定 digest；归档方式记录独立本地标签 |
+| `MSBOOST_VERSION` | 固定目标版本；v0.3.0 入口默认 `v0.3.0`，是否已发布仍以 Release 资产为准 |
+| `MSBOOST_IMAGE` | v0.3.0 发布后默认从 `ghcr.io/mozziexwz/node:v0.3.0` 获取，取得后固定 digest；归档方式记录独立本地标签 |
 | `MSBOOST_DATABASE_NAME` | 默认 `msboost`；仅在离线恢复核验全新数据库后手工切换。升级快照也备份这个选定库，不改 PostgreSQL 初始数据库名 |
 | `MSBOOST_IMAGE_ID` | 归档方式记录完整 `sha256:...` 镜像 ID，启动前与标签解析结果核对 |
 | `POSTGRES_IMAGE` / `CADDY_IMAGE` | 首次取得后保存不可变 digest，普通应用升级保留它们 |
@@ -158,29 +158,31 @@ Compose 通过分离数据库字段构造 PostgreSQL URL。私有容器网络使
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/mozziexwz/node/v0.2.4/agent.sh \
+  https://raw.githubusercontent.com/mozziexwz/node/v0.3.0/agent.sh \
   -o /root/msboost-agent.sh
 bash /root/msboost-agent.sh \
   --capability executor \
   --server https://panel.example.com \
-  --version v0.2.4
+  --version v0.3.0
 ```
 
-节点改为 `--capability relay`，使用独立节点注册令牌。默认隐藏终端输入令牌，不把秘密放进 URL 或命令参数。脚本从同版本 Release 下载 Agent、安装脚本与 SHA256 清单，校验后安装 systemd 服务。
+节点改为 `--capability relay`，使用独立节点注册令牌。v0.3.0 的全新 Relay 安装默认 `keep_last`；如确需兼容旧短租约，须显式传 `--offline-policy lease`。已有活动 lease 服务切换为 keep_last 会重启 Agent/GOST，必须在维护窗口追加 `--acknowledge-relay-restart`。默认隐藏终端输入令牌，不把秘密放进 URL 或命令参数。脚本从同版本 Release 下载 Agent、安装脚本与 SHA256 清单，校验后安装 systemd 服务。网站升级不会自动更新或切换这些独立 Agent。
 
 建议 Executor、节点分机部署。客户 VPS 是任务目标，不需安装整套网站。节点上线后先设置地址/端口范围，再建立隧道；心跳或监听 ACK 不等同于客户端到端连通。
+
+免费工具在客户自有 VPS 执行“部署 MSBOOST”“配置中转服务器”或配置自备前置机时，会写入专用的 `/etc/sysctl.d/99-msboost-bbr.conf`，依次执行 `sysctl -p /etc/sysctl.d/99-msboost-bbr.conf` 与 `sysctl --system`，再逐项核对文档规定的全部 BBR/FQ 与 TCP 参数；重复执行保持幂等，不覆盖整份 `/etc/sysctl.conf`。此步骤只属于这些客户自有目标 VPS，不用于控制执行机，也不用于本站捐赠权益节点。目标内核不支持或任一参数未生效时任务失败。
 
 ## 5. 首次业务验收与恢复
 
 基础部署后，应在自有、可丢弃环境逐项记录版本、时间和结果：
 
-1. HTTPS、登录、权限隔离、CSRF、真实 SMTP 投递；注册验证、免费工具验证、购买套餐验证三个策略分别验证。
+1. HTTPS、登录、权限隔离、CSRF、真实 SMTP 投递；注册验证、免费工具验证、权益兑换验证三个策略分别验证。
 2. Executor 领取任务、SSH 指纹、安装/修复与配置获取；DD 单独确认目标磁盘和备份，并核验重启后的系统。
-3. 节点/隧道实际转发与计量、断网租约撤销、重启和到期清理、客户端认证。
-4. 真实支付商户的金额、签名、重复/晚到回调及异常款；同步回跳不是到账凭证。
+3. 节点/隧道实际转发与计量、keep_last 管理失联保留、显式 lease 到期撤销、重启和到期清理、客户端认证。
+4. 真实兑换渠道的金额、签名、重复/晚到回调及异常款；同步回跳不是到账凭证。
 5. 加密平台备份、独立主密钥和隔离恢复；数据库快照不包含客户 VPS 整盘或浏览器保存的免费配置。
 
-在线恢复要求维护模式、无运行任务及本站租约失效等条件，并先产生回滚备份。如果旧快照会回退后续财务、卡密、支付去重、权益或流量，服务拒绝直接覆盖，需保留当前数据离线对账。恢复后退出会话并撤销 Agent 令牌，需要重新接入。完整范围见 [安全模型与限制](security-and-limits.md)。
+在线恢复要求维护模式、无运行任务及本站转发停止证明等条件，并先产生回滚备份。如果旧快照会回退后续枫叶、兑换码、兑换去重、权益或流量，服务拒绝直接覆盖，需保留当前数据离线对账。恢复后退出会话并撤销 Agent 令牌，需要重新接入。完整范围见 [安全模型与限制](security-and-limits.md)。
 
 ## 6. 本地开发和直接运行
 

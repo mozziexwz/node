@@ -30,7 +30,7 @@ import {
 const terms = [
   [
     "服务性质",
-    "MSBOOST 提供 VPS 节点部署、系统重装、自备中转配置及增值线路中转等技术服务，服务器由用户自行购买和管理。",
+    "MSBOOST 提供 VPS 节点部署、系统重装、自备中转配置及捐赠权益转发等技术服务，服务器由用户自行购买和管理。",
   ],
   [
     "使用范围",
@@ -248,10 +248,11 @@ export function AuthPage({
               onSubmit={async (f) => {
                 if (working) throw new Error("请等待当前请求完成");
                 if (mode === "register") {
-                  qqEmailInput(email);
+                  const recipient = qqEmailInput(email);
                   validateNewPassword(
                     String(f.get("password") || ""),
                     String(f.get("confirm") || ""),
+                    recipient,
                   );
                 }
                 if (settings.turnstile && !turnstileToken)
@@ -314,7 +315,7 @@ export function AuthPage({
                     id="register-password-requirements"
                     className="auth-reset-help"
                   >
-                    密码需为 12–72 字节。
+                    密码至少8字符。
                   </p>
                   <Field
                     label="确认密码"

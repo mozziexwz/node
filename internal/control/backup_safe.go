@@ -76,6 +76,9 @@ func restoreScopeFingerprint(s *State) (string, error) {
 				// Acknowledgements, leases and cumulative meters are not a topology
 				// edit. Rule identity/version and configured target remain bound.
 				delete(document, "trafficBytes")
+				delete(document, "inputBytes")
+				delete(document, "outputBytes")
+				delete(document, "trafficEntitlementVersion")
 				rule, _ := LoadDoc[UserRule](s, "user_rules", id)
 				if restoreRuleNeedsRecovery(s, rule) {
 					if segments, ok := document["segments"].([]any); ok {

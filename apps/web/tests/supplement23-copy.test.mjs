@@ -5,15 +5,15 @@ import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
 
 // Compile the actual application, then intercept every browser request. These
-// copy checks never log in, invoke SSH/DD/cleanup, buy a plan or contact a VPS.
+// copy checks never log in, invoke SSH/DD/cleanup, redeem an entitlement or contact a VPS.
 const base = "http://127.0.0.1:19874";
 const availability =
-  "本站增值中转服务不承诺 100% 可用性。如您对稳定性要求较高，建议使用本站免费工具搭配自备服务器部署中转，或选择专业游戏加速器。";
+  "本站捐赠权益提供的中转服务不承诺 100% 可用性。如您对稳定性要求较高，建议使用本站免费工具搭配自备服务器部署中转，或选择专业游戏加速器。";
 const purchaseTerms =
-  "再次购买条件：剩余时间少于30天，或剩余流量少于10GB。新套餐覆盖旧的剩余时间与流量，不叠加。";
+  "再次兑换条件：剩余时间少于30天，或剩余流量少于10GB。新权益覆盖旧的剩余时间与流量，不叠加。";
 
 test(
-  "supplement 2.3 approved copy in the actual application",
+  "supplement 2.4 approved copy in the actual application",
   { timeout: 60000 },
   async (t) => {
     const compiled = await build({
@@ -38,6 +38,8 @@ test(
       signedIn = false,
       admin = false,
       view = "tutorials",
+      unreadCount = 0,
+      tickets = [],
     } = {}) {
       const page = await browser.newPage({
         viewport: { width: 1440, height: 1000 },
@@ -46,6 +48,7 @@ test(
       const requests = [],
         errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
+      let ticketUnread = unreadCount;
       await page.route("**/*", (route) => {
         const request = route.request(),
           url = new URL(request.url());
@@ -59,6 +62,13 @@ test(
             body: '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div>',
           });
         requests.push({ path: url.pathname, method: request.method() });
+        if (
+          request.method() === "POST" &&
+          /^\/api\/tickets\/[^/]+\/read$/.test(url.pathname)
+        ) {
+          ticketUnread = 0;
+          return route.fulfill({ json: { ok: true, unreadCount: 0 } });
+        }
         if (request.method() !== "GET") {
           errors.push(`Unexpected write ${url.pathname}`);
           return route.abort();
@@ -69,7 +79,7 @@ test(
           role: admin ? "admin" : "member",
           status: "active",
           emailVerifiedAt: 1,
-          balanceCents: 1234,
+          balanceCents: 1200,
           expiresAt: Date.now() + 86400000,
           trafficTotal: 1e9,
           trafficUsed: 0,
@@ -91,11 +101,12 @@ test(
               plans: [
                 {
                   id: "synthetic-copy-plan",
-                  name: "合成测试套餐",
-                  priceCents: 1234,
+                  name: "合成测试权益",
+                  priceCents: 1200,
                   days: 1,
                   trafficBytes: 1e9,
                   rateMbps: 5,
+                  level: 2,
                   enabled: true,
                 },
               ],
@@ -107,6 +118,10 @@ test(
           return route.fulfill({ json: { routes: [], userRateMbps: 5 } });
         if (url.pathname === "/api/user/rules")
           return route.fulfill({ json: { rules: [], userRateMbps: 5 } });
+        if (url.pathname === "/api/tickets")
+          return route.fulfill({
+            json: { tickets, unreadCount: ticketUnread },
+          });
         if (url.pathname === "/api/tasks")
           return route.fulfill({ json: { tasks: [], limits: {} } });
         if (
@@ -164,14 +179,12 @@ test(
             ]);
             await expect(page.locator(".public-footer a")).toHaveCount(0);
             await expect(page.locator('[href^="mailto:"]')).toHaveCount(0);
-            const bounds = await contact
-              .locator("span")
-              .evaluateAll((items) =>
-                items.map((item) => ({
-                  top: item.getBoundingClientRect().top,
-                  bottom: item.getBoundingClientRect().bottom,
-                })),
-              );
+            const bounds = await contact.locator("span").evaluateAll((items) =>
+              items.map((item) => ({
+                top: item.getBoundingClientRect().top,
+                bottom: item.getBoundingClientRect().bottom,
+              })),
+            );
             assert.ok(
               bounds[1].top >= bounds[0].bottom,
               "support address is a separate line below copyright",
@@ -207,6 +220,9 @@ test(
             ).toBeVisible();
             await expect(
               nav.getByRole("button", { name: "中转线路", exact: true }),
+            ).toBeVisible();
+            await expect(
+              page.getByRole("button", { name: "工单消息，无未读", exact: true }),
             ).toBeVisible();
             await expect(page.locator(".crumb")).toContainText(
               "配置中转服务器",
@@ -247,7 +263,10 @@ test(
               page.getByLabel("重装系统", { exact: true }),
             ).toBeDisabled();
             await expect(
-              page.getByRole("combobox", { name: "重装后 SSH 端口", exact: true }),
+              page.getByRole("combobox", {
+                name: "重装后 SSH 端口",
+                exact: true,
+              }),
             ).toHaveValue("keep");
             await expect(
               page.getByRole("combobox", { name: "重装密码策略", exact: true }),
@@ -267,6 +286,58 @@ test(
               await noOverflow(page);
             }
             assert.ok(requests.every((request) => request.method === "GET"));
+            assert.deepEqual(errors, []);
+          } finally {
+            await page.close();
+          }
+        },
+      );
+      await t.test(
+        "admin receives unread ticket bell but cannot create a ticket, and opening marks it read",
+        async () => {
+          const ticket = {
+            id: "synthetic-ticket",
+            title: "合成工单",
+            status: "open",
+            createdAt: Date.now(),
+            lastReplyAt: Date.now(),
+            lastReplyRole: "user",
+            replyCount: 1,
+            replies: [],
+          };
+          const { page, requests, errors } = await fixture({
+            signedIn: true,
+            admin: true,
+            view: "tickets",
+            unreadCount: 2,
+            tickets: [ticket],
+          });
+          try {
+            const bell = page.getByRole("button", {
+              name: "工单消息，2条未读",
+              exact: true,
+            });
+            await expect(bell).toBeVisible();
+            await expect(bell).toHaveClass(/has-unread/);
+            await expect(bell).toContainText("2");
+            await expect(
+              page.getByRole("button", { name: "新建工单", exact: true }),
+            ).toHaveCount(0);
+            await page
+              .getByRole("button", { name: "查看 / 回复", exact: true })
+              .click();
+            await expect(page.getByRole("dialog")).toBeVisible();
+            await expect(
+              page.getByRole("button", { name: "工单消息，无未读", exact: true }),
+            ).toBeVisible();
+            assert.equal(
+              requests.filter(
+                (request) =>
+                  request.method === "POST" &&
+                  request.path === "/api/tickets/synthetic-ticket/read",
+              ).length,
+              1,
+            );
             assert.deepEqual(errors, []);
           } finally {
             await page.close();
@@ -299,7 +370,7 @@ test(
             );
             await navigate(page, "plans");
             await expect(page.getByRole("heading", { level: 1 })).toHaveText(
-              "套餐购买",
+              "枫叶兑换",
             );
             const warning = page.getByText(availability, { exact: true }),
               terms = page.getByText(purchaseTerms, { exact: true });
@@ -320,12 +391,12 @@ test(
               await expect(warning).toBeVisible();
             }
             await page
-              .getByRole("button", { name: "选择套餐", exact: true })
+              .getByRole("button", { name: "选择权益", exact: true })
               .click();
             const dialog = page.getByRole("dialog");
             await expect(
               dialog.getByRole("checkbox", {
-                name: "我理解新套餐将覆盖旧的剩余时间和流量",
+                name: "我理解新权益将覆盖旧的剩余时间和流量",
               }),
             ).not.toBeChecked();
             await expect(dialog.getByRole("checkbox")).toHaveAttribute(
@@ -333,7 +404,7 @@ test(
               "",
             );
             await expect(
-              dialog.getByRole("button", { name: "确认购买", exact: true }),
+              dialog.getByRole("button", { name: "确认兑换", exact: true }),
             ).toBeVisible();
             assert.ok(requests.every((request) => request.method === "GET"));
             assert.deepEqual(errors, []);

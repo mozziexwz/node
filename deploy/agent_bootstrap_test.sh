@@ -39,6 +39,15 @@ grep -qx executor "$AGENT_TEST_TRACE" || fail 'capability not forwarded'
 grep -qx -- '--agent-sha256' "$AGENT_TEST_TRACE" || fail 'checksum not forwarded'
 ! grep -q 'abcdefghijklmnopqrstuvwxyz1234567890' "$TEST_WORK/success.log" || fail 'enrollment token leaked'
 rm -- "$AGENT_TEST_TRACE"
+bash "$TEST_REPO/agent.sh" --capability relay --server https://panel.example.com --version v9.8.7 --token-file "$TEST_WORK/token" > "$TEST_WORK/default-relay.log" 2>&1 || fail 'default keep_last forwarding failed'
+grep -qx -- '--offline-policy' "$AGENT_TEST_TRACE" || fail 'default relay policy option not forwarded'
+grep -qx keep_last "$AGENT_TEST_TRACE" || fail 'default relay did not select keep_last'
+! grep -qx -- '--acknowledge-relay-restart' "$AGENT_TEST_TRACE" || fail 'new relay incorrectly acknowledged a restart'
+rm -- "$AGENT_TEST_TRACE"
+bash "$TEST_REPO/agent.sh" --capability relay --server https://panel.example.com --version v9.8.7 --token-file "$TEST_WORK/token" --offline-policy lease > "$TEST_WORK/lease.log" 2>&1 || fail 'explicit lease forwarding failed'
+grep -qx -- '--offline-policy' "$AGENT_TEST_TRACE" || fail 'explicit lease option not forwarded'
+grep -qx lease "$AGENT_TEST_TRACE" || fail 'explicit lease compatibility lost'
+rm -- "$AGENT_TEST_TRACE"
 bash "$TEST_REPO/agent.sh" --capability relay --server https://panel.example.com --version v9.8.7 --token-file "$TEST_WORK/token" --offline-policy keep_last --acknowledge-relay-restart > "$TEST_WORK/keep-last.log" 2>&1 || fail 'explicit keep_last forwarding failed'
 grep -qx -- '--offline-policy' "$AGENT_TEST_TRACE" || fail 'offline policy option not forwarded'
 grep -qx keep_last "$AGENT_TEST_TRACE" || fail 'keep_last not forwarded'

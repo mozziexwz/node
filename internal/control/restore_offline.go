@@ -262,11 +262,11 @@ func validateOfflineFinancialReferences(s *State) error {
 		// ledgers. A missing historical user is not corruption and must not prevent
 		// recovery; never fabricate an account or attach its money to a new user.
 		if json.Unmarshal(raw, &order) != nil || order.ID != id || order.UserID == "" {
-			return errors.New("订单与用户身份关联无效")
+			return errors.New("兑换记录与用户身份关联无效")
 		}
 		if order.ChannelID != "" && order.ChannelID != "balance" {
 			if _, ok := LoadDoc[PaymentChannel](s, "payment_channels", order.ChannelID); !ok {
-				return errors.New("订单支付渠道缺失")
+				return errors.New("兑换记录支付渠道缺失")
 			}
 		}
 	}
@@ -276,7 +276,7 @@ func validateOfflineFinancialReferences(s *State) error {
 			return errors.New("支付去重记录无效")
 		}
 		if _, ok := LoadDoc[Order](s, "orders", orderID); !ok {
-			return errors.New("支付去重记录关联订单缺失")
+			return errors.New("支付去重记录关联兑换记录缺失")
 		}
 	}
 	for id, raw := range s.Docs["ledger"] {
@@ -288,7 +288,7 @@ func validateOfflineFinancialReferences(s *State) error {
 	for id, raw := range s.Docs["cards"] {
 		var card BalanceCard
 		if json.Unmarshal(raw, &card) != nil || card.ID != id || card.AmountCents < 0 || card.Status == "used" && card.UsedBy == "" {
-			return errors.New("卡密记录或使用关系无效")
+			return errors.New("兑换码记录或使用关系无效")
 		}
 	}
 	for collection, referenced := range map[string]string{"order_requests": "orders", "redeem_requests": "cards"} {
@@ -298,7 +298,7 @@ func validateOfflineFinancialReferences(s *State) error {
 				return errors.New("财务请求去重记录无效")
 			}
 			if _, ok := s.Docs[referenced][request.ObjectID]; !ok {
-				return errors.New("财务请求去重记录引用的订单或卡密缺失")
+				return errors.New("财务请求去重记录引用的兑换记录或兑换码缺失")
 			}
 		}
 	}
@@ -308,7 +308,7 @@ func validateOfflineFinancialReferences(s *State) error {
 	}
 	for id, raw := range s.Docs["relay_rule_archive"] {
 		var rule UserRule
-		if json.Unmarshal(raw, &rule) != nil || id != rule.ID || rule.UserID == "" || rule.TrafficBytes < 0 {
+		if json.Unmarshal(raw, &rule) != nil || id != rule.ID || rule.UserID == "" || rule.TrafficBytes < 0 || rule.InputBytes < 0 || rule.OutputBytes < 0 || rule.TrafficEntitlementVersion < 0 {
 			return errors.New("规则计量归档无效")
 		}
 		rules[id] = true

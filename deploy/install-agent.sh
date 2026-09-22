@@ -17,14 +17,15 @@ usage() {
 令牌文件必须归 root 所有，权限 0600 或更严格，只包含对应角色的注册令牌。
 安装过程不会回显令牌。GOST 固定为已审核的 3.3.0，不使用 latest。
 只更新带 MSBOOST 所有权标记的安装；服务启动失败时尝试恢复原程序、服务与配置。
-relay 显式启用 --offline-policy keep_last；已有服务升级还需 --acknowledge-relay-restart。
+v0.3.0 新装 relay 默认启用 keep_last；可显式 --offline-policy lease 兼容旧链。
+已有 lease 服务切换 keep_last 还需 --acknowledge-relay-restart。
 首次升级会重启 Agent/GOST 并中断原连接；新模式以整条线路节点实际确认生效。
 HELP
 }
 fail() { printf '错误：%s\n' "$*" >&2; exit 1; }
 step() { printf '\n  → %s\n' "$*" >&2; }
 install_agent_parse_args() {
-capability=''; server=''; agent_file=''; agent_sha=''; token_file=''; gost_version=''; offline_policy=lease; acknowledge_restart=0
+capability=''; server=''; agent_file=''; agent_sha=''; token_file=''; gost_version=''; offline_policy=''; offline_policy_set=0; acknowledge_restart=0
 while (( $# )); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
@@ -38,15 +39,20 @@ while (( $# )); do
         --agent-sha256) agent_sha=$2 ;;
         --token-file) token_file=$2 ;;
         --gost-version) gost_version=$2 ;;
-        --offline-policy) offline_policy=$2 ;;
+        --offline-policy) offline_policy=$2; offline_policy_set=1 ;;
       esac
       shift 2 ;;
     *) fail "未知参数 $1" ;;
   esac
 done
 [[ "$capability" == executor || "$capability" == relay ]] || fail '请选择 executor（控制执行机）或 relay（中转节点）。'
+if [[ $capability == relay ]]; then
+  [[ -n $offline_policy ]] || offline_policy=keep_last
+else
+  [[ $offline_policy_set == 0 && $acknowledge_restart == 0 ]] || fail '中转离线策略与重启确认只适用于 relay。'
+  offline_policy=lease
+fi
 [[ $offline_policy == lease || $offline_policy == keep_last ]] || fail 'offline-policy 仅允许 lease 或 keep_last。'
-[[ $capability == relay || $offline_policy == lease && $acknowledge_restart == 0 ]] || fail '中转离线策略与重启确认仅适用于 relay。'
 }
 
 relay_v2_evidence_at() {
@@ -263,7 +269,7 @@ else
 fi
 unset token
 relay_policy_arg=''
-if [[ $capability == relay && $offline_policy == keep_last ]]; then relay_policy_arg=' --offline-policy keep_last'; fi
+if [[ $capability == relay ]]; then relay_policy_arg=" --offline-policy $offline_policy"; fi
 relay_state_dir=$(relay_service_state_dir "$capability" "$offline_policy")
 cat > "$stage/unit" <<EOF
 [Unit]

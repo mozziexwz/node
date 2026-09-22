@@ -9,7 +9,7 @@ export function navigationGroups(
     { title: "开始使用", items: ["tutorials", "home"] },
     { title: "免费部署工具", items: ["deploy", "relay", "dd", "tasks"] },
     {
-      title: admin ? "增值业务管理" : "增值服务",
+      title: admin ? "捐赠权益管理" : "捐赠权益",
       items: admin
         ? ["agents", "routes", "rules", "plans", "cards", "orders", "payments"]
         : [

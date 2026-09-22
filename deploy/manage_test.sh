@@ -7,6 +7,14 @@ TEST_WORK=$(mktemp -d "$TEST_REPO/.cache/manage-test.XXXXXXXX")
 trap '[[ -n $TEST_WORK && -d $TEST_WORK && ! -L $TEST_WORK ]] && rm -rf -- "$TEST_WORK"' EXIT
 source "$TEST_REPO/deploy/manage.sh"
 
+for ((sample=0; sample<32; sample++)); do
+  generated_admin_password=$(random_admin_password)
+  [[ ${#generated_admin_password} -ge 8 && ${#generated_admin_password} -le 72 && ! $generated_admin_password =~ [0-9]{6} ]] || {
+    printf 'FAIL: generated administrator password violates the current password policy\n' >&2
+    exit 1
+  }
+done
+
 # Dedicated stdin/root/image contracts use only mocked Docker and terminal IO.
 bash "$TEST_REPO/deploy/admin_password_test.sh"
 bash "$TEST_REPO/deploy/backup_activity_recovery_test.sh"
@@ -181,7 +189,7 @@ uninstall_site
 ! grep -Eq '(^| )(rm|prune|--volumes|-v)( |$)' "$TRACE" || fail 'uninstall deletes data'
 repair_site
 
-VERSION=v0.2.4
+VERSION=v0.3.0
 MOCK_PULL_FAIL=1
 expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/original.env" || fail 'failed pull modified config'
@@ -192,7 +200,7 @@ expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/original.env" || fail 'failed upgrade did not restore prior environment'
 [[ -s $SNAPSHOT/database.dump ]] || fail 'upgrade skipped backup'
 upgrade_site
-[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == v0.2.4 ]] || fail 'successful upgrade wrong version'
+[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == v0.3.0 ]] || fail 'successful upgrade wrong version'
 [[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) == "$(env_get "$TEST_WORK/original.env" MASTER_KEY)" ]] || fail 'upgrade changed master key'
 
 expect_failure purge_site

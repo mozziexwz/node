@@ -59,7 +59,7 @@ export async function post<T = RecordData>(
     const id =
       previous?.id || String(object.requestId || h.get("Idempotency-Key"));
     if (!previous && attempts.size >= 100)
-      throw new Error("待核对的请求过多，请先查看任务或订单记录。");
+      throw new Error("待核对的请求过多，请先查看任务或兑换记录。");
     attempts.set(fingerprint, { id, at: Date.now() });
     if (object.requestId) body = { ...object, requestId: id };
     if (h.has("Idempotency-Key")) h.set("Idempotency-Key", id);

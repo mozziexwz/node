@@ -73,7 +73,7 @@ func TestRelayV2TrafficHistoricalPeriodDedupAndExplicitAck(t *testing.T) {
 		t.Fatal(err)
 	}
 	archived, _ = LoadDoc[UserRule](s, "relay_rule_archive", rule.ID)
-	if archived.TrafficBytes != 450 || len(s.Docs["user_rules"]) != 0 {
+	if archived.TrafficBytes != 450 || archived.InputBytes != 200 || archived.OutputBytes != 250 || len(s.Docs["user_rules"]) != 0 {
 		t.Fatal("late report lost or resurrected archived rule")
 	}
 }

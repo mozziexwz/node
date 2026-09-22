@@ -237,6 +237,9 @@ func relayV2Desired(s *State, agent RelayAgent, rule UserRule, now int64) (strin
 	if !exists || !route.Enabled {
 		return "pause", "route_disabled"
 	}
+	if !userCanUseRoute(u, route) {
+		return "pause", "entitlement_level"
+	}
 	requiredFront, _ := relayEffective(s, route)
 	if requiredFront && !rule.HasFront && rule.State != "awaiting_front" {
 		return "pause", "front_unavailable"

@@ -4,7 +4,7 @@ import { chromium, expect } from "@playwright/test";
 
 // Only static assets come from the isolated localhost test server. Every API
 // request is intercepted; no account, attachment or external host is mutated.
-async function articleBrowser(run) {
+async function articleBrowser(run, { admin = true } = {}) {
   const base = process.env.MSBOOST_TEST_URL || "http://127.0.0.1:8080";
   assert.match(base, /^http:\/\/(127\.0\.0\.1|localhost):\d+$/);
   const browser = await chromium.launch({
@@ -35,7 +35,7 @@ async function articleBrowser(run) {
           user: {
             id: "fixture-admin",
             email: "10000001@qq.com",
-            role: "admin",
+            role: admin ? "admin" : "member",
             status: "active",
           },
           csrfToken: "isolated-fixture",
@@ -45,6 +45,8 @@ async function articleBrowser(run) {
       return route.fulfill({
         json: { settings: { publicArticles: true, attachments: true } },
       });
+    if (url.pathname === "/api/tickets" && route.request().method() === "GET")
+      return route.fulfill({ json: { tickets: [], unreadCount: 0 } });
     if (await handler(route, url.pathname)) return;
     unexpected.push(route.request().method() + " " + url.pathname);
     return route.fulfill({
@@ -66,6 +68,45 @@ async function articleBrowser(run) {
     await browser.close();
   }
 }
+
+test(
+  "published article categories use brackets and pinned state uses an icon",
+  { timeout: 30000 },
+  async () => {
+    await articleBrowser(
+      async ({ page, base, setHandler }) => {
+        setHandler(async (route, path) => {
+          if (path !== "/api/articles") return false;
+          await route.fulfill({
+            json: {
+              articles: [
+                {
+                  id: "fixed",
+                  title: "固定文章",
+                  category: "公告",
+                  published: true,
+                  pinned: true,
+                  body: "正文",
+                  attachments: [],
+                },
+              ],
+            },
+          });
+          return true;
+        });
+        await page.goto(base + "/#tutorials");
+        const item = page.locator(".article-item", { hasText: "固定文章" });
+        await expect(item.locator("small")).toContainText("[公告]");
+        await expect(item.locator(".article-pin-inline")).toBeVisible();
+        await expect(item.locator("small")).not.toContainText("置顶");
+        await expect(page.locator(".article-content .badge")).toHaveText(
+          "[公告]",
+        );
+      },
+      { admin: false },
+    );
+  },
+);
 
 test(
   "article management: group-boundary controls, top/bottom payload and explicit pin",
@@ -171,14 +212,19 @@ test(
         "旧教程",
       ]);
       const row = page.getByRole("row").filter({ hasText: "新资讯" });
-      await row.getByRole("button", { name: "置顶", exact: true }).click();
+      await expect(row.getByRole("cell", { name: "[资讯]" })).toBeVisible();
+      await row
+        .getByRole("button", { name: "固定到顶部", exact: true })
+        .click();
       await expect(
-        row.getByRole("button", { name: "取消置顶", exact: true }),
+        row.getByRole("button", { name: "取消固定", exact: true }),
       ).toBeVisible();
       assert.deepEqual(pins, [{ id: "new", pinned: true }]);
-      await row.getByRole("button", { name: "取消置顶", exact: true }).click();
+      await row
+        .getByRole("button", { name: "取消固定", exact: true })
+        .click();
       await expect(
-        row.getByRole("button", { name: "置顶", exact: true }),
+        row.getByRole("button", { name: "固定到顶部", exact: true }),
       ).toBeVisible();
       assert.deepEqual(pins, [
         { id: "new", pinned: true },

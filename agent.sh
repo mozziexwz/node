@@ -4,16 +4,16 @@ set +xv
 set -Eeuo pipefail
 umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-version=v0.2.4
-capability=''; server=''; token_file=''; offline_policy=lease; acknowledge_restart=0
+version=v0.3.0
+capability=''; server=''; token_file=''; offline_policy=''; offline_policy_set=0; acknowledge_restart=0
 usage() {
   printf '%s\n' 'MSBOOST 执行机 / 中转节点安装入口（Debian 12，amd64/arm64）' \
-    '用法：bash agent.sh --capability executor|relay --server https://panel.example.com [--version v0.2.4] [--token-file /root/private-token]' \
+    '用法：bash agent.sh --capability executor|relay --server https://panel.example.com [--version v0.3.0] [--token-file /root/private-token]' \
     'executor 为控制执行机，relay 为中转节点；请使用对应的注册令牌。' \
     '未指定 --token-file 时隐藏输入令牌；控制面地址必须为 HTTPS。' \
     '此新版入口仅允许 v0.2.4 或更新的稳定版本；旧安装器缺少 v2 状态与共享程序保护。' \
-    'relay 可显式 --offline-policy keep_last；已有服务升级需 --acknowledge-relay-restart，首次迁移会中断原连接。' \
-    '默认 lease 保持旧版兼容；不得用此入口把已有 keep_last 状态降级。'
+    'v0.3.0 新装 relay 默认 keep_last；可显式 --offline-policy lease 兼容旧链。' \
+    '已有 lease 服务切换 keep_last 仍需 --acknowledge-relay-restart，迁移会中断原连接；不得静默降级已有 keep_last 状态。'
 }
 fail() { printf '错误：%s\n' "$*" >&2; exit 1; }
 step() { printf '\n[%s/3] %s\n' "$1" "$2" >&2; }
@@ -23,14 +23,19 @@ while (( $# )); do
     --acknowledge-relay-restart) acknowledge_restart=1; shift ;;
     --capability|--server|--version|--token-file|--offline-policy)
       (( $# >= 2 )) || fail "缺少 $1 参数"
-      case "$1" in --capability) capability=$2 ;; --server) server=${2%/} ;; --version) version=$2 ;; --token-file) token_file=$2 ;; --offline-policy) offline_policy=$2 ;; esac
+      case "$1" in --capability) capability=$2 ;; --server) server=${2%/} ;; --version) version=$2 ;; --token-file) token_file=$2 ;; --offline-policy) offline_policy=$2; offline_policy_set=1 ;; esac
       shift 2 ;;
     *) fail "未知参数 $1" ;;
   esac
 done
 [[ "$capability" == executor || "$capability" == relay ]] || fail '请选择 executor（控制执行机）或 relay（中转节点）。'
+if [[ $capability == relay ]]; then
+  [[ -n $offline_policy ]] || offline_policy=keep_last
+else
+  [[ $offline_policy_set == 0 && $acknowledge_restart == 0 ]] || fail '离线策略与中转重启确认只适用于 relay。'
+  offline_policy=lease
+fi
 [[ $offline_policy == lease || $offline_policy == keep_last ]] || fail 'offline-policy 仅允许 lease 或 keep_last。'
-[[ $capability == relay || $offline_policy == lease && $acknowledge_restart == 0 ]] || fail '离线保留和中转重启确认只适用于 relay。'
 [[ "$server" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || fail '请填写 HTTPS 站点地址，不要包含路径或凭据；公网 HTTP 不适合传递令牌和 SSH 密码。'
 [[ "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail '请指定固定稳定版本 vX.Y.Z，版本数字不得包含前导零。'
 # Every fetched installer must contain the shared-binary/v2 admission guards.
@@ -71,7 +76,7 @@ if [[ -z "$token_file" ]]; then
 fi
 step 3 '安装并启动 Agent（已有受管安装会先保存私有备份）'
 relay_options=()
-if [[ $capability == relay && $offline_policy == keep_last ]]; then relay_options+=(--offline-policy keep_last); fi
+if [[ $capability == relay ]]; then relay_options+=(--offline-policy "$offline_policy"); fi
 if (( acknowledge_restart )); then relay_options+=(--acknowledge-relay-restart); fi
 bash "$stage/install-agent.sh" --capability "$capability" --server "$server" \
   --agent "$stage/msboost-agent-linux-${arch}" --agent-sha256 "$agent_sha" \

@@ -14,7 +14,7 @@ import {
   ErrorNotice,
   AsyncForm,
   useData,
-  money,
+  leaves,
   date,
   gb,
 } from "./ui";
@@ -100,15 +100,15 @@ export function Wallet({ onRefresh }: { onRefresh: () => void }) {
   const { data, error, reload } = useData("/api/wallet");
   return (
     <>
-      <Header title="余额与卡密" sub="兑换卡密后，余额可用于购买套餐。" />
+      <Header title="我的枫叶" sub="兑换枫叶后，枫叶可用于兑换权益" />
       <ErrorNotice error={error} />
       <div className="grid2">
         <div className="card">
-          <div className="eyebrow">AVAILABLE BALANCE</div>
-          <div className="stat-value">¥ {money(data?.balanceCents)}</div>
+          <div className="eyebrow">可用枫叶</div>
+          <div className="stat-value">{leaves(data?.balanceCents)}枫叶</div>
         </div>
         <div className="card">
-          <h3>兑换卡密</h3>
+          <h3>枫叶兑换</h3>
           <AsyncForm
             label="确认兑换"
             onSubmit={(f) =>
@@ -124,9 +124,9 @@ export function Wallet({ onRefresh }: { onRefresh: () => void }) {
           >
             <div className="mt16">
               <Field
-                label="卡密"
+                label="兑换码"
                 name="code"
-                placeholder="请输入完整卡密"
+                placeholder="请输入兑换码"
                 required
               />
             </div>
@@ -135,19 +135,49 @@ export function Wallet({ onRefresh }: { onRefresh: () => void }) {
       </div>
       <div className="card flush mt24">
         <Table
-          headers={["时间", "明细", "使用卡密", "金额", "变动后余额"]}
+          headers={["时间", "明细", "使用兑换码", "枫叶", "变动后枫叶"]}
           rows={array(data, "ledger").map((l) => [
             date(l.createdAt),
-            l.reason || l.kind,
+            (
+              {
+                余额购买套餐: "枫叶兑换权益",
+                余额卡密兑换: "兑换码兑换",
+              } as Record<string, string>
+            )[l.reason] ||
+              l.reason ||
+              l.kind,
             l.cardCode ? <code>{l.cardCode}</code> : "—",
-            `${l.amountCents >= 0 ? "+" : ""}¥ ${money(l.amountCents)}`,
-            `¥ ${money(l.balanceAfter)}`,
+            `${l.amountCents >= 0 ? "+" : "-"} ${leaves(Math.abs(l.amountCents))}枫叶`,
+            `${leaves(l.balanceAfter)}枫叶`,
           ])}
         />
       </div>
     </>
   );
 }
+
+type PlanEligibility = { eligible: boolean; reason: string };
+
+// Accept both the per-plan shape and the keyed response shape so the UI keeps
+// the policy explanation attached to the exact plan the server evaluated.
+export function planEligibility(
+  response: RecordData | null,
+  plan: RecordData,
+): PlanEligibility {
+  const keyed =
+    response?.eligibility?.[plan.id] ||
+    response?.eligibilities?.[plan.id] ||
+    {};
+  const nested = plan.eligibility || {};
+  const explicit = [plan.eligible, nested.eligible, keyed.eligible].find(
+    (value) => typeof value === "boolean",
+  );
+  const reason = String(
+    plan.reason || plan.ineligibleReason || nested.reason || keyed.reason || "",
+  ).trim();
+  return { eligible: explicit !== false, reason };
+}
+
 export function Plans({
   user,
   onRefresh,
@@ -161,72 +191,98 @@ export function Plans({
     [order, setOrder] = useState<RecordData | null>(null);
   return (
     <>
-      <Header title="套餐购买" sub="按使用时间和流量选择适合自己的套餐。" />
+      <Header title="枫叶兑换" sub="按使用时间和流量选择适合自己的权益。" />
       <ErrorNotice error={error} />
       <div className="summary">
-        账户余额：<strong>¥ {money(user.balanceCents)}</strong>
+        可用枫叶：<strong>{leaves(user.balanceCents)} 个</strong>
       </div>
       <div className="grid3 plans mt24">
-        {array(data, "plans").map((p) => (
-          <div className="card" key={p.id}>
-            <h3>{p.name}</h3>
-            <div className="price num">
-              ¥ {money(p.priceCents)}
-              <span> / {p.days} 天</span>
+        {array(data, "plans").map((p) => {
+          const policy = planEligibility(data, p);
+          const purchaseLimitReached = !!(
+            p.maxPurchasesPerUser &&
+            (data?.purchasedCounts?.[p.id] || 0) >= p.maxPurchasesPerUser
+          );
+          const emailRequired = !!(
+            data?.purchaseRequireVerifiedEmail && !user.emailVerifiedAt
+          );
+          const blockedReason = !policy.eligible
+            ? policy.reason || "当前账号暂不符合此权益的兑换条件"
+            : purchaseLimitReached
+              ? "已达到此权益的兑换次数上限"
+              : emailRequired
+                ? "请先验证邮箱再兑换权益"
+                : "";
+          return (
+            <div className="card" key={p.id}>
+              <div className="between">
+                <h3>{p.name}</h3>
+                <div className="actions">
+                  <Badge tone="orange">L{p.level || 1}</Badge>
+                  {p.trial && <Badge>体验权益</Badge>}
+                  {p.currentHoldersOnly && <Badge>仅限当前持有人续兑</Badge>}
+                </div>
+              </div>
+              <div className="price num">
+                枫叶{leaves(p.priceCents)}
+                <span>/{p.days}天</span>
+              </div>
+              <p className="muted">{gb(p.trafficBytes)} GB 总流量额度</p>
+              <p className="mt8">每条规则上下行各 {p.rateMbps} Mbps</p>
+              <ul className="features">
+                <li>可使用 L1 至 L{p.level || 1} 等级线路</li>
+                <li>每条线路独立配置</li>
+                <li>
+                  {p.maxPurchasesPerUser
+                    ? `每位用户限兑${p.maxPurchasesPerUser}次，已兑换${data?.purchasedCounts?.[p.id] || 0}次`
+                    : "兑换次数不限"}
+                </li>
+                {p.trial && <li>每位用户终身仅可兑换一次，不能续兑体验权益</li>}
+                {p.currentHoldersOnly && (
+                  <li>仅当前仍有效且持有此权益的用户可续兑</li>
+                )}
+              </ul>
+              {blockedReason && (
+                <p className="muted plan-ineligible" role="status">
+                  {blockedReason}
+                </p>
+              )}
+              <Button
+                primary
+                className="block"
+                disabled={!!blockedReason}
+                onClick={() => setSelected(p)}
+              >
+                {blockedReason ? "暂不可兑换" : "选择权益"}
+              </Button>
             </div>
-            <p className="muted">{gb(p.trafficBytes)} GB 总流量额度</p>
-            <p className="mt8">每条规则上下行各 {p.rateMbps} Mbps</p>
-            <ul className="features">
-              <li>所有已启用线路均可选择</li>
-              <li>每条线路独立配置</li>
-              <li>余额 / 已开通的在线支付渠道</li>
-              <li>
-                {p.maxPurchasesPerUser
-                  ? `每用户限购 ${p.maxPurchasesPerUser} 次，已购买 ${data?.purchasedCounts?.[p.id] || 0} 次`
-                  : "购买次数不限"}
-              </li>
-            </ul>
-            <Button
-              primary
-              className="block"
-              disabled={
-                !!(
-                  p.maxPurchasesPerUser &&
-                  (data?.purchasedCounts?.[p.id] || 0) >= p.maxPurchasesPerUser
-                ) ||
-                !!(data?.purchaseRequireVerifiedEmail && !user.emailVerifiedAt)
-              }
-              onClick={() => setSelected(p)}
-            >
-              选择套餐
-            </Button>
-          </div>
-        ))}
+          );
+        })}
       </div>
-      {!array(data, "plans").length && <Empty>暂无上架套餐</Empty>}
+      {!array(data, "plans").length && <Empty>暂无可兑换权益</Empty>}
       {data?.purchaseRequireVerifiedEmail && !user.emailVerifiedAt && (
         <Notice tone="orange">
-          购买套餐前需验证邮箱，请前往“账户与邮箱验证”。
+          兑换权益前需验证邮箱，请前往“账户与邮箱验证”。
         </Notice>
       )}
       <div className="mt24">
         <Notice>
-          本站增值中转服务不承诺 100%
+          本站捐赠权益提供的中转服务不承诺 100%
           可用性。如您对稳定性要求较高，建议使用本站免费工具搭配自备服务器部署中转，或选择专业游戏加速器。
         </Notice>
         <div className="mt16">
           <Notice>
-            再次购买条件：剩余时间少于30天，或剩余流量少于10GB。新套餐覆盖旧的剩余时间与流量，不叠加。
+            再次兑换条件：剩余时间少于30天，或剩余流量少于10GB。新权益覆盖旧的剩余时间与流量，不叠加。
           </Notice>
         </div>
       </div>
       {selected && (
         <Modal
-          title={"购买 " + selected.name}
+          title={"兑换 " + selected.name}
           onClose={() => setSelected(null)}
         >
           <AsyncForm
-            label="确认购买"
+            label="确认兑换"
             onSubmit={async (f) => {
               const o = await post("/api/orders", {
                 planId: selected.id,
@@ -239,21 +295,21 @@ export function Plans({
               onRefresh();
             }}
           >
-            <p className="price">¥ {money(selected.priceCents)}</p>
-            <Select label="支付方式" name="channelId">
-              <option value="balance">账户余额</option>
+            <p className="price">枫叶{leaves(selected.priceCents)}</p>
+            <Select label="兑换方式" name="channelId">
+              <option value="balance">枫叶</option>
               {array(channels, "channels").map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
               ))}
             </Select>
-            <Check required label="我理解新套餐将覆盖旧的剩余时间和流量" />
+            <Check required label="我理解新权益将覆盖旧的剩余时间和流量" />
           </AsyncForm>
         </Modal>
       )}
       {order && (
-        <Modal title="订单已创建" onClose={() => setOrder(null)}>
+        <Modal title="兑换已创建" onClose={() => setOrder(null)}>
           {order.channelId !== "balance" && order.amountCents > 0 ? (
             <PaymentReturn
               key={order.id}
@@ -263,12 +319,12 @@ export function Plans({
             />
           ) : (
             <Notice tone="orange">
-              订单状态：
+              兑换状态：
               {order.state === "paid"
-                ? "已支付，权益已生效"
+                ? "兑换成功，权益已生效"
                 : order.state === "fulfilled"
-                  ? "已支付，权益已生效"
-                  : "待支付"}
+                  ? "兑换成功，权益已生效"
+                  : "待兑换"}
             </Notice>
           )}
           {order.paymentUrl && order.state === "pending" && (
@@ -282,7 +338,7 @@ export function Plans({
             </a>
           )}
           <p className="muted mt16">
-            付款结果以服务端通知为准，可在订单页查看。
+            兑换结果以服务端通知为准，可在兑换记录查看。
           </p>
         </Modal>
       )}
@@ -304,8 +360,8 @@ export function Orders({
   return (
     <>
       <Header
-        title={admin ? "订单管理" : "我的订单"}
-        sub="支付结果由服务端验签后确认。"
+        title={admin ? "兑换记录管理" : "兑换记录"}
+        sub="兑换结果由服务端验签后确认。"
       >
         <Button onClick={reload}>刷新</Button>
       </Header>
@@ -323,11 +379,11 @@ export function Orders({
       <div className="card flush">
         <Table
           headers={[
-            "订单号",
+            "兑换编号",
             ...(admin ? ["用户邮箱"] : []),
-            "套餐",
-            "金额",
-            "支付状态",
+            "权益",
+            "枫叶",
+            "兑换状态",
             "时间",
             "操作",
           ]}
@@ -335,14 +391,14 @@ export function Orders({
             <span className="mono">{o.id}</span>,
             ...(admin ? [o.userEmail || o.userId] : []),
             o.plan?.name,
-            `¥ ${money(o.amountCents)}`,
+            `${leaves(o.amountCents)}枫叶`,
             <>
               <Badge tone={o.state === "paid_review" ? "red" : "orange"}>
                 {(
                   {
-                    paid: "已支付",
-                    fulfilled: "已履约",
-                    pending: "待支付",
+                    paid: "兑换成功",
+                    fulfilled: "权益已生效",
+                    pending: "待兑换",
                     paid_review: "待人工核对",
                     expired: "已过期",
                   } as Record<string, string>
@@ -358,7 +414,7 @@ export function Orders({
                 rel="noreferrer"
                 href={o.paymentUrl}
               >
-                继续支付
+                继续兑换
               </a>
             ) : (
               "—"
@@ -382,7 +438,9 @@ export function Routes({ user }: { user: RecordData }) {
       fingerprint: "",
     }),
     [useFront, setUseFront] = useState(false),
-    [message, setMessage] = useState("");
+    [message, setMessage] = useState(""),
+    [diagnosis, setDiagnosis] = useState<RecordData | null>(null),
+    [diagnosing, setDiagnosing] = useState(false);
   const rules = array(rulesData, "rules");
   const userRate =
     rulesData?.userRateMbps ?? data?.userRateMbps ?? user.rateMbps;
@@ -407,7 +465,7 @@ export function Routes({ user }: { user: RecordData }) {
     <>
       <Header
         title="选择线路，独立配置"
-        sub="每条线路单独上传配置并创建，不会自动开通其他线路。"
+        sub="每条线路单独上传MSBOOST配置并创建MSBOOST中转配置。"
       />
       <ErrorNotice error={error || message} />
       <div className="grid4">
@@ -463,9 +521,12 @@ export function Routes({ user }: { user: RecordData }) {
             <div className="card route-card" key={route.id}>
               <div className="between">
                 <h3>{route.name}</h3>
-                <Badge tone={route.online ? "green" : "orange"}>
-                  {route.online ? "管理在线" : "管理离线"}
-                </Badge>
+                <div className="actions">
+                  <Badge>L{Math.max(1, Number(route.level) || 1)}</Badge>
+                  <Badge tone={route.online ? "green" : "orange"}>
+                    {route.online ? "线路在线" : "线路离线"}
+                  </Badge>
+                </div>
               </div>
               <div className="route-facts">
                 <div>
@@ -500,7 +561,28 @@ export function Routes({ user }: { user: RecordData }) {
                         )
                       }
                     >
-                      从服务器下载
+                      中转配置下载
+                    </Button>
+                    <Button
+                      disabled={diagnosing || relayNeedsRecovery(rule)}
+                      onClick={async () => {
+                        if (diagnosing || relayNeedsRecovery(rule)) return;
+                        setDiagnosing(true);
+                        setMessage("");
+                        try {
+                          const result = await post(
+                            `/api/user/routes/${route.id}/diagnose`,
+                            {},
+                          );
+                          setDiagnosis({ route, result });
+                        } catch (e) {
+                          setMessage((e as Error).message);
+                        } finally {
+                          setDiagnosing(false);
+                        }
+                      }}
+                    >
+                      {diagnosing ? "诊断中…" : "诊断"}
                     </Button>
                     <Button
                       disabled={
@@ -612,9 +694,79 @@ export function Routes({ user }: { user: RecordData }) {
               />
             )}
             <Notice tone="orange">
-              仅创建当前线路；套餐有效期间可以登录再次下载配置，到期删除服务器配置与本站转发。
+              仅创建当前线路。有效期间可以登录再次下载配置，到期删除服务器配置与本站转发。
             </Notice>
           </AsyncForm>
+        </Modal>
+      )}
+      {diagnosis && (
+        <Modal title="中转诊断结果" onClose={() => setDiagnosis(null)}>
+          <div className="diagnosis-path">
+            {String(
+              diagnosis.result.path ||
+                `入口(${diagnosis.result.routeName || diagnosis.route.name})->目标(MSBOOST)`,
+            ).replace(/\s*->\s*/g, "->")}
+          </div>
+          <div className="mini-grid mt24">
+            <div className="card stat">
+              <div className="stat-top">状态</div>
+              <div className="stat-value">
+                {diagnosis.result.status === "success" ||
+                diagnosis.result.status === "ok" ||
+                diagnosis.result.success === true
+                  ? "成功"
+                  : "失败"}
+              </div>
+            </div>
+            <div className="card stat">
+              <div className="stat-top">延迟(ms)</div>
+              <div className="stat-value">
+                {diagnosis.result.latencyMs ?? "—"}
+              </div>
+            </div>
+            <div className="card stat">
+              <div className="stat-top">丢包率</div>
+              <div className="stat-value">
+                {diagnosis.result.packetLossPercent == null
+                  ? "—"
+                  : `${Number(diagnosis.result.packetLossPercent).toFixed(2)}%`}
+              </div>
+            </div>
+          </div>
+          {diagnosis.result.message && (
+            <div className="mt16">
+              <Notice tone="orange">{diagnosis.result.message}</Notice>
+            </div>
+          )}
+          {diagnosis.result.error && (
+            <div className="mt16">
+              <Notice tone="red">{diagnosis.result.error}</Notice>
+            </div>
+          )}
+          <div className="form-actions">
+            <Button onClick={() => setDiagnosis(null)}>关闭</Button>
+            <Button
+              primary
+              onClick={async () => {
+                setDiagnosing(true);
+                setMessage("");
+                try {
+                  const result = await post(
+                    `/api/user/routes/${diagnosis.route.id}/diagnose`,
+                    {},
+                  );
+                  setDiagnosis({ ...diagnosis, result });
+                } catch (e) {
+                  setMessage((e as Error).message);
+                } finally {
+                  setDiagnosing(false);
+                }
+              }}
+              disabled={diagnosing}
+            >
+              {diagnosing ? "诊断中…" : "重新诊断"}
+            </Button>
+          </div>
         </Modal>
       )}
     </>
@@ -654,7 +806,7 @@ export function Traffic({ status = false }: { status?: boolean }) {
         <div className="card">
           <div className="mini-grid">
             {[
-              ["套餐总量", data?.trafficTotal],
+              ["权益总量", data?.trafficTotal],
               ["已用流量", data?.trafficUsed],
               [
                 "剩余流量",

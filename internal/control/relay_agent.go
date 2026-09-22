@@ -139,8 +139,8 @@ func applyRelayTraffic(s *State, agent RelayAgent, report relayruntime.Traffic, 
 	if !owns {
 		return nil
 	}
-	key := agent.ID + ":" + rule.ID + ":" + report.Epoch
-	cursor, _ := LoadDoc[TrafficCursor](s, "traffic_cursors", key)
+	cursorKey := agent.ID + ":" + rule.ID + ":" + report.Epoch
+	cursor, _ := LoadDoc[TrafficCursor](s, "traffic_cursors", cursorKey)
 	if report.Sequence <= cursor.Sequence {
 		return nil
 	}
@@ -160,10 +160,15 @@ func applyRelayTraffic(s *State, agent RelayAgent, report relayruntime.Traffic, 
 			}
 			user.TrafficUsed += delta
 		}
-		if rule.TrafficBytes > math.MaxInt64-delta {
-			return errors.New("规则流量溢出")
+		currentTrafficPeriod := report.EntitlementVersion == ruleTrafficEntitlementVersion(rule)
+		if currentTrafficPeriod {
+			if rule.TrafficBytes > math.MaxInt64-delta || rule.InputBytes > math.MaxInt64-inputDelta || rule.OutputBytes > math.MaxInt64-outputDelta {
+				return errors.New("规则方向流量溢出")
+			}
+			rule.TrafficBytes += delta
+			rule.InputBytes += inputDelta
+			rule.OutputBytes += outputDelta
 		}
-		rule.TrafficBytes += delta
 		monthKey := rule.UserID + ":" + time.UnixMilli(now).UTC().Format("2006-01")
 		month, _ := LoadDoc[int64](s, "traffic_months", monthKey)
 		if month > math.MaxInt64-delta {
@@ -172,16 +177,18 @@ func applyRelayTraffic(s *State, agent RelayAgent, report relayruntime.Traffic, 
 		if err := SaveDoc(s, "traffic_months", monthKey, month+delta); err != nil {
 			return err
 		}
-		collection, key := "relay_rule_archive", rule.ID
+		collection, ruleKey := "relay_rule_archive", rule.ID
 		if activeRule {
 			collection = "user_rules"
-			key = rule.UserID + ":" + rule.RouteID
+			ruleKey = rule.UserID + ":" + rule.RouteID
 		}
-		if err := SaveDoc(s, collection, key, rule); err != nil {
-			return err
+		if currentTrafficPeriod {
+			if err := SaveDoc(s, collection, ruleKey, rule); err != nil {
+				return err
+			}
 		}
 	}
-	return SaveDoc(s, "traffic_cursors", key, TrafficCursor{Sequence: report.Sequence, InputBytes: report.InputBytes, OutputBytes: report.OutputBytes, Remainder: remainder})
+	return SaveDoc(s, "traffic_cursors", cursorKey, TrafficCursor{Sequence: report.Sequence, InputBytes: report.InputBytes, OutputBytes: report.OutputBytes, Remainder: remainder})
 }
 
 func relayWeightedTraffic(input, output int64, mode string, multiplier, remainder int64) (int64, int64, error) {
@@ -316,7 +323,7 @@ func (a *App) relaySyncAgent(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			route, ok := LoadDoc[Route](s, "routes", rule.RouteID)
-			if !ok || !route.Enabled {
+			if !ok || !route.Enabled || !userCanUseRoute(user, route) {
 				continue
 			}
 			rotateTLS := !relayRuleUsesV2(s, rule) && rule.TLSExpiresAt > 0 && rule.TLSExpiresAt-now < 7*commerceDay

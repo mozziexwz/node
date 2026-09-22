@@ -16,8 +16,8 @@ export type UserDraft = {
   reason: string;
 };
 
-// Convert decimal input with integer arithmetic: 0.29 yuan is exactly 29 cents,
-// and a partial GB never acquires floating-point rounding bytes.
+// Convert decimal input with integer arithmetic. A partial GB never acquires
+// floating-point rounding bytes; the UI accepts枫叶 only as whole units.
 export function unitInteger(
   input: string,
   decimals: number,
@@ -60,7 +60,7 @@ export function userDraft(
     password: "",
     role: user?.role === "admin" ? "admin" : "member",
     status: user?.status || "active",
-    balance: integerUnit(Number(user?.balanceCents || 0), 2),
+    balance: integerUnit(Math.trunc(Number(user?.balanceCents || 0) / 100), 0),
     days: user ? remainingDays(user, now).toFixed(2) : "0",
     total: integerUnit(Number(user?.trafficTotal || 0), 9),
     used: integerUnit(Number(user?.trafficUsed || 0), 9),
@@ -81,8 +81,13 @@ export function userPatch(
       patch[key] = draft[key].trim();
   if (draft.password) patch.password = draft.password;
   if (!original && !draft.password) throw new Error("新增用户必须设置密码");
+  if (!original || draft.balance !== baseline.balance) {
+    const balance = unitInteger(draft.balance, 0, "枫叶");
+    if (balance > Math.floor(Number.MAX_SAFE_INTEGER / 100))
+      throw new Error("枫叶超出可安全保存的范围");
+    patch.balanceCents = balance * 100;
+  }
   for (const [field, key, decimals, label] of [
-    ["balance", "balanceCents", 2, "余额（元）"],
     ["total", "trafficTotal", 9, "总流量（GB）"],
     ["used", "trafficUsed", 9, "已用流量（GB）"],
     ["rate", "rateMbps", 0, "速率（Mbps）"],
@@ -113,7 +118,7 @@ export function userPatch(
     patch.balanceCents !== (original?.balanceCents ?? 0) &&
     !draft.reason.trim()
   )
-    throw new Error("调整余额请填写原因");
+    throw new Error("调整枫叶请填写原因");
   if (draft.reason.trim()) patch.reason = draft.reason.trim();
   return patch;
 }

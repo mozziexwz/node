@@ -218,7 +218,7 @@ func backupPausePreflight(s *State, now int64) BackupPauseReport {
 				}
 				route, routeOK := LoadDoc[Route](s, "routes", rule.RouteID)
 				if !routeOK || rule.EntitlementVersion != entitlementVersion(s, rule.UserID) || seg.Runtime.ID != rule.ID || seg.Runtime.Version != rule.Version || seg.IssuedRateMbps != seg.Runtime.RateMbps || seg.Runtime.RateMbps != relayRate(s.Users[rule.UserID], route) || seg.IssuedEntitlementVersion != rule.EntitlementVersion || seg.Runtime.EntitlementVersion != rule.EntitlementVersion {
-					block(rule.ID, seg.AgentID, "policy_unconfirmed", "当前套餐、限速或配置版本尚未在节点确认")
+					block(rule.ID, seg.AgentID, "policy_unconfirmed", "当前权益、限速或配置版本尚未在节点确认")
 				}
 				// TLS private material is sealed and unavailable to this pure
 				// State check. Identity/hash/generation/ACK equality establishes

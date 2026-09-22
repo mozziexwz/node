@@ -1,6 +1,6 @@
 # Identity API contract
 
-All timestamps are Unix milliseconds. JSON requests use `Content-Type: application/json`. Authenticated mutations send `X-CSRF-Token` from the login response or `GET /api/me`; cookies are HttpOnly and same-origin. Passwords are 12–72 bytes. Public signup uses a numeric QQ mailbox. `role` is `member` or `admin` (`user` accepted as a member input alias); status is `active` or `suspended`.
+All timestamps are Unix milliseconds. JSON requests use `Content-Type: application/json`. Authenticated mutations send `X-CSRF-Token` from the login response or `GET /api/me`; cookies are HttpOnly and same-origin. Passwords must contain at least 8 Unicode characters and no more than 72 UTF-8 bytes, must not equal the full account email or its local part, and must not contain a run of 6 or more ASCII digits. Registration, member recovery, admin user edits, and the local admin-password command use the same server-side policy. Public signup uses a numeric QQ mailbox. `role` is `member` or `admin` (`user` accepted as a member input alias); status is `active` or `suspended`.
 
 - `POST /api/auth/register`: `{email,password,inviteCode?,code?,agree:true,turnstileToken?}`. Returns `{user,csrfToken}` and sets session cookie. Invitation consumption and code validation are transactional. Registration verification does not imply free-tool verification and vice versa.
 - `POST /api/auth/login`: `{email,password,agree?,turnstileToken?}`. Returns `{user,csrfToken}`.

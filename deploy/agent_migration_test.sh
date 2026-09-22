@@ -30,7 +30,9 @@ fixture_binary "$TEST_WORK/unsupported-prose" 'does not implement -offline-polic
 fixture_binary "$TEST_WORK/unsupported-prefix" '  -offline-policy-unsupported string'
 
 install_agent_parse_args --capability relay --server https://panel.example.test/
-[[ $offline_policy == lease && $acknowledge_restart == 0 && $server == https://panel.example.test ]] || test_fail 'legacy defaults changed'
+[[ $offline_policy == keep_last && $acknowledge_restart == 0 && $server == https://panel.example.test ]] || test_fail 'v0.3 relay default is not keep_last'
+install_agent_parse_args --capability relay --offline-policy lease
+[[ $offline_policy == lease && $acknowledge_restart == 0 ]] || test_fail 'explicit lease compatibility was lost'
 install_agent_parse_args --capability relay --offline-policy keep_last --acknowledge-relay-restart --agent /fixture/agent --gost-version 3.3.0
 [[ $offline_policy == keep_last && $acknowledge_restart == 1 && $agent_file == /fixture/agent && $gost_version == 3.3.0 ]] || test_fail 'explicit migration flags lost'
 install_agent_parse_args --capability executor
@@ -170,7 +172,7 @@ bootstrap_assets="$TEST_WORK/assets"; mkdir "$bootstrap_assets"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$BOOTSTRAP_ARGS"\n' > "$bootstrap_assets/install-agent.sh"
 printf synthetic-agent > "$bootstrap_assets/msboost-agent-linux-amd64"
 (cd "$bootstrap_assets"; sha256sum install-agent.sh msboost-agent-linux-amd64 | sed 's/ \*/  /' > SHA256SUMS)
-for mode in default-relay explicit-keep-last executor invalid-policy invalid-executor; do
+for mode in default-relay explicit-lease explicit-keep-last executor invalid-policy invalid-executor; do
   (
     bootstrap_stage="$TEST_WORK/bootstrap-$mode"; BOOTSTRAP_ARGS="$TEST_WORK/bootstrap-args-$mode"
     export bootstrap_assets bootstrap_stage BOOTSTRAP_ARGS
@@ -180,12 +182,13 @@ for mode in default-relay explicit-keep-last executor invalid-policy invalid-exe
     curl() {
       local url='' destination=''
       while (($#)); do case $1 in https://*) url=$1; shift ;; -o) destination=$2; shift 2 ;; *) shift ;; esac; done
-      [[ $url == https://github.com/mozziexwz/node/releases/download/v0.2.4/* && $destination == "$bootstrap_stage/"* ]] || exit 81
+      [[ $url == https://github.com/mozziexwz/node/releases/download/v0.3.0/* && $destination == "$bootstrap_stage/"* ]] || exit 81
       cp "$bootstrap_assets/${url##*/}" "$destination"
     }
     export -f uname id mktemp curl
     args=(--capability relay --server https://panel.example.test --token-file /fixture/private-token)
     case $mode in
+      explicit-lease) args+=(--offline-policy lease) ;;
       explicit-keep-last) args+=(--offline-policy keep_last --acknowledge-relay-restart) ;;
       executor) args[1]=executor ;;
       invalid-policy) args+=(--offline-policy automatic) ;;
@@ -198,9 +201,17 @@ for mode in default-relay explicit-keep-last executor invalid-policy invalid-exe
       command bash -xv "$TEST_REPO/agent.sh" "${args[@]}" > "$TEST_WORK/bootstrap-$mode.log" 2>&1 || { command cat "$TEST_WORK/bootstrap-$mode.log"; test_fail 'valid bootstrap failed'; }
       if grep -Fq /fixture/private-token "$TEST_WORK/bootstrap-$mode.log"; then test_fail 'successful bootstrap traced private installer arguments'; fi
       [[ -f $BOOTSTRAP_ARGS ]] || test_fail 'bootstrap did not dispatch verified installer'
-      if [[ $mode == explicit-keep-last ]]; then
-        grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" && grep -Fxq keep_last "$BOOTSTRAP_ARGS" && grep -Fxq -- --acknowledge-relay-restart "$BOOTSTRAP_ARGS" || test_fail 'explicit migration flags lost by bootstrap'
-      elif grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS"; then test_fail 'legacy bootstrap forced new policy'; fi
+      case $mode in
+        default-relay)
+          grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" && grep -Fxq keep_last "$BOOTSTRAP_ARGS" || test_fail 'default relay did not forward keep_last'
+          ! grep -Fxq -- --acknowledge-relay-restart "$BOOTSTRAP_ARGS" || test_fail 'new relay incorrectly acknowledged a restart' ;;
+        explicit-lease)
+          grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" && grep -Fxq lease "$BOOTSTRAP_ARGS" || test_fail 'explicit lease compatibility lost by bootstrap' ;;
+        explicit-keep-last)
+          grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" && grep -Fxq keep_last "$BOOTSTRAP_ARGS" && grep -Fxq -- --acknowledge-relay-restart "$BOOTSTRAP_ARGS" || test_fail 'explicit migration flags lost by bootstrap' ;;
+        executor)
+          ! grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" || test_fail 'executor received relay policy' ;;
+      esac
     fi
   ) || test_fail "bootstrap case $mode"
 done
@@ -216,4 +227,5 @@ first_probe_line=$(grep -n '^relay_migration_preflight "\$capability"' "$install
 [[ $verified_copy_line -lt $first_probe_line ]] || test_fail 'candidate executed before private-copy verification'
 ! grep -q '^relay_migration_preflight .*"\$agent_file"$' "$installer" || test_fail 'untrusted mutable source used for capability execution'
 grep -q '^trap install_agent_cleanup EXIT$' "$installer" || test_fail 'real EXIT not bound to tested rollback'
+grep -Fq 'relay_policy_arg=" --offline-policy $offline_policy"' "$installer" || test_fail 'relay unit did not pin its selected policy explicitly'
 printf '%s\n' 'PASS: Agent migration parser/bootstrap, unsupported feature refusal, global v2 evidence, shared installation lock, strict unit rollback and no v1 resurrection'

@@ -31,6 +31,7 @@ var diagnostics = map[string]Diagnostic{
 	"install_failed":         {"install_failed", "install", "写入受管组件失败", "检查 /usr/local/libexec 的磁盘空间、文件权限和只读挂载；不要覆盖未知或使用中的共享文件。"},
 	"target_unreachable":     {"target_unreachable", "target", "转发目标 TCP 连接失败", "检查目标节点地址、监听端口及节点安全组。"},
 	"service_failed":         {"service_failed", "service", "远端服务启动或监听检查失败", "检查服务监听端口是否被占用，以及 VPS 的 systemd 和资源限制。"},
+	"bbr_failed":             {"bbr_failed", "bbr", "目标 VPS 的 BBR 网络参数未能配置", "检查内核是否支持 tcp_bbr，以及 sysctl.d 权限、软件源和网络参数。"},
 	"executor_configuration": {"executor_configuration", "executor", "执行机缺少固定版本下载配置", "请管理员升级执行机，确认当前架构的 GOST 地址和 SHA256 已配置。"},
 	"ownership_failed":       {"ownership_failed", "ownership", "受管文件所有权检查失败", "检测到未知安装、符号链接或第三方修改；请人工检查，系统不会删除或覆盖这些文件。"},
 	"cleanup_changed":        {"cleanup_changed", "cleanup", "清理范围在预览后发生变化", "重新预览并核对新的清理范围后再确认。"},
@@ -53,7 +54,7 @@ func PublicDiagnostic(code, phase string) Diagnostic {
 }
 func ValidPhase(phase string) bool {
 	switch phase {
-	case "queued", "executing", "complete", "fingerprint", "validate", "install", "config", "prepare", "submitted", "submission_unknown", "preflight", "target", "relay", "front", "integrity", "extract", "binary", "dependencies", "download", "service", "self_test", "execution", "ssh_connect", "ssh_host_key", "ssh_auth", "ssh_handshake", "ssh_session", "executor", "ownership", "cleanup":
+	case "queued", "executing", "complete", "fingerprint", "validate", "install", "config", "prepare", "submitted", "submission_unknown", "preflight", "target", "relay", "front", "integrity", "extract", "binary", "bbr", "dependencies", "download", "service", "self_test", "execution", "ssh_connect", "ssh_host_key", "ssh_auth", "ssh_handshake", "ssh_session", "executor", "ownership", "cleanup":
 		return true
 	}
 	return false
@@ -85,6 +86,8 @@ func remoteDiagnostic(err error, out []byte, phase string) Diagnostic {
 			code = "archive_failed"
 		case "binary":
 			code = "binary_unusable"
+		case "bbr":
+			code = "bbr_failed"
 		}
 	}
 	if _, ok := diagnostics[code]; ok {

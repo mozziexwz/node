@@ -109,7 +109,7 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	if err := verifyAsset(job.Script); err != nil {
 		return failed(r, "integrity", err.Error())
 	}
-	script := prepareAsset(job.Script) + encodedAssignment("MSBOOST_SERVER_IP", job.Request.SSH.Host) + "export MSBOOST_SERVER_IP\nmsboost_phase=install\n"
+	script := prepareAsset(job.Script) + bbrTuneScript + encodedAssignment("MSBOOST_SERVER_IP", job.Request.SSH.Host) + "export MSBOOST_SERVER_IP\nmsboost_phase=install\n"
 	if job.Request.Mode == "fresh" {
 		script += encodedAssignment("node_user", "msboost-"+randomHex(8)) + encodedAssignment("node_pass", randomHex(24))
 		// The original installer performs ownership checks and transactional rollback.

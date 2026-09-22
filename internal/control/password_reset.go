@@ -202,7 +202,7 @@ func (a *App) passwordResetConfirm(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "请填写纯数字 QQ 邮箱")
 		return
 	}
-	if err := validPassword(in.NewPassword); err != nil {
+	if err := validPassword(in.NewPassword, in.Email); err != nil {
 		Fail(w, 400, err.Error())
 		return
 	}

@@ -9,7 +9,7 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const folder=path.join(root,'.runtime','http-test-'+crypto.randomUUID());
 fs.mkdirSync(folder,{recursive:true,mode:0o700});
 const credentials=path.join(folder,'credentials.json');
-const password=crypto.randomBytes(24).toString('base64url');
+const password=crypto.randomBytes(24).toString('hex').replace(/.{5}/g,'$&-');
 fs.writeFileSync(credentials,JSON.stringify({email:'10000001@qq.com',password}),{mode:0o600});
 const socket=net.createServer();
 await new Promise((resolve,reject)=>{socket.once('error',reject);socket.listen(0,'127.0.0.1',resolve);});
@@ -32,7 +32,7 @@ try {
   await new Promise(resolve=>setTimeout(resolve,250));
  }
  if(!ready)throw new Error('Isolated server did not become healthy: '+failure);
- const tests=process.argv.includes('--browser') ? ['tests/acceptance.test.mjs','tests/articles.test.mjs','tests/payment-return.test.mjs','tests/password-reset.test.mjs','tests/supplement23-copy.test.mjs','tests/relay-status.test.mjs'] : ['tests/http.test.mjs','tests/users-model.test.mjs','tests/navigation.test.mjs'];
+ const tests=process.argv.includes('--browser') ? ['tests/acceptance.test.mjs','tests/articles.test.mjs','tests/payment-return.test.mjs','tests/password-reset.test.mjs','tests/supplement23-copy.test.mjs','tests/relay-status.test.mjs','tests/plans-policy.test.mjs','tests/tunnels.test.mjs'] : ['tests/http.test.mjs','tests/users-model.test.mjs','tests/navigation.test.mjs'];
  const test=spawn(process.execPath,['--test',...tests],{cwd:path.join(root,'apps/web'),stdio:'inherit',windowsHide:true,env:{...process.env,MSBOOST_TEST_URL:base,MSBOOST_TEST_CREDENTIALS:credentials}});
  process.exitCode=await new Promise((resolve,reject)=>{test.once('error',reject);test.once('exit',code=>resolve(code??1));});
 } finally {

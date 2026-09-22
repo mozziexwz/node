@@ -151,7 +151,7 @@ func TestLateArchivedTrafficKeepsAuditWithoutChargingNewPackage(t *testing.T) {
 		t.Fatal("late old package counters charged new package")
 	}
 	stored, _ := LoadDoc[UserRule](s, "relay_rule_archive", old.ID)
-	if stored.TrafficBytes != 300 {
+	if stored.TrafficBytes != 300 || stored.InputBytes != 100 || stored.OutputBytes != 200 {
 		t.Fatal("late traffic audit lost")
 	}
 	if _, ok := LoadDoc[UserRule](s, "user_rules", "user:route"); ok {

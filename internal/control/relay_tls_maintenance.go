@@ -25,6 +25,7 @@ type RelayTLSMaintenanceReport struct {
 
 func relayTLSReviewFingerprint(s *State, rule UserRule) string {
 	rule.TrafficBytes = 0
+	rule.InputBytes, rule.OutputBytes, rule.TrafficEntitlementVersion = 0, 0, 0
 	rule.Segments = append([]RelaySegment(nil), rule.Segments...)
 	for i := range rule.Segments {
 		seg := &rule.Segments[i]

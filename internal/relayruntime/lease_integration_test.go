@@ -127,7 +127,7 @@ func TestRealGostLeaseExpiryClosesExistingConnection(t *testing.T) {
 	done := make(chan error, 1)
 	stateDir := t.TempDir()
 	go func() {
-		done <- Run(ctx, Config{ServerURL: control.URL, EnrollmentToken: "local-test-enrollment", StateDir: stateDir, GostBinary: binary})
+		done <- Run(ctx, Config{ServerURL: control.URL, EnrollmentToken: "local-test-enrollment", StateDir: stateDir, GostBinary: binary, OfflinePolicy: "lease"})
 	}()
 	defer func() {
 		cancel()

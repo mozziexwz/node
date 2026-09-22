@@ -274,7 +274,7 @@ test(
       );
 
       await t.test(
-        "request/confirmation require separate CAPTCHA; leading zero and UTF-8 bytes; no automatic login",
+        "request/confirmation require separate CAPTCHA; leading zero and Unicode password; no automatic login",
         async () => {
           const { page, requests, errors } = await fixture({
             captcha: true,
@@ -301,7 +301,7 @@ test(
             );
             const firstToken = requests[0].body.turnstileToken;
             assert.ok(firstToken.startsWith("synthetic-token-"));
-            await fillNewPassword(page, "一二三四"); // Four characters, twelve UTF-8 bytes.
+            await fillNewPassword(page, "一二三四五六七八");
             await page
               .getByRole("button", { name: "重置密码", exact: true })
               .click();
@@ -326,7 +326,7 @@ test(
               [requestPath, confirmPath],
             );
             assert.equal(requests[1].body.code, "028461");
-            assert.equal(requests[1].body.newPassword, "一二三四");
+            assert.equal(requests[1].body.newPassword, "一二三四五六七八");
             assert.notEqual(requests[1].body.turnstileToken, firstToken);
             assert.equal(await page.evaluate(() => window.loginCount), 0);
             await expect(page.getByLabel("密码", { exact: true })).toHaveValue(
@@ -358,12 +358,21 @@ test(
             );
             assert.equal(requests.length, 0);
             await page.getByLabel("QQ 邮箱").fill("10000001@qq.com");
-            for (const password of ["short-value", "汉".repeat(25)]) {
+            await fillNewPassword(page, "短密码");
+            await page
+              .getByRole("button", { name: "重置密码", exact: true })
+              .click();
+            await expect(page.getByRole("alert")).toContainText("至少8字符");
+            for (const [password, expected] of [
+              ["10000001", "不能与邮箱或邮箱前缀相同"],
+              ["10000001@qq.com", "不能与邮箱或邮箱前缀相同"],
+              ["secure123456x", "不能包含连续6位或以上数字"],
+            ]) {
               await fillNewPassword(page, password);
               await page
                 .getByRole("button", { name: "重置密码", exact: true })
                 .click();
-              await expect(page.getByRole("alert")).toContainText("12–72 字节");
+              await expect(page.getByRole("alert")).toContainText(expected);
             }
             await fillNewPassword(page);
             await page

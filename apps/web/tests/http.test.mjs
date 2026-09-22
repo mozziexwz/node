@@ -33,7 +33,7 @@ test('HTTP integration: real auth, admin CRUD, financial idempotency and permiss
   const article=await admin('/api/admin/articles',{title,body:'# 本地文章',published:true,sort:0});assert.equal(article.status,200);
   const publicArticles=await member('/api/articles');assert.ok(publicArticles.body.articles.some(a=>a.id===article.body.id));
   assert.equal((await admin('/api/admin/articles/'+article.body.id,undefined,'DELETE')).status,200);
-  const signup=await member('/api/auth/register',{email:String(Date.now()).slice(-10)+'@qq.com',password:crypto.randomBytes(20).toString('hex'),agree:true});
+  const signup=await member('/api/auth/register',{email:String(Date.now()).slice(-10)+'@qq.com',password:'Local-Acceptance-Alpha!',agree:true});
   assert.equal(signup.status,201,JSON.stringify(signup.body));assert.equal(signup.body.user.emailVerifiedAt,0);assert.ok(!signup.body.user.passwordHash);
   assert.equal((await member('/api/admin/users')).status,403);
   const card=await admin('/api/admin/cards',{count:1,amountCents:1000,batch:'local-acceptance'});assert.equal(card.status,201,JSON.stringify(card.body));

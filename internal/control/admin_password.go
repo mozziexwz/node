@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/mail"
 	"os"
@@ -59,8 +60,11 @@ func readAdminPasswordInput(input io.Reader) (string, []byte, error) {
 	if err != nil || address.Address != email || address.Name != "" || len(email) > 254 {
 		return "", nil, errors.New("管理员邮箱格式无效；未修改密码")
 	}
-	if len(fields[1]) < 12 || len(fields[1]) > 72 || !bytes.Equal(fields[1], fields[2]) {
-		return "", nil, errors.New("密码须为 12–72 字节且两次一致；未修改密码")
+	if !bytes.Equal(fields[1], fields[2]) {
+		return "", nil, errors.New("两次输入的密码不一致；未修改密码")
+	}
+	if err := validPassword(string(fields[1]), email); err != nil {
+		return "", nil, fmt.Errorf("%w；未修改密码", err)
 	}
 	if string(fields[3]) != "RESET "+email {
 		return "", nil, errors.New("未明确确认目标管理员；未修改密码")

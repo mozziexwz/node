@@ -1,4 +1,4 @@
-# 任务与执行机 API（v0.2.2）
+# 任务与执行机 API（v0.3.0 候选）
 
 浏览器使用会话 Cookie，写请求需要 `X-CSRF-Token`。JSON 使用 camelCase，响应不缓存，错误为 `{ "error": "中文说明" }`。SSH 密码、免费配置和执行信封仅短期保存在内存，任务审计不存密码或原始远端日志。
 
@@ -33,11 +33,11 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 
 状态为 `queued,running,succeeded,failed,executed,unknown,interrupted`。客户端轮询至终态。`executed` 仅用于 DD：准备成功、获得重启提交标志并确认预期断线；不声称新系统已经安装完成。提交证据不完整为 `unknown`，需从 VPS 控制台核实。控制面重启或响应超时不会重放已交付动作；非 DD 中断为 `interrupted`，对应 DD 为 `unknown`。
 
-`GET /api/tasks/{id}/config` 返回原始客户端 JSON，仅所有者可读，服务器内存副本保留 10 分钟，重启即丢失。浏览器可存入加密 IndexedDB，不承诺跨浏览器或清除网站数据后的恢复。部署默认下载名为 `直连.json`，自备中转为 `自备中转.json`。自备备注用于配置 `profileName` / `activeProfile` 和下载名基础，文件名清理路径及控制字符；浏览器同时处理 Windows 保留名。备注不改变节点认证。
+`GET /api/tasks/{id}/config` 返回原始客户端 JSON，仅所有者可读，服务器内存副本保留 10 分钟，重启即丢失。浏览器可存入加密 IndexedDB，不承诺跨浏览器或清除网站数据后的恢复。部署默认下载名为 `直连.json`，自备中转为 `自备中转.json`。自备备注用于配置 `profileName` / `activeProfile` 和下载名基础，文件名清理路径及控制字符；浏览器同时处理 Windows 保留名。自备中转监听端口从可用范围随机选择，不按区间起点顺序递增；仍须真实绑定成功才交付配置。备注不改变节点认证。
 
 `health` 分离 `service,localSelfTest,publicTCP,game`；`game` 保留协议兼容，当前没有游戏探测，UI 不显示未检测的 Game 行。页面显示“服务运行 / 本地自测 / 公网 TCP 可达性”，并说明游戏需自行验证。`target_tcp_reachable` 仅表示目标 TCP 可达。`hops` 字段为 `fromHost,fromPort,toHost,toPort`。
 
-维护模式对所有角色（含管理员）阻止新部署、中转、DD、清理及付费前置执行任务；已接受任务不自动取消。历史元数据、所有者临时配置和无密码的只读指纹探测仍可使用。指纹探测要求已认证的 active 账户、正常配额、公网地址及在线执行机，不套用免费工具邮箱要求；实际创建免费任务仍在读取 SSH 凭据前执行邮箱门禁，付费前置仍检查维护状态和套餐权益。
+维护模式对所有角色（含管理员）阻止新部署、中转、DD、清理及权益前置执行任务；已接受任务不自动取消。历史元数据、所有者临时配置和无密码的只读指纹探测仍可使用。指纹探测要求已认证的 active 账户、正常配额、公网地址及在线执行机，不套用免费工具邮箱要求；实际创建免费任务仍在读取 SSH 凭据前执行邮箱门禁，权益前置仍检查维护状态和权益。
 
 ## 预览与清理
 
@@ -91,9 +91,11 @@ UI 折叠入口为“卸载 MSBOOST”或“卸载自备中转”。点击“继
 | `invalid_config` / `invalid_request` | 配置或任务参数无效 |
 | `execution_failed` | 仅确定远端步骤失败，证据不足以进一步归因 |
 
-主要阶段为 `ssh_connect,ssh_host_key,ssh_auth,ssh_handshake,ssh_session,preflight,dependencies,download,integrity,extract,binary,install,service,config,target,relay,front,prepare,submission_unknown,ownership,cleanup,execution,executor`，UI 显示中文。CPU 上升、能探测到指纹等现象不能单独证明任务失败原因。
+主要阶段为 `ssh_connect,ssh_host_key,ssh_auth,ssh_handshake,ssh_session,preflight,dependencies,download,integrity,extract,binary,bbr,install,service,config,target,relay,front,prepare,submission_unknown,ownership,cleanup,execution,executor`，UI 显示中文。CPU 上升、能探测到指纹等现象不能单独证明任务失败原因。
 
 GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/libexec/msboost-free` 磁盘目录暂存、校验和原子发布；不在 Debian 默认可能挂载为 `noexec` 的 `/run` 中执行 ELF，也不修改挂载安全选项。已有共享缓存程序只核验、不覆盖。DD 使用仓库固定版本的 `bin456789/reinstall` 脚本，显式传入 `--username root`、密码与 SSH 端口，关闭其标准输入以避免交互提示吞掉外层执行指令。
+
+免费工具的 `deploy`、`relay` 及其自备前置目标在客户自有 VPS 写入专用 `/etc/sysctl.d/99-msboost-bbr.conf`，执行 `sysctl -p /etc/sysctl.d/99-msboost-bbr.conf` 和 `sysctl --system`，再逐项读取核对补充 2.4 指定的全部 13 个 BBR/FQ 与 TCP 参数；重复执行保持幂等，不覆盖整份 `/etc/sysctl.conf`。控制执行机和本站捐赠权益 Relay 节点不执行该步骤。内核不支持、文件安全检查失败、加载失败或任一参数未生效时，任务按 `bbr`/安装阶段失败，不假报成功。
 
 ## 执行机管理
 

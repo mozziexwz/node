@@ -68,6 +68,9 @@ func relayConnectionAddress(node RelayAgent, preference, explicit string) (strin
 	return "", errors.New("节点没有符合连接地址偏好的已登记IP")
 }
 func normalizeRelayRoute(s *State, route *Route) error {
+	if route.Level == 0 {
+		route.Level = 1
+	}
 	if route.Type == "" {
 		route.Type = "tunnel"
 		if len(route.Hops) == 0 && len(route.Exit.AgentIDs) == 1 && route.Exit.AgentIDs[0] == route.EntryAgentID {

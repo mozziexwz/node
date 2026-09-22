@@ -171,12 +171,12 @@ func paymentVerify(values url.Values, version string, secrets paymentSecrets) er
 func paymentCents(value string) (int64, error) {
 	parts := strings.Split(value, ".")
 	if len(parts) > 2 || len(parts[0]) == 0 || len(parts[0]) > 9 {
-		return 0, errors.New("支付金额格式无效")
+		return 0, errors.New("兑换金额格式无效")
 	}
 	for _, part := range parts {
 		for _, c := range part {
 			if c < '0' || c > '9' {
-				return 0, errors.New("支付金额格式无效")
+				return 0, errors.New("兑换金额格式无效")
 			}
 		}
 	}
@@ -187,7 +187,7 @@ func paymentCents(value string) (int64, error) {
 	fraction := "00"
 	if len(parts) == 2 {
 		if len(parts[1]) < 1 || len(parts[1]) > 2 {
-			return 0, errors.New("金额精度不得超过分")
+			return 0, errors.New("兑换金额精度无效")
 		}
 		fraction = (parts[1] + "0")[:2]
 	}
@@ -299,7 +299,7 @@ func (a *App) paymentSaveChannel(w http.ResponseWriter, r *http.Request) {
 			}
 			for _, o := range ListDocs[Order](s, "orders") {
 				if o.ChannelID == ch.ID && (ch.Version != old.Version || ch.MerchantID != old.MerchantID || ch.Type != old.Type || ch.Gateway != old.Gateway || ch.MerchantKey != "" || ch.PrivateKey != "" || ch.PlatformPublicKey != "") {
-					return errors.New("此渠道已被订单引用，商户与密钥不可覆盖；轮换请新建渠道，可修改名称或启停")
+					return errors.New("此渠道已被兑换记录引用，商户与密钥不可覆盖；轮换请新建渠道，可修改名称或启停")
 				}
 			}
 		} else {
@@ -366,7 +366,7 @@ func (a *App) paymentDeleteChannel(w http.ResponseWriter, r *http.Request) {
 	err := a.Store.Update(func(s *State) error {
 		for _, o := range ListDocs[Order](s, "orders") {
 			if o.ChannelID == r.PathValue("id") {
-				return errors.New("支付渠道已被订单引用，请停用而非删除")
+				return errors.New("兑换渠道已被兑换记录引用，请停用而非删除")
 			}
 		}
 		DeleteDoc(s, "payment_channels", r.PathValue("id"))
@@ -435,15 +435,17 @@ func (a *App) paymentNotify(w http.ResponseWriter, r *http.Request) {
 		case u == nil || u.Status != "active":
 			o.ReviewReason = "用户不存在或已停用"
 		case boolSetting(s, "purchaseRequireVerifiedEmail") && u.EmailVerifiedAt == 0:
-			o.ReviewReason = "当前购买要求验证邮箱，请核对后处理"
+			o.ReviewReason = "当前兑换要求验证邮箱，请核对后处理"
+		case planPolicyAllowed(s, o.Plan, u, now) != nil:
+			o.ReviewReason = "用户已不满足此权益的兑换策略"
 		case planPurchaseLimit(s, o.Plan, o.UserID) != nil:
-			o.ReviewReason = "已达到该套餐每用户购买次数上限"
+			o.ReviewReason = "已达到该权益每位用户兑换次数上限"
 		case o.ExpiresAt <= now:
-			o.ReviewReason = "付款通知超过订单有效期"
+			o.ReviewReason = "兑换通知超过兑换记录有效期"
 		case entitlementVersion(s, o.UserID) != o.EntitlementVersion:
-			o.ReviewReason = "订单创建后用户权益已变更"
+			o.ReviewReason = "兑换创建后用户权益已变更"
 		case !purchaseAllowed(u, now):
-			o.ReviewReason = "用户已不满足再次购买门槛"
+			o.ReviewReason = "用户已不满足再次兑换门槛"
 		}
 		if o.ReviewReason != "" {
 			o.State = "paid_review"

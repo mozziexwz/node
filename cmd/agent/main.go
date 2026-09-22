@@ -18,7 +18,7 @@ func main() {
 	server := flag.String("server", os.Getenv("MSBOOST_SERVER_URL"), "Control-plane HTTPS origin")
 	state := flag.String("state-dir", "/var/lib/msboost-agent", "Relay runtime state directory")
 	gost := flag.String("gost-binary", "/usr/local/bin/gost", "Pinned local GOST v3 binary for relay capability")
-	offlinePolicy := flag.String("offline-policy", "lease", "Relay policy: lease (v1) or explicitly enabled keep_last (v2)")
+	offlinePolicy := flag.String("offline-policy", "keep_last", "Relay policy: keep_last (v2 default) or explicit legacy lease (v1)")
 	recoveryAction := flag.String("recovery-action", "", "Local root recovery: snapshot or adopt")
 	recoveryFile := flag.String("recovery-file", "", "Private snapshot output or trusted plan input file (never put tokens in arguments)")
 	flag.Parse()

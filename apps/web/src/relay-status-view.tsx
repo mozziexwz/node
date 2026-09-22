@@ -1,6 +1,13 @@
 import { RecordData } from "./api";
-import { date, Notice } from "./ui";
+import { Notice } from "./ui";
 import { relayStatus } from "./relay-status";
+
+export function trafficAmount(value: unknown) {
+  const bytes = Math.max(0, Number(value) || 0);
+  return bytes < 1e9
+    ? `${(bytes / 1e6).toFixed(2)} MB`
+    : `${(bytes / 1e9).toFixed(2)} GB`;
+}
 
 export function RelayStatusDetail({
   rule,
@@ -11,21 +18,14 @@ export function RelayStatusDetail({
 }) {
   const status = relayStatus(rule, routeOnline);
   return (
-    <section aria-label="中转状态说明" className="mt16">
-      <p className="muted">
-        {status.controlLabel}；最后报告：{status.runtimeLabel}（
-        {rule.runtimeObservedAt ? date(rule.runtimeObservedAt) : "无报告时间"}）
-        {status.control !== "online"
-          ? "；当前业务待核实。"
-          : "；报告不等于实时业务探测。"}
+    <section aria-label="中转流量" className="route-traffic mt16">
+      <p>
+        <span>已用上行流量：</span>
+        <strong>{trafficAmount(rule.inputBytes)}</strong>
       </p>
-      <p className="muted mt8">{status.policyText}</p>
-      <p className="muted mt8">
-        最近全链路配置确认：{rule.readySegments || 0} /{" "}
-        {rule.totalSegments || 0} 个节点。
-        {rule.appliedRateMbps > 0
-          ? `最近确认限速：上下行各 ${rule.appliedRateMbps} Mbps。`
-          : "尚未确认全部节点应用当前配置。"}
+      <p>
+        <span>已用下行流量：</span>
+        <strong>{trafficAmount(rule.outputBytes)}</strong>
       </p>
       {status.stopText && (
         <div className="mt8">

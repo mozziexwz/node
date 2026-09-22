@@ -6,7 +6,7 @@ umask 077
 INSTALL_ROOT=/opt/msboost
 PROJECT=msboost
 MARKER=MSBOOST_DEPLOY_V1
-VERSION=v0.2.4
+VERSION=v0.3.0
 SOURCE_DIR=
 DOMAIN=
 IP_ADDRESS=
@@ -81,6 +81,17 @@ env_set() {
   mv -f -- "$file.next" "$file"
 }
 random_hex() { od -An -N "$1" -tx1 /dev/urandom | tr -d ' \n'; }
+random_admin_password() {
+  # Keep the full 192 bits of entropy while separating every five hex digits.
+  # This guarantees the bootstrap credential obeys the six-digit password rule.
+  local raw i
+  raw=$(random_hex 24) || return
+  for ((i=0; i<${#raw}; i+=5)); do
+    (( i == 0 )) || printf '-'
+    printf '%s' "${raw:i:5}"
+  done
+  printf '\n'
+}
 valid_domain() {
   local host=$1 label
   [[ ${#host} -le 253 && $host == *.* && $host =~ ^[a-z0-9.-]+$ && $host =~ \.[a-z]{2,63}$ ]] || return 1
@@ -119,7 +130,7 @@ write_initial_environment() {
   {
     printf 'MSBOOST_DOMAIN=%s\nMSBOOST_SITE_ADDRESS=%s\nPUBLIC_URL=%s\nCOOKIE_SECURE=%s\n' "$host" "$site" "$public" "$secure"
     printf 'MSBOOST_VERSION=%s\nMSBOOST_IMAGE=ghcr.io/mozziexwz/node:%s\n' "$VERSION" "$VERSION"
-    printf 'ADMIN_EMAIL=%s\nADMIN_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nMASTER_KEY=%s\n' "$ADMIN_EMAIL" "$(random_hex 24)" "$(random_hex 32)" "$(random_hex 32)"
+    printf 'ADMIN_EMAIL=%s\nADMIN_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nMASTER_KEY=%s\n' "$ADMIN_EMAIL" "$(random_admin_password)" "$(random_hex 32)" "$(random_hex 32)"
   } > "$INSTALL_ROOT/.env"
   chmod 600 "$INSTALL_ROOT/.env"
 }

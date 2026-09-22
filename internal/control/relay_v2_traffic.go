@@ -87,6 +87,20 @@ func applyRelayTrafficV2(s *State, agent RelayAgent, report relayruntime.V2Traff
 	if !ok || grant.AgentID != agent.ID || grant.RuleID != report.ID || grant.EntitlementVersion != report.EntitlementVersion || report.Version < grant.FirstVersion || report.Version > grant.LastVersion {
 		return invalid()
 	}
+	var associated UserRule
+	collection, associatedKey := "", ""
+	for id := range s.Docs["user_rules"] {
+		rule, valid := LoadDoc[UserRule](s, "user_rules", id)
+		if valid && rule.ID == report.ID {
+			associated, collection, associatedKey = rule, "user_rules", id
+			break
+		}
+	}
+	if collection == "" {
+		if rule, valid := LoadDoc[UserRule](s, "relay_rule_archive", report.ID); valid {
+			associated, collection, associatedKey = rule, "relay_rule_archive", report.ID
+		}
+	}
 	key := agent.ID + ":" + report.ID + ":" + report.Epoch
 	cursor, exists := LoadDoc[relayTrafficCursorV2](s, "relay_v2_traffic_cursors", key)
 	if exists && (cursor.GrantID != grant.ID || cursor.CollectedFrom != report.CollectedFrom || cursor.Uncertain != report.Uncertain) {
@@ -101,7 +115,8 @@ func applyRelayTrafficV2(s *State, agent RelayAgent, report relayruntime.V2Traff
 	if report.InputBytes < cursor.InputBytes || report.OutputBytes < cursor.OutputBytes || report.CollectedUntil < cursor.CollectedUntil {
 		return invalid()
 	}
-	delta, remainder, err := relayWeightedTraffic(report.InputBytes-cursor.InputBytes, report.OutputBytes-cursor.OutputBytes, grant.TrafficMode, grant.Multiplier, cursor.Remainder)
+	inputDelta, outputDelta := report.InputBytes-cursor.InputBytes, report.OutputBytes-cursor.OutputBytes
+	delta, remainder, err := relayWeightedTraffic(inputDelta, outputDelta, grant.TrafficMode, grant.Multiplier, cursor.Remainder)
 	if err != nil {
 		return relayruntime.V2TrafficAck{}, err
 	}
@@ -142,22 +157,16 @@ func applyRelayTrafficV2(s *State, agent RelayAgent, report relayruntime.V2Traff
 			return relayruntime.V2TrafficAck{}, err
 		}
 	}
-	var associated UserRule
-	collection, associatedKey := "", ""
-	for id := range s.Docs["user_rules"] {
-		rule, valid := LoadDoc[UserRule](s, "user_rules", id)
-		if valid && rule.ID == report.ID {
-			associated, collection, associatedKey = rule, "user_rules", id
-			break
-		}
-	}
-	if collection == "" {
-		if rule, valid := LoadDoc[UserRule](s, "relay_rule_archive", report.ID); valid {
-			associated, collection, associatedKey = rule, "relay_rule_archive", report.ID
-		}
-	}
-	if collection != "" {
+	if collection != "" && grant.EntitlementVersion == ruleTrafficEntitlementVersion(associated) {
 		associated.TrafficBytes, err = addRelayV2Bytes(associated.TrafficBytes, delta)
+		if err != nil {
+			return relayruntime.V2TrafficAck{}, err
+		}
+		associated.InputBytes, err = addRelayV2Bytes(associated.InputBytes, inputDelta)
+		if err != nil {
+			return relayruntime.V2TrafficAck{}, err
+		}
+		associated.OutputBytes, err = addRelayV2Bytes(associated.OutputBytes, outputDelta)
 		if err != nil {
 			return relayruntime.V2TrafficAck{}, err
 		}
@@ -177,7 +186,7 @@ func applyRelayTrafficV2(s *State, agent RelayAgent, report relayruntime.V2Traff
 	} else if err = SaveDoc(s, "traffic_months", monthKey, month); err != nil {
 		return relayruntime.V2TrafficAck{}, err
 	}
-	if collection != "" {
+	if collection != "" && grant.EntitlementVersion == ruleTrafficEntitlementVersion(associated) {
 		if err = SaveDoc(s, collection, associatedKey, associated); err != nil {
 			return relayruntime.V2TrafficAck{}, err
 		}

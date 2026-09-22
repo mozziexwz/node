@@ -71,7 +71,7 @@ func TestCardConcurrentRedeemExactlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = a.Store.Update(func(s *State) error {
-		return SaveDoc(s, "cards", "card", BalanceCard{ID: "card", CodeHash: commerceHash(code), SealedCode: sealed, AmountCents: 1234, Status: "active"})
+		return SaveDoc(s, "cards", "card", BalanceCard{ID: "card", CodeHash: commerceHash(code), SealedCode: sealed, AmountCents: 1200, Status: "active"})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestCardConcurrentRedeemExactlyOnce(t *testing.T) {
 	}
 	wg.Wait()
 	err = a.Store.View(func(s *State) error {
-		if s.Users[u.ID].BalanceCents != 1234 {
+		if s.Users[u.ID].BalanceCents != 1200 {
 			t.Errorf("balance = %d", s.Users[u.ID].BalanceCents)
 		}
 		if len(ListDocs[LedgerEntry](s, "ledger")) != 1 {
@@ -112,7 +112,7 @@ func TestBalancePurchaseIdempotentAndReplace(t *testing.T) {
 		s.Users[u.ID].ExpiresAt = now + 5*commerceDay
 		s.Users[u.ID].TrafficTotal = 10 * commerceGB
 		s.Users[u.ID].TrafficUsed = commerceGB
-		return SaveDoc(s, "plans", "plan", Plan{ID: "plan", Name: "test", PriceCents: 300, Days: 3, TrafficBytes: 2 * commerceGB, RateMbps: 10, Enabled: true})
+		return SaveDoc(s, "plans", "plan", Plan{ID: "plan", Name: "test", PriceCents: 300, Days: 3, TrafficBytes: 2 * commerceGB, RateMbps: 10, Enabled: true, Level: 2})
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +126,7 @@ func TestBalancePurchaseIdempotentAndReplace(t *testing.T) {
 	}
 	err = a.Store.View(func(s *State) error {
 		user := s.Users[u.ID]
-		if user.BalanceCents != 700 || user.TrafficTotal != 2*commerceGB || user.TrafficUsed != 0 || user.ExpiresAt > now+3*commerceDay+5000 {
+		if user.BalanceCents != 700 || user.TrafficTotal != 2*commerceGB || user.TrafficUsed != 0 || user.ExpiresAt > now+3*commerceDay+5000 || user.Level != 2 {
 			t.Errorf("replacement failed: %+v", user)
 		}
 		if len(ListDocs[Order](s, "orders")) != 1 || len(ListDocs[LedgerEntry](s, "ledger")) != 1 {

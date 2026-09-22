@@ -74,7 +74,11 @@ export function PasswordReset({
           if (working) throw new Error("请等待当前请求完成");
           const recipient = qqEmailInput(email);
           const password = String(form.get("newPassword") || "");
-          validateNewPassword(password, String(form.get("confirm") || ""));
+          validateNewPassword(
+            password,
+            String(form.get("confirm") || ""),
+            recipient,
+          );
           const code = String(form.get("code") || "").trim();
           if (!/^[0-9]{6}$/.test(code)) throw new Error("请输入六位数字验证码");
           if (settings.turnstile && !turnstileToken)
@@ -144,7 +148,7 @@ export function PasswordReset({
           required
         />
         <p id="reset-password-requirements" className="auth-reset-help">
-          12–72 字节；中文等非 ASCII 字符会占用多个字节。
+          密码至少8字符。
         </p>
         <Field
           label="确认新密码"

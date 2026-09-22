@@ -59,6 +59,9 @@ type Ticket struct {
 	LastReplyAt     int64         `json:"lastReplyAt"`
 	LastActivityAt  int64         `json:"lastActivityAt"`
 	ReplyCount      int           `json:"replyCount"`
+	MemberReadAt    int64         `json:"memberReadAt,omitempty"`
+	AdminReadAt     int64         `json:"adminReadAt,omitempty"`
+	UnreadCount     int           `json:"unreadCount"`
 }
 
 func (a *App) RegisterContent(m *http.ServeMux) {
@@ -75,6 +78,7 @@ func (a *App) RegisterContent(m *http.ServeMux) {
 	m.HandleFunc("GET /api/tickets", a.listTickets)
 	m.HandleFunc("POST /api/tickets", a.createTicket)
 	m.HandleFunc("POST /api/tickets/{id}/replies", a.replyTicket)
+	m.HandleFunc("POST /api/tickets/{id}/read", a.readTicket)
 	m.HandleFunc("PATCH /api/tickets/{id}", a.editTicket)
 	m.HandleFunc("GET /api/admin/overview", a.overview)
 	m.HandleFunc("GET /api/admin/audit", a.auditList)
@@ -277,7 +281,7 @@ func (a *App) pinArticle(w http.ResponseWriter, r *http.Request) {
 		Pinned *bool `json:"pinned"`
 	}
 	if Decode(r, &in) != nil || in.Pinned == nil {
-		Fail(w, 400, "请选择是否置顶")
+		Fail(w, 400, "请选择是否固定到顶部")
 		return
 	}
 	var out []Article
@@ -493,10 +497,13 @@ func (a *App) listTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := []Ticket{}
+	unreadCount := 0
 	err = a.Store.View(func(s *State) error {
 		for _, t := range ListDocs[Ticket](s, "tickets") {
 			if u.Role == "admin" || t.UserID == u.ID {
 				ticketMetadata(&t)
+				t.UnreadCount = ticketUnreadCount(t, u.Role == "admin")
+				unreadCount += t.UnreadCount
 				out = append(out, t)
 			}
 		}
@@ -516,12 +523,16 @@ func (a *App) listTickets(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].ID < out[j].ID
 	})
-	WriteJSON(w, 200, map[string]any{"tickets": out})
+	WriteJSON(w, 200, map[string]any{"tickets": out, "unreadCount": unreadCount})
 }
 func (a *App) createTicket(w http.ResponseWriter, r *http.Request) {
 	u, err := a.User(r)
 	if err != nil {
 		Fail(w, 401, err.Error())
+		return
+	}
+	if u.Role == "admin" {
+		Fail(w, 403, "管理员不能新建工单，请直接回复会员工单")
 		return
 	}
 	var in struct {
@@ -538,7 +549,7 @@ func (a *App) createTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UnixMilli()
-	v := Ticket{ID: ID(), UserID: u.ID, Title: in.Title, Status: "open", CreatedAt: now, UpdatedAt: now, Replies: []TicketReply{{ID: ID(), Author: u.Email, Admin: u.Role == "admin", Body: in.Body, CreatedAt: now}}}
+	v := Ticket{ID: ID(), UserID: u.ID, Title: in.Title, Status: "open", CreatedAt: now, UpdatedAt: now, MemberReadAt: now, Replies: []TicketReply{{ID: ID(), Author: u.Email, Body: in.Body, CreatedAt: now}}}
 	ticketMetadata(&v)
 	if err := a.Store.Update(func(s *State) error { return SaveDoc(s, "tickets", v.ID, v) }); err != nil {
 		Fail(w, 500, "保存失败")
@@ -574,8 +585,13 @@ func (a *App) replyTicket(w http.ResponseWriter, r *http.Request) {
 		if len(v.Replies) >= ticketMaxMessages {
 			return errors.New("单个工单最多200条消息，请新建工单继续")
 		}
-		v.UpdatedAt = time.Now().UnixMilli()
+		v.UpdatedAt = max(time.Now().UnixMilli(), v.UpdatedAt+1)
 		v.Replies = append(v.Replies, TicketReply{ID: ID(), Author: u.Email, Admin: u.Role == "admin", Body: in.Body, CreatedAt: v.UpdatedAt})
+		if u.Role == "admin" {
+			v.AdminReadAt = v.UpdatedAt
+		} else {
+			v.MemberReadAt = v.UpdatedAt
+		}
 		ticketMetadata(&v)
 		return SaveDoc(s, "tickets", v.ID, v)
 	})
@@ -584,6 +600,36 @@ func (a *App) replyTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (a *App) readTicket(w http.ResponseWriter, r *http.Request) {
+	u, err := a.User(r)
+	if err != nil {
+		Fail(w, 401, err.Error())
+		return
+	}
+	err = a.Store.Update(func(s *State) error {
+		v, ok := LoadDoc[Ticket](s, "tickets", r.PathValue("id"))
+		if !ok || u.Role != "admin" && v.UserID != u.ID {
+			return errors.New("工单不存在")
+		}
+		now := time.Now().UnixMilli()
+		readThrough := max(now, v.UpdatedAt)
+		if len(v.Replies) > 0 {
+			readThrough = max(readThrough, v.Replies[len(v.Replies)-1].CreatedAt)
+		}
+		if u.Role == "admin" {
+			v.AdminReadAt = max(v.AdminReadAt, readThrough)
+		} else {
+			v.MemberReadAt = max(v.MemberReadAt, readThrough)
+		}
+		return SaveDoc(s, "tickets", v.ID, v)
+	})
+	if err != nil {
+		Fail(w, 404, err.Error())
+		return
+	}
+	WriteJSON(w, 200, map[string]any{"ok": true, "unreadCount": 0})
 }
 func (a *App) editTicket(w http.ResponseWriter, r *http.Request) {
 	u, err := a.User(r)
@@ -633,6 +679,19 @@ func ticketMetadata(t *Ticket) {
 		t.LastReplyAuthor = last.Author
 		t.LastActivityAt = max(t.LastActivityAt, last.CreatedAt)
 	}
+}
+func ticketUnreadCount(t Ticket, admin bool) int {
+	readAt := t.MemberReadAt
+	if admin {
+		readAt = t.AdminReadAt
+	}
+	count := 0
+	for _, reply := range t.Replies {
+		if reply.CreatedAt > readAt && reply.Admin != admin {
+			count++
+		}
+	}
+	return count
 }
 func ticketPriority(t Ticket) int {
 	if t.Status == "closed" {

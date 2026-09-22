@@ -164,6 +164,8 @@ const rules = [
   readySegments: 0,
   totalSegments: 2,
   trafficBytes: 1234,
+  inputBytes: 450e6,
+  outputBytes: 1.25e9,
   controlStatus: "offline",
   runtimeStatus: "last_reported_running",
   runtimeObservedAt: sampleTime,
@@ -284,6 +286,19 @@ test(
               },
             },
           });
+        if (
+          request.method() === "POST" &&
+          url.pathname === "/api/user/routes/keep/diagnose"
+        )
+          return route.fulfill({
+            json: {
+              routeName: "完整保留线路",
+              status: "success",
+              latencyMs: 33,
+              packetLossPercent: 0,
+              message: "仅为控制面视角的 TCP 路径样本；延迟是入口建连时间，不验证每跳/Mieru/游戏协议",
+            },
+          });
         if (request.method() !== "GET") {
           errors.push(`Unexpected write ${url.pathname}`);
           return route.abort();
@@ -353,7 +368,7 @@ test(
     }
     try {
       await t.test(
-        "member sees management loss plus timestamp, not a live business guarantee; recovery actions disabled",
+        "member sees per-rule traffic and real diagnosis; verbose policy copy is removed",
         async () => {
           const { page, requests, errors } = await fixture("member");
           try {
@@ -364,18 +379,25 @@ test(
                   has: page.getByRole("heading", { name, exact: true }),
                 });
             const keep = card("完整保留线路"),
-              mixed = card("混合线路"),
-              lease = card("短租约线路"),
               recovery = card("恢复核对线路");
-            await expect(keep).toContainText("管理连接已中断；最后报告：运行");
-            await expect(keep).toContainText("2026");
-            await expect(keep).toContainText("当前业务待核实");
-            await expect(keep).toContainText("已确认离线保留（全链路 ACK）");
+            await expect(keep).toContainText("已用上行流量：450.00 MB");
+            await expect(keep).toContainText("已用下行流量：1.25 GB");
+            await expect(keep).not.toContainText("管理连接");
+            await expect(keep).not.toContainText("离线保留");
             await expect(keep).not.toContainText("45 秒");
-            await expect(mixed).toContainText("混合模式");
-            await expect(mixed).not.toContainText("已确认离线保留");
-            await expect(lease).toContainText("v1");
-            await expect(lease).toContainText("45 秒");
+            await expect(keep).toContainText("线路离线");
+            await keep.getByRole("button", { name: "诊断", exact: true }).click();
+            const diagnosis = page.getByRole("dialog");
+            await expect(diagnosis).toContainText(
+              "入口(完整保留线路)->目标(MSBOOST)",
+            );
+            await expect(diagnosis).toContainText("成功");
+            await expect(diagnosis).toContainText("33");
+            await expect(diagnosis).toContainText("0.00%");
+            await expect(diagnosis).toContainText("不验证每跳/Mieru/游戏协议");
+            await diagnosis
+              .getByRole("button", { name: "关闭", exact: true })
+              .click();
             await expect(recovery).toContainText(
               "待节点停止确认，端口及旧目标继续占用",
             );
@@ -399,7 +421,10 @@ test(
                 false,
               );
             }
-            assert.ok(requests.every((request) => request.method === "GET"));
+            assert.equal(
+              requests.filter((request) => request.method === "POST").length,
+              1,
+            );
             assert.deepEqual(errors, []);
           } finally {
             await page.close();
@@ -415,7 +440,7 @@ test(
               'details[aria-label="账务核对概览"]',
             );
             await accounting.locator("summary").click();
-            await expect(accounting).toContainText("不混扣新套餐");
+            await expect(accounting).toContainText("不混扣新权益");
             await expect(accounting).toContainText("待核对流量未自动调账");
             await expect(accounting).toContainText("2,048 字节");
             await expect(
@@ -438,7 +463,8 @@ test(
               .getByRole("button", { name: "详情", exact: true })
               .click();
             const dialog = page.getByRole("dialog");
-            await expect(dialog).toContainText("当前业务待核实");
+            await expect(dialog).toContainText("已用上行流量：450.00 MB");
+            await expect(dialog).toContainText("已用下行流量：1.25 GB");
             await expect(dialog).toContainText("v2：等待明确停止确认");
             await expect(dialog).toContainText("v2：明确停止已确认");
             await expect(dialog).not.toContainText("1999");

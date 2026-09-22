@@ -8,6 +8,20 @@
   font-size: 15px;
   font-weight: 700;
 }
+.article-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  border: 1px solid #f2d7c7;
+  border-radius: 6px;
+  background: var(--pale);
+  color: var(--orange-dark);
+}
+.article-pin-inline {
+  color: var(--orange-dark);
+  margin-right: 5px;
+}
 .article-reorder {
   display: grid;
   grid-template-columns: repeat(2, 25px);

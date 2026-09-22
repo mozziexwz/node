@@ -9,6 +9,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api, array, post, type RecordData } from "./api";
+import { validateNewPassword } from "./auth-code";
 import {
   Header,
   Button,
@@ -22,7 +23,7 @@ import {
   useData,
   date,
   gb,
-  money,
+  leaves,
 } from "./ui";
 import {
   remainingDays,
@@ -117,7 +118,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
   }
   return (
     <>
-      <Header title="用户管理" sub="管理账号、邮箱验证、余额与套餐权益。">
+      <Header title="用户管理" sub="管理账号、邮箱验证、枫叶与权益。">
         <Button primary onClick={() => open(null)}>
           <Plus size={16} />
           添加用户
@@ -140,7 +141,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
               <tr>
                 <th>用户 / 注册时间</th>
                 <th>邮箱验证</th>
-                {sorting("balanceCents", "余额（元）")}
+                {sorting("balanceCents", "枫叶")}
                 {sorting("days", "剩余天数")}
                 {sorting("trafficTotal", "总流量（GB）")}
                 {sorting("trafficUsed", "已用流量（GB）")}
@@ -165,7 +166,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
                       <small>{date(u.emailVerifiedAt)}</small>
                     )}
                   </td>
-                  <td>¥ {money(u.balanceCents)}</td>
+                  <td>{leaves(u.balanceCents)}枫叶</td>
                   <td
                     title={
                       u.expiresAt ? `到期：${date(u.expiresAt)}` : "尚未开通"
@@ -250,6 +251,12 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
         >
           <AsyncForm
             onSubmit={async () => {
+              if (editing.draft.password)
+                validateNewPassword(
+                  editing.draft.password,
+                  editing.draft.password,
+                  editing.draft.email,
+                );
               const patch = userPatch(
                 editing.user,
                 editing.baseline,
@@ -279,7 +286,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
                 value={editing.draft.password}
                 onChange={(e) => change("password", e.target.value)}
                 required={!editing.user}
-                minLength={12}
+                minLength={8}
                 autoComplete="new-password"
               />
               <Select
@@ -314,16 +321,16 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
             )}
             <div className="form-grid mt16">
               <Field
-                label="余额（元）"
+                label="枫叶"
                 type="number"
                 min="0"
-                step="0.01"
+                step="1"
                 value={editing.draft.balance}
                 onChange={(e) => change("balance", e.target.value)}
                 required
               />
               <Field
-                label="套餐剩余天数"
+                label="权益剩余天数"
                 type="number"
                 min="0"
                 step="any"
@@ -352,6 +359,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
                 step="any"
                 value={editing.draft.used}
                 onChange={(e) => change("used", e.target.value)}
+                hint="设为 0 保存时，将同步重置该用户所有线路的已用上行、下行流量计数。"
                 required
               />
               <Field
@@ -368,11 +376,11 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
                 label="调整原因"
                 value={editing.draft.reason}
                 onChange={(e) => change("reason", e.target.value)}
-                hint="调整余额时必填，会写入资金记录。"
+                hint="调整枫叶时必填，会写入枫叶明细。"
               />
             </div>
             <Notice>
-              余额以元、流量以十进制 GB 输入。手动添加用户不会自动验证邮箱。
+              枫叶以整数、流量以十进制 GB 输入。手动添加用户不会自动验证邮箱。
             </Notice>
           </AsyncForm>
         </Modal>
@@ -385,8 +393,10 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
           <AsyncForm
             label="重置密码"
             onSubmit={async (f) => {
+              const password = String(f.get("password"));
+              validateNewPassword(password, password, reset.email);
               await post(`/api/admin/users/${reset.id}/password`, {
-                password: f.get("password"),
+                password,
                 reason: f.get("reason"),
               });
               setReset(null);
@@ -397,7 +407,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
               label="新密码"
               name="password"
               type="password"
-              minLength={12}
+              minLength={8}
               required
               autoComplete="new-password"
             />

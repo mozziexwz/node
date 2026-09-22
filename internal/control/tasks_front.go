@@ -30,7 +30,7 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 		}
 		u := s.Users[userID]
 		if u == nil || u.Status != "active" || u.ExpiresAt <= now.UnixMilli() {
-			return errors.New("套餐权益已失效")
+			return errors.New("权益已失效")
 		}
 		if !t.confirmedProbe(userID, ssh) {
 			return errors.New("请先检查并确认前置机的真实 SSH 指纹")

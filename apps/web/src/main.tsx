@@ -22,6 +22,7 @@ import {
   KeyRound,
   Package,
   FileText,
+  Bell,
 } from "lucide-react";
 import { api, post, RecordData } from "./api";
 import {
@@ -52,9 +53,9 @@ const labels: Record<string, [string, typeof Server]> = {
   relay: ["配置中转服务器", Route],
   dd: ["DD 系统", RefreshCw],
   tasks: ["任务记录", Clock],
-  plans: ["套餐购买", Package],
-  wallet: ["余额与卡密", WalletIcon],
-  orders: ["我的订单", FileText],
+  plans: ["枫叶兑换", Package],
+  wallet: ["我的枫叶", WalletIcon],
+  orders: ["兑换记录", FileText],
   tickets: ["工单", Ticket],
   account: ["账户与邮箱验证", ShieldCheck],
   routes: ["中转线路", Route],
@@ -63,9 +64,9 @@ const labels: Record<string, [string, typeof Server]> = {
   users: ["用户管理", Users],
   agents: ["节点", Server],
   executors: ["控制执行机", Server],
-  cards: ["卡密管理", CreditCard],
+  cards: ["兑换码管理", CreditCard],
   invitations: ["邀请码管理", KeyRound],
-  payments: ["支付渠道", CreditCard],
+  payments: ["兑换渠道", CreditCard],
   settings: ["系统设置", SettingsIcon],
   backups: ["备份与恢复", Database],
   rules: ["用户中转", Route],
@@ -96,7 +97,7 @@ function Overview({
             ["users", "注册用户", "人"],
             ["tasks", "任务", "次"],
             ["routes", "隧道", "条"],
-            ["orders", "订单", "笔"],
+            ["orders", "兑换记录", "笔"],
           ].map(([k, n, u]) => (
             <div className="card stat" key={k}>
               <div className="stat-top">{n}</div>
@@ -146,7 +147,7 @@ function Overview({
         <div className="card mt24">
           <h3>首次配置</h3>
           <p className="muted mt8">
-            添加控制执行机后即可使用在线工具。添加节点、隧道和套餐后可提供增值服务。
+            添加控制执行机后即可使用在线工具。添加节点、隧道和权益后可提供捐赠权益转发服务。
           </p>
           <div className="actions mt16">
             {["executors", "agents", "routes", "plans", "settings"].map((k) => (
@@ -301,7 +302,7 @@ function App() {
       );
       break;
     case "tickets":
-      page = <Tickets />;
+      page = <Tickets admin={admin} />;
       break;
     case "routes":
       page = admin ? <RouteBuilder /> : <Routes user={user} />;
@@ -347,7 +348,7 @@ function App() {
   }
   const title =
     admin && view === "plans"
-      ? "套餐管理"
+      ? "权益管理"
       : admin && view === "routes"
         ? "隧道"
         : admin && view === "tasks"
@@ -379,7 +380,7 @@ function App() {
               {admin
                 ? "管理员"
                 : user.expiresAt > Date.now()
-                  ? "增值用户"
+                  ? "权益用户"
                   : "注册用户"}
             </small>
           </div>
@@ -398,13 +399,13 @@ function App() {
                   admin && k === "routes"
                     ? "隧道"
                     : admin && k === "plans"
-                      ? "套餐管理"
+                      ? "权益管理"
                       : admin && k === "home"
                         ? "运营概览"
                         : admin && k === "tasks"
                           ? "任务审计"
                           : admin && k === "orders"
-                            ? "订单管理"
+                            ? "兑换记录管理"
                             : n;
                 return (
                   <button
@@ -453,6 +454,7 @@ function App() {
             </div>
           </div>
           <div className="top-right">
+            <TicketBell navigate={navigate} />
             <BadgeLabel user={user} />
             <button onClick={() => navigate("account")}>{user.email}</button>
           </div>
@@ -483,13 +485,36 @@ function App() {
     </>
   );
 }
+function TicketBell({ navigate }: { navigate: (view: string) => void }) {
+  const { data, reload } = useData("/api/tickets");
+  const unread = Math.max(0, Number(data?.unreadCount) || 0);
+  useEffect(() => {
+    const timer = window.setInterval(reload, 15000);
+    window.addEventListener("msboost:tickets-changed", reload);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("msboost:tickets-changed", reload);
+    };
+  }, []);
+  return (
+    <button
+      className={`ticket-bell ${unread > 0 ? "has-unread" : ""}`}
+      aria-label={unread > 0 ? `工单消息，${unread}条未读` : "工单消息，无未读"}
+      title={unread > 0 ? `${unread} 条未读工单消息` : "暂无未读工单消息"}
+      onClick={() => navigate("tickets")}
+    >
+      <Bell size={19} fill={unread > 0 ? "currentColor" : "none"} />
+      {unread > 0 && <span>{unread > 99 ? "99+" : unread}</span>}
+    </button>
+  );
+}
 function BadgeLabel({ user }: { user: RecordData }) {
   return (
     <span className="badge orange">
       {user.role === "admin"
         ? "管理员"
         : user.expiresAt > Date.now()
-          ? "增值服务有效"
+          ? "捐赠权益有效"
           : "免费工具"}
     </span>
   );

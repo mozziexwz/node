@@ -203,7 +203,7 @@ for volume in app_data database_data caddy_data caddy_config; do ! local_docker 
 DOCKER_READY=1
 
 printf 'MSBOOST_IMAGE=%s\nMSBOOST_DOMAIN=localhost\nMSBOOST_SITE_ADDRESS=http://localhost\nPUBLIC_URL=http://localhost\nCOOKIE_SECURE=false\nADMIN_EMAIL=123456789@qq.com\nADMIN_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nMASTER_KEY=%s\n' \
-  "$IMAGE" "$(random_hex 24)" "$(random_hex 24)" "$(random_hex 32)" > "$WORK/test.env"
+  "$IMAGE" "$(random_admin_password)" "$(random_hex 24)" "$(random_hex 32)" > "$WORK/test.env"
 chmod 600 "$WORK/test.env"
 {
   printf 'services:\n  server:\n    labels:\n      msboost.validation: %s\n  database:\n    labels:\n      msboost.validation: %s\n  caddy:\n    ports: !override []\n    labels:\n      msboost.validation: %s\nnetworks:\n  control:\n    internal: true\n    labels:\n      msboost.validation: %s\nvolumes:\n' "$TEST_ID" "$TEST_ID" "$TEST_ID" "$TEST_ID"

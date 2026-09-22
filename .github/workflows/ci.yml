@@ -204,7 +204,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           export MSBOOST_IMAGE="ghcr.io/${REPOSITORY}:${VERSION}"
-          export ADMIN_EMAIL=12345678@qq.com ADMIN_PASSWORD="$(openssl rand -hex 24)"
+          export ADMIN_EMAIL=12345678@qq.com ADMIN_PASSWORD="$(openssl rand -hex 24 | sed -E 's/(.{5})/\1-/g')"
           export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
           export MSBOOST_DOMAIN=localhost MSBOOST_SITE_ADDRESS=http://localhost PUBLIC_URL=http://localhost COOKIE_SECURE=false
           umask 077

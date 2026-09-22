@@ -34,6 +34,7 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+` + bbrTuneScript + `
 if ! command -v python3 >/dev/null || ! command -v curl >/dev/null || ! command -v tar >/dev/null; then
   msboost_phase=dependencies
   [ -f /etc/os-release ]

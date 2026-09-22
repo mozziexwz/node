@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, RecordData } from "./api";
-import { Button, ErrorNotice, money, Notice } from "./ui";
+import { Button, ErrorNotice, leaves, Notice } from "./ui";
 
 // This is only an order selector. No payment status or signature from the
 // browser URL is trusted; the authenticated order API owns the result.
@@ -50,7 +50,7 @@ export function PaymentReturn({
         );
         if (!active) return;
         if (result.id !== orderID)
-          throw new Error("订单响应不匹配，请重新刷新");
+          throw new Error("兑换记录响应不匹配，请重新刷新");
         setOrder(result);
         orderHandler.current?.(result);
         setError("");
@@ -70,7 +70,7 @@ export function PaymentReturn({
           setOrder(null);
           setError(
             requestController.signal.aborted
-              ? "订单查询超时，请手动刷新"
+              ? "兑换记录查询超时，请手动刷新"
               : (e as Error).message,
           );
         }
@@ -87,29 +87,29 @@ export function PaymentReturn({
     };
   }, [orderID, revision]);
   const labels: Record<string, string> = {
-    pending: "等待付款通知",
-    paid: "已支付，权益已生效",
-    paid_review: "款项已收到，待人工核对",
-    expired: "订单已过期",
+    pending: "等待兑换结果",
+    paid: "兑换成功，权益已生效",
+    paid_review: "兑换结果待人工核对",
+    expired: "兑换记录已过期",
   };
   return (
     <section
       className="card"
       style={{ marginBottom: 24 }}
-      aria-label="支付返回结果"
+      aria-label="兑换返回结果"
     >
-      <h2>支付返回结果</h2>
+      <h2>兑换返回结果</h2>
       <p className="muted mt8">
-        返回支付页面不代表付款成功，以下结果仅来自本人订单的服务端记录。
+        返回兑换页面不代表兑换成功，以下结果仅来自本人兑换记录的服务端记录。
       </p>
       <p className="mono mt16" style={{ overflowWrap: "anywhere" }}>
-        订单号：{orderID}
+        兑换编号：{orderID}
       </p>
       <ErrorNotice error={error} />
       {order ? (
         <>
           <p className="mt16">
-            {order.plan?.name} · ¥ {money(order.amountCents)}
+            {order.plan?.name} · {leaves(order.amountCents)}枫叶
           </p>
           <Notice tone={order.state === "paid" ? "green" : "orange"}>
             {labels[order.state] || "状态待核对"}
@@ -117,12 +117,12 @@ export function PaymentReturn({
           </Notice>
           {order.state !== "paid" && (
             <p className="muted mt8">
-              若已扣款，请勿重复付款。可以刷新等待通知，或在工单中提供订单号请管理员核对。
+              若已扣款，请勿重复付款。可以刷新等待通知，或在工单中提供兑换编号请管理员核对。
             </p>
           )}
         </>
       ) : (
-        !error && <p className="mt16">正在查询付款状态…</p>
+        !error && <p className="mt16">正在查询兑换状态…</p>
       )}
       {stopped && (
         <p className="muted mt8">
@@ -134,7 +134,7 @@ export function PaymentReturn({
         disabled={busy}
         onClick={() => setRevision((v) => v + 1)}
       >
-        {busy ? "正在查询…" : "刷新付款状态"}
+        {busy ? "正在查询…" : "刷新兑换状态"}
       </Button>
     </section>
   );

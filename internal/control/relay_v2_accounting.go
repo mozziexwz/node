@@ -43,5 +43,5 @@ func (a *App) relayAccountingV2(w http.ResponseWriter, r *http.Request) {
 		}
 		return periods[i].EntitlementVersion < periods[j].EntitlementVersion
 	})
-	WriteJSON(w, http.StatusOK, map[string]any{"periods": periods, "reviewBytes": reviewBytes, "reviewSamples": reviewCount, "degradedAgents": degradedAgents, "message": "历史周期按原权益归属；待核对流量未混扣新套餐。跨月或时钟不确定区间须人工核对，当前未提供自动调账操作。"})
+	WriteJSON(w, http.StatusOK, map[string]any{"periods": periods, "reviewBytes": reviewBytes, "reviewSamples": reviewCount, "degradedAgents": degradedAgents, "message": "历史周期按原权益归属；待核对流量未混扣新权益。跨月或时钟不确定区间须人工核对，当前未提供自动调账操作。"})
 }

@@ -18,15 +18,15 @@ const { unitInteger, integerUnit, userDraft, userPatch, sortedUsers, DAY_MS } =
     "data:text/javascript;base64," + Buffer.from(output).toString("base64")
   );
 
-test("user money/GB conversions are exact and reject unsafe input", () => {
-  assert.equal(unitInteger("0.29", 2, "余额"), 29);
+test("user whole-leaf/GB conversions are exact and reject unsafe input", () => {
+  assert.equal(unitInteger("29", 0, "枫叶"), 29);
   assert.equal(unitInteger("12.000000001", 9, "流量"), 12000000001);
   assert.equal(integerUnit(12000000001, 9), "12.000000001");
   assert.equal(integerUnit(5000, 2), "50");
-  assert.throws(() => unitInteger("1.001", 2, "余额"));
+  assert.throws(() => unitInteger("1.1", 0, "枫叶"));
   assert.throws(() => unitInteger("9007199254740992", 0, "速率"));
   for (const value of ["-1", "NaN", "Infinity", "1e6", ""])
-    assert.throws(() => unitInteger(value, 2, "余额"));
+    assert.throws(() => unitInteger(value, 0, "枫叶"));
 });
 
 test("editing email never recomputes rounded entitlement deadline or traffic", () => {
@@ -35,7 +35,7 @@ test("editing email never recomputes rounded entitlement deadline or traffic", (
       email: "12345678@qq.com",
       role: "member",
       status: "active",
-      balanceCents: 29,
+      balanceCents: 2900,
       expiresAt: now + 3 * DAY_MS + 12345,
       trafficTotal: 12000000001,
       trafficUsed: 1,
@@ -77,11 +77,11 @@ test("editing days explicitly sets a deadline from save time and preserves exact
     patch = userPatch(
       user,
       baseline,
-      { ...baseline, days: "1.5", balance: "0.29" },
+      { ...baseline, days: "1.5", balance: "29" },
       now + 1000,
     );
   assert.equal(patch.expiresAt, now + 1000 + 1.5 * DAY_MS);
-  assert.equal(patch.balanceCents, 29);
+  assert.equal(patch.balanceCents, 2900);
   assert.throws(() =>
     userPatch(user, baseline, { ...baseline, total: "0", used: "1" }, now),
   );

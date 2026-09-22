@@ -17,7 +17,7 @@ import (
 )
 
 func TestAdminPasswordInput(t *testing.T) {
-	for _, password := range []string{strings.Repeat("x", 12), strings.Repeat("x", 72), strings.Repeat("密", 4), " space!$'\"password "} {
+	for _, password := range []string{strings.Repeat("x", 12), strings.Repeat("x", 72), strings.Repeat("密", 8), " space!$'\"password "} {
 		payload := "ADMIN@example.com\n" + password + "\n" + password + "\nRESET admin@example.com\n"
 		email, hash, err := readAdminPasswordInput(strings.NewReader(payload))
 		if err != nil || email != "admin@example.com" || bcrypt.CompareHashAndPassword(hash, []byte(password)) != nil {
