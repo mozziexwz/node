@@ -1,6 +1,6 @@
 # MSBOOST v0.2.4 · 补充说明 2.3 安装调试版
 
-本节随 v0.2.4 源码准备；只有对应标签的 CI、双架构镜像及 Release 资产全部发布成功后，下列安装/升级入口才可用。不会自动更新 msboost.de 或其他现有节点。
+v0.2.4 已发布：[标签 CI](https://github.com/mozziexwz/node/actions/runs/35633522811) 全绿，双架构镜像和 9 个 Release 资产通过独立下载与摘要校验。30 分钟耐久测试达到本轮验收标准。不会自动更新 msboost.de 或其他现有节点。
 
 - 允许正常及未验证会员找回密码，禁止管理员和禁用账户邮件找回；验证码限流、单次使用、失败次数及旧会话撤销已回归。
 - 管理脚本菜单12 / `msboost admin-password` 支持本机root交互修改已有管理员密码，不停止服务、不重建账号、不把新密码写入 `.env` 或命令行。
@@ -25,7 +25,7 @@ bash /root/msboost-install.sh
 
 本机 HTTP9项、浏览器35项、Go/脚本回归，以及临时Debian12的PG/Compose、真实GOST多跳/TLS、三拓扑5/30分钟、真实后端连续停站5/30分钟、撤销与丢ACK、受信恢复、私有磁盘故障和证书时间边界均有独立证据。完整记录及尚未完成项见[整改状态](https://github.com/mozziexwz/node/blob/v0.2.4/docs/supplement-2.3-status.md)与[验收矩阵](https://github.com/mozziexwz/node/blob/v0.2.4/docs/relay-v2-verification.md)。
 
-这不是全T01–T26、24小时、真实QQ投递、商户实扣、游戏登录、arm64真机或容量的生产合格声明。实际制品发布和部署结果须分别核验，不用源码测试替代。
+这不是全T01–T26、真实QQ投递、商户实扣、游戏登录、arm64真机或容量的生产合格声明。30 分钟耐久已通过，但不替代其他未测场景；实际制品发布和部署结果须分别核验，不用源码测试替代。
 
 ---
 

@@ -2,9 +2,9 @@
 
 MSBOOST 自托管控制面板：用户通过网页把 MSBOOST 脚本部署到自己的 VPS，管理员维护执行器、增值中转线路、套餐与余额、付款渠道及平台备份。系统重装使用固定版本的 [bin456789/reinstall](https://github.com/bin456789/reinstall) 脚本。
 
-本轮 **v0.2.4 候选版** 面向 Debian 12 VPS 安装调试；版本号和源码提交不代表镜像已发布，使用下方命令前须确认[对应 Release](https://github.com/mozziexwz/node/releases/tag/v0.2.4)及制品已可用。历史已在授权临时 VPS 验证节点部署/修复、真实认证直连、自备中转与前置多跳，以及受管卸载，见[历史排查记录](docs/acceptance-vps-20260913.md)。尚未完成真实商户付款、真实游戏登录及千人容量生产验收。网页依据已确认 UI、[v4.1 产品规划](docs/requirements/product-v4.1.md)和[补充说明](docs/requirements/supplement.md)实现；规划不是全部功能的生产验收证明。安全边界见[安全模型与限制](docs/security-and-limits.md)。
+**v0.2.4 已发布**，面向 Debian 12 VPS 安装调试；[正式 Release](https://github.com/mozziexwz/node/releases/tag/v0.2.4) 的双架构镜像与资产已校验，授权临时 VPS 已完成一键安装生命周期测试。生产控制面和客户节点不会自动升级。历史已在授权临时 VPS 验证节点部署/修复、真实认证直连、自备中转与前置多跳，以及受管卸载，见[历史排查记录](docs/acceptance-vps-20260913.md)。尚未完成真实商户付款、真实游戏登录及千人容量生产验收。网页依据已确认 UI、[v4.1 产品规划](docs/requirements/product-v4.1.md)和[补充说明](docs/requirements/supplement.md)实现；规划不是全部功能的生产验收证明。安全边界见[安全模型与限制](docs/security-and-limits.md)。
 
-本轮包括补充2.3的会员密码找回（允许未验证会员，禁止管理员）、管理员本机改密、邮件/文案，以及显式试验 v2 离线保留和受保护恢复维护。默认仍为 lease，不自动升级或重启独立 Agent；开启 keep_last 必须按整条线路在维护窗口迁移。实现、真实验证与未测边界见[整改状态](docs/supplement-2.3-status.md)及[验收矩阵](docs/relay-v2-verification.md)，不宣称24小时或生产全功能无感验收完成。
+本轮包括补充2.3的会员密码找回（允许未验证会员，禁止管理员）、管理员本机改密、邮件/文案，以及显式试验 v2 离线保留和受保护恢复维护。默认仍为 lease，不自动升级或重启独立 Agent；开启 keep_last 必须按整条线路在维护窗口迁移。三拓扑真实 GOST 与真实控制面停站的 30 分钟耐久测试已满足本轮验收标准；实现、其他真实验证与未测边界见[整改状态](docs/supplement-2.3-status.md)及[验收矩阵](docs/relay-v2-verification.md)，不宣称生产全功能无感验收完成。
 
 v0.2.3 按[补充说明 2.2](docs/supplement-2.2-changes.md) 增加资讯、置顶/排序、新建草稿附件，补齐支付回跳反馈与回调地址说明，支持远程 SSH 密码备份和[一键整站灾难备份/全新目标恢复](docs/disaster-backup.md)。历史 VPS 验收记录对应之前版本，不替代本轮新增功能的独立回归。
 
