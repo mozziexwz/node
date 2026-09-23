@@ -114,7 +114,7 @@ net.ipv4.conf.default.rp_filter=2
 
 本版实现使用专用 `/etc/sysctl.d/99-msboost-bbr.conf`，避免覆盖客户现有整份 `/etc/sysctl.conf`。脚本先执行 `sysctl -p /etc/sysctl.d/99-msboost-bbr.conf`，再执行 `sysctl --system`，最后逐项读取并核对上列全部 13 个参数；重复执行保持幂等。内核不支持、目录/文件安全检查失败、加载命令失败或任何一项实际值不匹配时，任务必须在 BBR 阶段失败，不能只检查两项或假报已配置。
 
-v0.3.1 已因部分供应商后置配置覆盖旧文件而改用 `zz-msboost-bbr.conf`，在全局重放后再次应用专用文件；本段保留 v0.3.0 的历史实现说明，当前行为以[部署指南](deployment.md)为准。
+v0.3.2 已因部分供应商后置配置覆盖旧文件而改用 `zz-msboost-bbr.conf`，在全局重放后再次应用专用文件；本段保留 v0.3.0 的历史实现说明，当前行为以[部署指南](deployment.md)为准。
 
 适用范围严格限定为上述客户自有目标 VPS，包括权益用户自己提供的前置机。控制执行机和本站捐赠权益节点不应用这些修改。
 

@@ -14,12 +14,12 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 fixture_suite=$(
   . /etc/os-release
   [[ ${ID:-} == debian && ${VERSION_ID:-} =~ ^(12|13)$ && -n ${VERSION:-} && -n ${NAME:-} && -n ${PRETTY_NAME:-} ]] || fail 'real Debian 12/13 os-release fixture is required'
-  [[ $VERSION != v0.3.1 ]] || fail 'OS fixture does not exercise release-version collision'
+  [[ $VERSION != v0.3.2 ]] || fail 'OS fixture does not exercise release-version collision'
   printf '%s' "$VERSION_CODENAME"
 )
 
 TEST_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
-readonly EXPECTED_VERSION=v0.3.1
+readonly EXPECTED_VERSION=v0.3.2
 source "$TEST_REPO/deploy/manage.sh"
 [[ $VERSION == "$EXPECTED_VERSION" ]] || fail 'default release version does not match this regression fixture'
 

@@ -1,7 +1,7 @@
 name: msboost
 services:
   server:
-    image: ${MSBOOST_IMAGE:-ghcr.io/mozziexwz/node:v0.3.1}
+    image: ${MSBOOST_IMAGE:-ghcr.io/mozziexwz/node:v0.3.2}
     restart: unless-stopped
     env_file: ${MSBOOST_ENV_FILE:-../.env}
     environment:

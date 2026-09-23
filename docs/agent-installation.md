@@ -4,7 +4,7 @@
 
 Agent 目标为 Debian 11/12/13 amd64/arm64，要求 Linux、root 和 systemd 247+；其中 Debian 11 已结束官方 LTS，公开生产节点建议 Debian 12/13。控制面安装本身只支持 Debian 12/13，详见[平台支持范围](platform-support.md)。控制面必须是可正常验证证书的 HTTPS 源站。临时 IP HTTP 网站仅适合界面调试，不能用于正式 Agent 注册和业务凭据传输。
 
-下面的 v0.3.1 固定入口须等对应标签、Release 资产和校验清单实际公开后再使用；源码中出现版本号不表示资产已经发布。网站升级不会自动升级、重启或改变任何独立 Agent；BBR 修复必须升级执行机 Agent 才能生效。
+下面的 v0.3.2 固定入口须等对应标签、Release 资产和校验清单实际公开后再使用；源码中出现版本号不表示资产已经发布。网站升级不会自动升级、重启或改变任何独立 Agent；BBR 修复必须升级执行机 Agent 才能生效。
 
 ## 1. 固定版本一键入口
 
@@ -14,15 +14,15 @@ Agent 目标为 Debian 11/12/13 amd64/arm64，要求 Linux、root 和 systemd 24
 apt-get update
 apt-get install -y ca-certificates curl tar
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/mozziexwz/node/v0.3.1/agent.sh \
+  https://raw.githubusercontent.com/mozziexwz/node/v0.3.2/agent.sh \
   -o /root/msboost-agent.sh
 bash /root/msboost-agent.sh \
   --capability executor \
   --server https://panel.example.com \
-  --version v0.3.1
+  --version v0.3.2
 ```
 
-节点将能力改为 `--capability relay`。控制面地址必须是完整 HTTPS 源站，不含路径、查询或用户名密码。v0.3.1 的 `agent.sh` 默认固定 `v0.3.1`；仅接受固定 `vX.Y.Z` 版本，不取得开发分支或 `latest` 运行程序。版本参数和资产是否实际发布是两件事，安装前必须核对 Release。
+节点将能力改为 `--capability relay`。控制面地址必须是完整 HTTPS 源站，不含路径、查询或用户名密码。v0.3.2 的 `agent.sh` 默认固定 `v0.3.2`；仅接受固定 `vX.Y.Z` 版本，不取得开发分支或 `latest` 运行程序。版本参数和资产是否实际发布是两件事，安装前必须核对 Release。
 
 脚本在真实终端显示隐藏输入提示，此时粘贴对应令牌并回车；令牌不会回显或进入命令行参数。节点注册令牌是短时单次用途，过期后在后台重新生成。执行器使用独立执行器令牌，二者不可混用。
 
@@ -67,7 +67,7 @@ bash /root/msboost-agent.sh \
 
 1. 网站开启维护模式，暂停新任务和规则。等待所有已接受的 `queued` / `running` 执行任务结束，再操作执行机。**不要在任务仍运行时禁用执行机、重置令牌或重启服务**：可能导致结果无法回传，已交付的 DD/清理不会被撤回。`unknown` / `interrupted` 任务先从 VPS 控制台核实，不能用升级代替结果确认。
 2. 确认控制面域名不变，私密备份 Agent 环境与安装备份；更新节点还需保留整个 `/var/lib/msboost-relay`，特别是 `relay-token.json` 和流量日志。节点更新会中断其连接，需安排维护窗口。
-3. 等 v0.3.1 正式资产可用后，使用上方固定 **`v0.3.1` 入口**安装同一种能力，复用对应的既有凭据。已有 keep_last 必须继续使用 keep_last；已有活动 lease 若要切换策略，必须明确传 `--offline-policy keep_last --acknowledge-relay-restart`，见下节。不要删除所有权标记、状态或令牌来强制重装。执行机可复用 `/etc/msboost-executor.env` 中的执行机令牌，以隐藏输入或仅含令牌的 `0600` 私有文件提供；**完整 `.env` 不能直接作为 `--token-file`**，也不要 `source` 或公开打印环境文件。
+3. 等 v0.3.2 正式资产可用后，使用上方固定 **`v0.3.2` 入口**安装同一种能力，复用对应的既有凭据。已有 keep_last 必须继续使用 keep_last；已有活动 lease 若要切换策略，必须明确传 `--offline-policy keep_last --acknowledge-relay-restart`，见下节。不要删除所有权标记、状态或令牌来强制重装。执行机可复用 `/etc/msboost-executor.env` 中的执行机令牌，以隐藏输入或仅含令牌的 `0600` 私有文件提供；**完整 `.env` 不能直接作为 `--token-file`**，也不要 `source` 或公开打印环境文件。
 4. 已注册节点更新时保持原控制面和状态目录。运行程序优先读取 `/var/lib/msboost-relay/relay-token.json`，不重新注册。bootstrap 仍要求格式正确的 enrollment 输入，可沿用受保护 `/etc/msboost-relay.env` 的原值作为安装输入；但已消费的注册令牌不能在状态丢失后再次注册。状态缺失、损坏或持久令牌被撤销时，应停止普通升级，检查备份和节点关联，由管理员安排明确重新注册，不能盲目清空目录。
 5. 安装器校验 Release、备份旧程序/环境/unit 并重启本次能力。随后检查本机服务、后台在线与实际同步。同机另一个能力也须在确认无执行任务后重启并核验。最后退出维护，以无破坏性任务验证交付；不要把 DD 或真实清理当作自动升级自测。
 
@@ -112,7 +112,7 @@ journalctl -u msboost-relay --since '10 minutes ago' --no-pager
 
 本地服务 `active`、心跳或监听 ACK 仅说明对应阶段正常，不证明公网游戏路径、多跳计量或 DD 重装成功。开放业务前需在自有可丢弃 VPS 单独验证安装/修复/DD、keep_last 管理失联保留、显式 lease 到期失效、Agent 重启、客户端认证和实际计量，记录结果。
 
-网站的 `msboost uninstall`/`purge` 不处理独立 Agent 或客户 VPS 软件；v0.3.1 新装仍默认 keep_last，不把控制面失联当作撤销，仍需受信明确停止或独立节点维护与核对。显式 lease 才会在租约到期后停止。Agent 运维与控制面数据清理是分开的操作。
+网站的 `msboost uninstall`/`purge` 不处理独立 Agent 或客户 VPS 软件；v0.3.2 新装仍默认 keep_last，不把控制面失联当作撤销，仍需受信明确停止或独立节点维护与核对。显式 lease 才会在租约到期后停止。Agent 运维与控制面数据清理是分开的操作。
 
 控制执行机和本站捐赠权益 Relay Agent 的安装过程不会应用客户 VPS 的 BBR 参数。该配置仅由免费工具任务在客户自有的 MSBOOST 目标、中转服务器或自备前置机上执行，不能通过安装 Agent 间接修改这些受管服务器。
 

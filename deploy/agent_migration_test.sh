@@ -169,6 +169,9 @@ done
 # Exercise the real bootstrap's argument forwarding with synthetic release
 # assets. Its network, platform and staging entrypoints are exported mocks.
 bootstrap_assets="$TEST_WORK/assets"; mkdir "$bootstrap_assets"
+bootstrap_version=$(sed -nE 's/^version=(v[0-9]+\.[0-9]+\.[0-9]+)$/\1/p' "$TEST_REPO/agent.sh")
+[[ -n $bootstrap_version ]] || test_fail 'missing fixed Agent bootstrap version'
+export bootstrap_version
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$BOOTSTRAP_ARGS"\n' > "$bootstrap_assets/install-agent.sh"
 printf synthetic-agent > "$bootstrap_assets/msboost-agent-linux-amd64"
 (cd "$bootstrap_assets"; sha256sum install-agent.sh msboost-agent-linux-amd64 | sed 's/ \*/  /' > SHA256SUMS)
@@ -182,7 +185,7 @@ for mode in default-relay explicit-lease explicit-keep-last executor invalid-pol
     curl() {
       local url='' destination=''
       while (($#)); do case $1 in https://*) url=$1; shift ;; -o) destination=$2; shift 2 ;; *) shift ;; esac; done
-      [[ $url == https://github.com/mozziexwz/node/releases/download/v0.3.0/* && $destination == "$bootstrap_stage/"* ]] || exit 81
+      [[ $url == "https://github.com/mozziexwz/node/releases/download/$bootstrap_version/"* && $destination == "$bootstrap_stage/"* ]] || exit 81
       cp "$bootstrap_assets/${url##*/}" "$destination"
     }
     export -f uname id mktemp curl

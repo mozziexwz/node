@@ -1,25 +1,25 @@
 # MSBOOST 部署与运维
 
-控制面目标为 **Debian 12/13，amd64 或 arm64**。v0.3.1 的标签、Release 资产、双架构镜像和 CI 全部成功后，安装器才从公开 Release 下载部署包并校验 SHA256，默认使用预构建镜像 `ghcr.io/mozziexwz/node:v0.3.1`，不要求在 VPS 编译 Go 或网页。候选源码中的版本号本身不等于已经发布。客户 VPS 与 DD 的不同范围见[平台支持说明](platform-support.md)。
+控制面目标为 **Debian 12/13，amd64 或 arm64**。v0.3.2 的标签、Release 资产、双架构镜像和 CI 全部成功后，安装器才从公开 Release 下载部署包并校验 SHA256，默认使用预构建镜像 `ghcr.io/mozziexwz/node:v0.3.2`，不要求在 VPS 编译 Go 或网页。候选源码中的版本号本身不等于已经发布。客户 VPS 与 DD 的不同范围见[平台支持说明](platform-support.md)。
 
 本文按当前 `install.sh`、`deploy/manage.sh`、Compose 和 `agent.sh` 编写。安装优先从 GHCR 拉取镜像；GHCR 包暂为私有或访问失败时，使用同版本 Release 的预构建镜像归档。两种渠道都不可用才明确失败，不会静默改为源码构建。实际发布状态以对应版本资产为准；本文不声明客户 VPS、支付或游戏链路已经通过验收。
 
 ## 1. Debian 12/13 一键安装
 
-推荐在全新 Debian 12/13 VPS 上以 root 安装 v0.3.1。先将真实域名解析到该 VPS，开放 TCP 80、443，并确保服务器能够访问 Docker、GitHub 和 GHCR。安装目录固定为 `/opt/msboost`，Compose 项目名为 `msboost`。下列入口只应在 v0.3.1 Release 及对应资产确实公开后使用；发布前需要立即安装时仍使用已发布的 v0.3.0 固定入口。
+推荐在全新 Debian 12/13 VPS 上以 root 安装 v0.3.2。先将真实域名解析到该 VPS，开放 TCP 80、443，并确保服务器能够访问 Docker、GitHub 和 GHCR。安装目录固定为 `/opt/msboost`，Compose 项目名为 `msboost`。下列入口只应在 v0.3.2 Release 及对应资产确实公开后使用；发布前需要立即安装时仍使用已发布的 v0.3.0 固定入口。
 
 ```sh
 apt-get update
 apt-get install -y ca-certificates curl tar
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/mozziexwz/node/v0.3.1/install.sh \
+  https://raw.githubusercontent.com/mozziexwz/node/v0.3.2/install.sh \
   -o /root/msboost-install.sh
 bash /root/msboost-install.sh install \
   --domain panel.example.com \
   --email 12345678@qq.com
 ```
 
-将示例域名、邮箱替换为自己的值。执行 `bash /root/msboost-install.sh` 不带动作参数时显示交互菜单。v0.3.1 入口的首次安装默认版本为 `v0.3.1`；也可传入明确的 `--version vX.Y.Z`。
+将示例域名、邮箱替换为自己的值。执行 `bash /root/msboost-install.sh` 不带动作参数时显示交互菜单。v0.3.2 入口的首次安装默认版本为 `v0.3.2`；也可传入明确的 `--version vX.Y.Z`。
 
 安装入口下载该 Release 的 `msboost-deploy-vX.Y.Z.tar.gz` 和 `SHA256SUMS`，核验部署包哈希后才解包执行；拒绝归档里的绝对路径、路径穿越、链接和设备文件。清单与部署包共享 GitHub HTTPS/Release 信任边界，SHA256 不等于独立发布签名。
 
@@ -99,7 +99,7 @@ curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexw
 源码构建必须显式选择：
 
 ```sh
-msboost upgrade --version v0.3.1 --build
+msboost upgrade --version v0.3.2 --build
 ```
 
 该路径使用校验过的完整 Release 源码，叠加 `deploy/compose.build.yml`，为本次构建生成唯一的 `msboost-local:版本-随机后缀` 标签，会占用更多资源。GHCR/Release 镜像下载失败都不会自动触发编译。`repair` 不执行构建；本地构建镜像丢失时需明确重新构建该版本。
@@ -131,8 +131,8 @@ Compose 默认运行预构建 MSBOOST、PostgreSQL 17 和 Caddy。仅 Caddy 的 
 
 | 字段 | 用途 |
 |---|---|
-| `MSBOOST_VERSION` | 固定目标版本；v0.3.1 入口默认 `v0.3.1`，是否已发布仍以 Release 资产为准 |
-| `MSBOOST_IMAGE` | v0.3.1 发布后默认从 `ghcr.io/mozziexwz/node:v0.3.1` 获取，取得后固定 digest；归档方式记录独立本地标签 |
+| `MSBOOST_VERSION` | 固定目标版本；v0.3.2 入口默认 `v0.3.2`，是否已发布仍以 Release 资产为准 |
+| `MSBOOST_IMAGE` | v0.3.2 发布后默认从 `ghcr.io/mozziexwz/node:v0.3.2` 获取，取得后固定 digest；归档方式记录独立本地标签 |
 | `MSBOOST_DATABASE_NAME` | 默认 `msboost`；仅在离线恢复核验全新数据库后手工切换。升级快照也备份这个选定库，不改 PostgreSQL 初始数据库名 |
 | `MSBOOST_IMAGE_ID` | 归档方式记录完整 `sha256:...` 镜像 ID，启动前与标签解析结果核对 |
 | `POSTGRES_IMAGE` / `CADDY_IMAGE` | 首次取得后保存不可变 digest，普通应用升级保留它们 |
@@ -158,15 +158,15 @@ Compose 通过分离数据库字段构造 PostgreSQL URL。私有容器网络使
 
 ```sh
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/mozziexwz/node/v0.3.1/agent.sh \
+  https://raw.githubusercontent.com/mozziexwz/node/v0.3.2/agent.sh \
   -o /root/msboost-agent.sh
 bash /root/msboost-agent.sh \
   --capability executor \
   --server https://panel.example.com \
-  --version v0.3.1
+  --version v0.3.2
 ```
 
-节点改为 `--capability relay`，使用独立节点注册令牌。v0.3.1 全新 Relay 安装默认 `keep_last`；如确需兼容旧短租约，须显式传 `--offline-policy lease`。已有活动 lease 服务切换为 keep_last 会重启 Agent/GOST，必须在维护窗口追加 `--acknowledge-relay-restart`。默认隐藏终端输入令牌，不把秘密放进 URL 或命令参数。脚本从同版本 Release 下载 Agent、安装脚本与 SHA256 清单，校验后安装 systemd 服务。网站升级不会自动更新或切换这些独立 Agent。
+节点改为 `--capability relay`，使用独立节点注册令牌。v0.3.2 全新 Relay 安装默认 `keep_last`；如确需兼容旧短租约，须显式传 `--offline-policy lease`。已有活动 lease 服务切换为 keep_last 会重启 Agent/GOST，必须在维护窗口追加 `--acknowledge-relay-restart`。默认隐藏终端输入令牌，不把秘密放进 URL 或命令参数。脚本从同版本 Release 下载 Agent、安装脚本与 SHA256 清单，校验后安装 systemd 服务。网站升级不会自动更新或切换这些独立 Agent。
 
 建议 Executor、节点分机部署。客户 VPS 是任务目标，不需安装整套网站。节点上线后先设置地址/端口范围，再建立隧道；心跳或监听 ACK 不等同于客户端到端连通。
 

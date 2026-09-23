@@ -17,7 +17,7 @@ usage() {
 令牌文件必须归 root 所有，权限 0600 或更严格，只包含对应角色的注册令牌。
 安装过程不会回显令牌。GOST 固定为已审核的 3.3.0，不使用 latest。
 只更新带 MSBOOST 所有权标记的安装；服务启动失败时尝试恢复原程序、服务与配置。
-v0.3.1 新装 relay 默认启用 keep_last；可显式 --offline-policy lease 兼容旧链。
+v0.3.2 新装 relay 默认启用 keep_last；可显式 --offline-policy lease 兼容旧链。
 已有 lease 服务切换 keep_last 还需 --acknowledge-relay-restart。
 首次升级会重启 Agent/GOST 并中断原连接；新模式以整条线路节点实际确认生效。
 HELP
