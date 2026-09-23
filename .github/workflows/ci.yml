@@ -36,10 +36,12 @@ jobs:
         run: |
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           bash deploy/version_test.sh "$VERSION"
-      - name: Verify platform detection on real Debian 12 without deploying
+      - name: Verify platform detection on real Debian 12 and 13 without deploying
         run: |
-          docker pull debian:12
-          docker run --rm --network none --mount "type=bind,source=$PWD,target=/src,readonly" debian:12 bash /src/deploy/platform_test.sh
+          for version in 12 13; do
+            docker pull "debian:$version"
+            docker run --rm --network none --mount "type=bind,source=$PWD,target=/src,readonly" "debian:$version" bash /src/deploy/platform_test.sh
+          done
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'

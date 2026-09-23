@@ -1444,7 +1444,7 @@ func (a *App) relayDiagnose(w http.ResponseWriter, r *http.Request) {
 	}
 	path := fmt.Sprintf("入口(%s)->目标(MSBOOST)", rule.RouteName)
 	failure := func(latency int64, message string) {
-		WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "failed", "latencyMs": latency, "packetLossPercent": 100, "scope": "tcp_path", "error": message})
+		WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "failed", "latencyMs": latency, "scope": "tcp_path", "error": message})
 	}
 	if !runtimeReady {
 		failure(0, "线路节点尚未全部确认在线，无法证明到达目标 MSBOOST")
@@ -1472,7 +1472,7 @@ func (a *App) relayDiagnose(w http.ResponseWriter, r *http.Request) {
 		failure(latency, probeErr.Error())
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "success", "latencyMs": latency, "packetLossPercent": 0, "scope": "tcp_path", "latencyScope": "entry_connect", "message": "仅为控制面视角的 TCP 路径样本；延迟是入口建连时间，不验证每跳/Mieru/游戏协议", "error": ""})
+	WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "success", "latencyMs": latency, "scope": "tcp_path", "latencyScope": "entry_connect", "message": "入口与目标分别完成了一次网络连接检查；未验证整条中转链或游戏实际连接。", "error": ""})
 }
 
 // relayDiagnosticTarget returns only an immutable, provision-time resolved

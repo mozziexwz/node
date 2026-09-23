@@ -4,4 +4,4 @@ services:
     build:
       context: ..
       args:
-        VERSION: ${MSBOOST_VERSION:-v0.3.0}
+        VERSION: ${MSBOOST_VERSION:-v0.3.1}

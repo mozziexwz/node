@@ -17,7 +17,7 @@ usage() {
 令牌文件必须归 root 所有，权限 0600 或更严格，只包含对应角色的注册令牌。
 安装过程不会回显令牌。GOST 固定为已审核的 3.3.0，不使用 latest。
 只更新带 MSBOOST 所有权标记的安装；服务启动失败时尝试恢复原程序、服务与配置。
-v0.3.0 新装 relay 默认启用 keep_last；可显式 --offline-policy lease 兼容旧链。
+v0.3.1 新装 relay 默认启用 keep_last；可显式 --offline-policy lease 兼容旧链。
 已有 lease 服务切换 keep_last 还需 --acknowledge-relay-restart。
 首次升级会重启 Agent/GOST 并中断原连接；新模式以整条线路节点实际确认生效。
 HELP
@@ -78,6 +78,19 @@ relay_service_state_dir() {
     *) return 1 ;;
   esac
 }
+
+agent_supported_debian() (
+  [[ -r /etc/os-release ]] || return 1
+  local ID VERSION_ID VERSION_CODENAME expected
+  . /etc/os-release
+  case ${VERSION_ID:-} in
+    11) expected=bullseye ;;
+    12) expected=bookworm ;;
+    13) expected=trixie ;;
+    *) return 1 ;;
+  esac
+  [[ ${ID:-} == debian && ${VERSION_CODENAME:-} == "$expected" ]]
+)
 
 relay_unit_uses_v2() {
   local line section='' count=0 policy=0 role=0 state_path=0 gost_path=0 i
@@ -197,6 +210,7 @@ step '检查参数、系统与私有令牌文件'
 [[ -f "$token_file" && ! -L "$token_file" ]] || fail '请提供私有的普通 --token-file 文件。'
 [[ "$(uname -s)" == Linux ]] || fail '该 systemd 安装器仅支持 Linux。'
 [[ "$(id -u)" == 0 ]] || fail '请以 root 运行。'
+agent_supported_debian || fail 'Agent 仅支持 Debian 11/12/13，不支持其他发行版或版本代号不一致的系统。'
 command -v systemctl >/dev/null || fail '系统缺少 systemd。'
 [[ "$(systemctl --version | awk 'NR==1 {print $2}')" -ge 247 ]] || fail '需要 systemd 247 或更高版本。'
 command -v flock >/dev/null || fail '系统缺少 util-linux flock；拒绝无锁安装。'

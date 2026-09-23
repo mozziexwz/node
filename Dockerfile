@@ -11,7 +11,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-ARG VERSION=0.3.0-dev
+ARG VERSION=0.3.1-dev
 ARG TARGETOS
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /out/msboost-server ./cmd/server && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/msboost-agent ./cmd/agent && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/msboost-restore ./cmd/restore
@@ -23,6 +23,10 @@ WORKDIR /app
 COPY --from=go /out/ /usr/local/bin/
 COPY --from=web /src/apps/web/dist/ ./apps/web/dist/
 COPY installers/ ./installers/
+# Release archives, private source staging and Git checkouts may carry
+# different file modes. The unprivileged server only reads these public,
+# checksum-pinned scripts; make that permission deterministic in the image.
+RUN chmod -R a+rX /app/installers
 USER 10001:10001
 ENV LISTEN_ADDR=0.0.0.0:8080 DATA_DIR=/app/data WEB_DIR=/app/apps/web/dist
 EXPOSE 8080

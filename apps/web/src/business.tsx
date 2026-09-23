@@ -20,7 +20,7 @@ import {
 } from "./ui";
 import { ConfigUpload, SSHFields, SSH, prepareSSH } from "./tools";
 import { PaymentReturn } from "./payment-return";
-import { relayNeedsRecovery, relayStatus } from "./relay-status";
+import { relayMemberLabel, relayNeedsRecovery } from "./relay-status";
 import { RelayStatusDetail } from "./relay-status-view";
 
 export function Account({
@@ -105,7 +105,7 @@ export function Wallet({ onRefresh }: { onRefresh: () => void }) {
       <div className="grid2">
         <div className="card">
           <div className="eyebrow">可用枫叶</div>
-          <div className="stat-value">{leaves(data?.balanceCents)}枫叶</div>
+          <div className="stat-value">{leaves(data?.balanceCents)} 个</div>
         </div>
         <div className="card">
           <h3>枫叶兑换</h3>
@@ -147,8 +147,8 @@ export function Wallet({ onRefresh }: { onRefresh: () => void }) {
               l.reason ||
               l.kind,
             l.cardCode ? <code>{l.cardCode}</code> : "—",
-            `${l.amountCents >= 0 ? "+" : "-"} ${leaves(Math.abs(l.amountCents))}枫叶`,
-            `${leaves(l.balanceAfter)}枫叶`,
+            `${l.amountCents >= 0 ? "+" : "-"} ${leaves(Math.abs(l.amountCents))} 个`,
+            `${leaves(l.balanceAfter)} 个`,
           ])}
         />
       </div>
@@ -224,7 +224,7 @@ export function Plans({
                 </div>
               </div>
               <div className="price num">
-                枫叶{leaves(p.priceCents)}
+                {leaves(p.priceCents)} 个枫叶
                 <span>/{p.days}天</span>
               </div>
               <p className="muted">{gb(p.trafficBytes)} GB 总流量额度</p>
@@ -295,7 +295,7 @@ export function Plans({
               onRefresh();
             }}
           >
-            <p className="price">枫叶{leaves(selected.priceCents)}</p>
+            <p className="price">{leaves(selected.priceCents)} 个枫叶</p>
             <Select label="兑换方式" name="channelId">
               <option value="balance">枫叶</option>
               {array(channels, "channels").map((c) => (
@@ -391,7 +391,7 @@ export function Orders({
             <span className="mono">{o.id}</span>,
             ...(admin ? [o.userEmail || o.userId] : []),
             o.plan?.name,
-            `${leaves(o.amountCents)}枫叶`,
+            `${leaves(o.amountCents)} 个`,
             <>
               <Badge tone={o.state === "paid_review" ? "red" : "orange"}>
                 {(
@@ -540,12 +540,16 @@ export function Routes({ user }: { user: RecordData }) {
                 <div>
                   <small>配置状态</small>
                   <b>
-                    {rule ? relayStatus(rule, route.online).label : "尚未配置"}
+                    {rule ? relayMemberLabel(rule, route.online) : "尚未配置"}
                   </b>
                 </div>
               </div>
               {rule && (
-                <RelayStatusDetail rule={rule} routeOnline={route.online} />
+                <RelayStatusDetail
+                  rule={rule}
+                  routeOnline={route.online}
+                  member
+                />
               )}
               <div className="route-action">
                 {rule ? (
@@ -709,27 +713,19 @@ export function Routes({ user }: { user: RecordData }) {
           </div>
           <div className="mini-grid mt24">
             <div className="card stat">
-              <div className="stat-top">状态</div>
+              <div className="stat-top">网络初检</div>
               <div className="stat-value">
                 {diagnosis.result.status === "success" ||
                 diagnosis.result.status === "ok" ||
                 diagnosis.result.success === true
-                  ? "成功"
-                  : "失败"}
+                  ? "初检通过"
+                  : "初检失败"}
               </div>
             </div>
             <div className="card stat">
-              <div className="stat-top">延迟(ms)</div>
+              <div className="stat-top">入口连接延迟(ms)</div>
               <div className="stat-value">
                 {diagnosis.result.latencyMs ?? "—"}
-              </div>
-            </div>
-            <div className="card stat">
-              <div className="stat-top">丢包率</div>
-              <div className="stat-value">
-                {diagnosis.result.packetLossPercent == null
-                  ? "—"
-                  : `${Number(diagnosis.result.packetLossPercent).toFixed(2)}%`}
               </div>
             </div>
           </div>
@@ -738,6 +734,9 @@ export function Routes({ user }: { user: RecordData }) {
               <Notice tone="orange">{diagnosis.result.message}</Notice>
             </div>
           )}
+          <p className="muted mt16">
+            此结果只反映本次网络抽样；请在客户端实际测试游戏连接。
+          </p>
           {diagnosis.result.error && (
             <div className="mt16">
               <Notice tone="red">{diagnosis.result.error}</Notice>
@@ -782,8 +781,8 @@ export function Traffic({ status = false }: { status?: boolean }) {
         title={status ? "线路状态" : "流量统计"}
         sub={
           status
-            ? "显示最近一次 Agent 上报状态。"
-            : "全部线路共用额度，多级链只在一个计费点计量。"
+            ? "显示最近一次线路状态，实际连接请以客户端测试为准。"
+            : "所有线路共享同一流量额度。"
         }
       >
         <Button onClick={reload}>刷新</Button>

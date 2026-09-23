@@ -4,15 +4,15 @@ set -Eeuo pipefail
 umask 077
 
 readonly REPOSITORY=mozziexwz/node
-readonly INITIAL_VERSION=v0.3.0
+readonly INITIAL_VERSION=v0.3.1
 
 bootstrap_help() {
   printf '%s\n' \
-    'MSBOOST 网站部署管理（Debian 12，需 root 权限）' \
+    'MSBOOST 网站部署管理（Debian 12/13，需 root 权限）' \
     '  bash install.sh                       中文交互菜单' \
     '  bash install.sh install --domain panel.example.com --email 12345678@qq.com' \
     '  bash install.sh install --ip 203.0.113.10 --email 12345678@qq.com --allow-insecure-http' \
-    '  bash install.sh upgrade [--version v0.3.0]' \
+    '  bash install.sh upgrade [--version v0.3.1]' \
     '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  bash install.sh repair|status|logs|uninstall|purge' \
     '  bash install.sh admin-password        本机交互修改已有管理员密码（不停止服务）' \
@@ -65,7 +65,7 @@ bootstrap_main() {
       *) forward+=("$1"); shift ;;
     esac
   done
-  [[ $(id -u) == 0 && $(uname -s) == Linux ]] || { printf '%s\n' '请在目标 Debian 12 服务器以 root 运行；不会部署到你的本地浏览器。' >&2; return 1; }
+  [[ $(id -u) == 0 && $(uname -s) == Linux ]] || { printf '%s\n' '请在目标 Debian 12/13 服务器以 root 运行；不会部署到你的本地浏览器。' >&2; return 1; }
   if [[ $action != install && $action != upgrade && $action != disaster-restore ]]; then
     [[ -f /opt/msboost/.managed-by-msboost && ! -L /opt/msboost && -f /opt/msboost/deploy/manage.sh ]] || { printf '%s\n' '未发现此安装器管理的 /opt/msboost' >&2; return 1; }
     exec bash /opt/msboost/deploy/manage.sh "$action" "${forward[@]}"

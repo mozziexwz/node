@@ -496,10 +496,14 @@ export function TaskDetail({
           </Notice>
         ) : null}
       </div>
-      {current.hops && (
-        <pre className="code-panel mt16">
-          {JSON.stringify(current.hops, null, 2)}
-        </pre>
+      {Array.isArray(current.hops) && current.hops.length > 0 && (
+        <Table
+          headers={["中转顺序", "连接路径"]}
+          rows={[...current.hops].reverse().map((hop: RecordData, index) => [
+            `第 ${index + 1} 段`,
+            `${hop.fromHost}:${hop.fromPort} → ${hop.toHost}:${hop.toPort}`,
+          ])}
+        />
       )}
       {config != null && (
         <div className="mt24">

@@ -16,7 +16,7 @@ import (
 )
 
 func TestRelayServiceCredentialNameAndExhaustionDiagnostic(t *testing.T) {
-	for _, field := range []string{"DynamicUser=true", "LoadCredential=config.json:${confdir}/config.json", "-C %d/config.json"} {
+	for _, field := range []string{"DynamicUser=true", "LoadCredential=config.json:${confdir}/config.json", "-C \\${CREDENTIALS_DIRECTORY}/config.json"} {
 		if !strings.Contains(relayInstallScript, field) {
 			t.Fatalf("missing protected JSON credential contract: %s", field)
 		}

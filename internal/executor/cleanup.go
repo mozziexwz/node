@@ -201,7 +201,7 @@ try:
             if not set(os.listdir(conf)).issubset(allowed) or not os.path.isfile(conf+'/config.json'): reject()
             if os.path.exists(conf+'/managed-by') and read(conf+'/managed-by').strip()!='msboost-free-v1': reject()
             validate(unitpath)
-            match=re.search(r'^ExecStart=/usr/local/libexec/msboost-free/gost-([a-f0-9]{64}) -C %d/(config(?:\.json)?)$',read(unitpath),re.M)
+            match=re.search(r'^ExecStart=/usr/local/libexec/msboost-free/gost-([a-f0-9]{64}) -C (?:%d|\$\{CREDENTIALS_DIRECTORY\})/(config(?:\.json)?)$',read(unitpath),re.M)
             if not match: reject()
             # Accept only the exact legacy pair or exact fixed JSON pair. The
             # credential ID must equal the filename used by ExecStart.

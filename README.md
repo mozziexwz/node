@@ -2,7 +2,9 @@
 
 MSBOOST 自托管控制面板：用户通过网页把 MSBOOST 脚本部署到自己的 VPS，管理员维护执行器、捐赠中转线路、权益与枫叶、兑换渠道及平台备份。系统重装使用固定版本的 [bin456789/reinstall](https://github.com/bin456789/reinstall) 脚本。
 
-**v0.3.0 是否可安装，以[正式 Release](https://github.com/mozziexwz/node/releases/tag/v0.3.0)的资产、双架构镜像及 CI 成功状态为准，不能只看源码版本号。** 若该版本尚未完整发布，请继续使用已校验的 [v0.2.4](https://github.com/mozziexwz/node/releases/tag/v0.2.4)。生产控制面和现有 Agent 不会自动升级。历史已在授权临时 VPS 验证节点部署/修复、真实认证直连、自备中转与前置多跳，以及受管卸载，见[历史排查记录](docs/acceptance-vps-20260913.md)。尚未完成真实商户付款、真实游戏登录及千人容量生产验收。网页依据已确认 UI、[v4.1 产品规划](docs/requirements/product-v4.1.md)和[补充说明](docs/requirements/supplement.md)实现；规划不是全部功能的生产验收证明。安全边界见[安全模型与限制](docs/security-and-limits.md)。
+**v0.3.1 是否可安装，以[正式 Release](https://github.com/mozziexwz/node/releases/tag/v0.3.1)的资产、双架构镜像及 CI 成功状态为准，不能只看源码版本号。** 若该版本尚未完整发布，请继续使用已发布的 [v0.3.0](https://github.com/mozziexwz/node/releases/tag/v0.3.0)。控制面和现有 Agent 不会自动升级。历史已在授权临时 VPS 验证节点部署/修复、真实认证直连、自备中转与前置多跳，以及受管卸载，见[历史排查记录](docs/acceptance-vps-20260913.md)。尚未完成真实商户付款、真实游戏登录及千人容量生产验收。网页依据已确认 UI、[v4.1 产品规划](docs/requirements/product-v4.1.md)和[补充说明](docs/requirements/supplement.md)实现；规划不是全部功能的生产验收证明。安全边界见[安全模型与限制](docs/security-and-limits.md)。
+
+v0.3.1 修复部分供应商 sysctl 配置覆盖 BBR 参数的问题，优化会员端枫叶单位、线路状态与诊断说明，并扩展控制面安装到 Debian 13。控制面支持 Debian 12/13；客户 VPS 免费部署工具验收目标为 Debian 11/12/13；网站 DD 功能仍固定重装 Debian 12。Debian 11 已结束官方 LTS，不建议用于公开生产服务，详见[平台支持说明](docs/platform-support.md)。
 
 v0.3.0 落实第三次最终版补充说明 2.4：密码统一为至少 8 字符并增加弱密码约束；会员端和后台统一“权益、兑换、枫叶、兑换码、兑换记录”用语；正常权益可限制为仅当前有效同权益用户续兑，体验权益每位用户终身仅一次；线路支持稳定排序、随机配置端口、双向流量及重置联动和一次性 TCP 路径诊断；增加 L1–L3 权益/线路准入、一键清理指定线路客户规则、工单未读铃铛及文章分类/图钉展示；免费工具仅在客户自有目标 VPS 应用规定的 BBR/FQ 参数。新安装的 Relay 默认使用 `keep_last`；显式 `--offline-policy lease` 仅作为旧链兼容。已有活动 lease 服务切换策略会重启 Agent/GOST，必须传入 `--acknowledge-relay-restart`。建议在全新 Debian 12 VPS 安装 v0.3.0，不自动改动生产站点或现有 Agent。详细状态见[补充说明 2.4 整改状态](docs/supplement-2.4-status.md)。
 
@@ -10,17 +12,17 @@ v0.3.0 落实第三次最终版补充说明 2.4：密码统一为至少 8 字符
 
 v0.2.3 按[补充说明 2.2](docs/supplement-2.2-changes.md) 增加资讯、置顶/排序、新建草稿附件，补齐支付回跳反馈与回调地址说明，支持远程 SSH 密码备份和[一键整站灾难备份/全新目标恢复](docs/disaster-backup.md)。历史 VPS 验收记录对应之前版本，不替代本轮新增功能的独立回归。
 
-## Debian 12 一键安装
+## Debian 12/13 一键安装
 
-v0.3.0 Release 资产实际发布后，在准备部署的全新 VPS 上以 **root** 执行，支持 amd64 / arm64。候选期不要运行尚不存在或资产不完整的标签；需要立即安装时，把下列固定入口改为已发布的 `v0.2.4/install.sh`：
+v0.3.1 Release 资产实际发布后，在准备部署的全新 Debian 12/13 VPS 上以 **root** 执行，支持 amd64 / arm64。候选期不要运行尚不存在或资产不完整的标签；需要立即安装时，把下列固定入口改为已发布的 `v0.3.0/install.sh`：
 
 ```sh
 apt-get update && apt-get install -y curl ca-certificates
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.3.0/install.sh -o /root/msboost-install.sh
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.3.1/install.sh -o /root/msboost-install.sh
 bash /root/msboost-install.sh
 ```
 
-选择「安装」，输入已解析到该 VPS 的域名及管理员 QQ 邮箱。v0.3.0 发布后默认拉取预构建的 `ghcr.io/mozziexwz/node:v0.3.0`；若镜像仓库无法匿名访问，则从同版本 GitHub Release 下载、校验并导入预构建镜像。无需 VPS 安装 Go / Node 或编译源码。缺少 Docker 时使用官方 Debian 仓库安装 Engine 与 Compose 插件；Caddy 自动 HTTPS 需要域名解析正确、TCP 80/443 可达且未被其他服务占用。随机管理员密码保存在 root 私有的 `/opt/msboost/.env`，不输出到安装日志。仅在自己的私有终端查看：
+选择「安装」，输入已解析到该 VPS 的域名及管理员 QQ 邮箱。v0.3.1 发布后默认拉取预构建的 `ghcr.io/mozziexwz/node:v0.3.1`；若镜像仓库无法匿名访问，则从同版本 GitHub Release 下载、校验并导入预构建镜像。无需 VPS 安装 Go / Node 或编译源码。缺少 Docker 时使用官方 Debian 仓库安装 Engine 与 Compose 插件；Caddy 自动 HTTPS 需要域名解析正确、TCP 80/443 可达且未被其他服务占用。随机管理员密码保存在 root 私有的 `/opt/msboost/.env`，不输出到安装日志。仅在自己的私有终端查看：
 
 ```sh
 sed -n '/^ADMIN_EMAIL=/p; /^ADMIN_PASSWORD=/p' /opt/msboost/.env
@@ -46,7 +48,7 @@ msboost admin-password  # 菜单12：本机root交互修改已有管理员密码
 
 v0.1.1 如果安装报 `ghcr.io/mozziexwz/node:12 (bookworm)`，是安装器版本变量污染，**不要彻底清理**。使用 [保留配置的恢复步骤](docs/deployment.md#v011-首次安装报-12-bookworm-的保留配置恢复)，新版本会检查未产生业务数据后继续安装。
 
-推荐在全新 Debian 12 VPS 安装 v0.3.0，并在隔离环境核对后再迁移业务。确需升级既有健康站点时，应等待正式 Release，在维护窗口执行 `msboost upgrade --version v0.3.0`；升级保留原 `.env`、管理员和主密钥，并在切换前备份当前选定数据库。已卸载保数据的站点先 `msboost repair` 再升级。网站升级不会自动更新独立执行机或节点，请按[Agent 安装与更新](docs/agent-installation.md)逐台安排；不要把网站版本变化误认为 Relay 策略已经切换。原库损坏时不要强行普通升级，按[独立新数据库恢复](docs/backup-recovery.md)校验快照并导入新库；持有整站包且使用全新 VPS 时，走[整站恢复入口](docs/disaster-backup.md#全新-vps-一键恢复)，不要先安装空站点。旧库、密钥及备份保留，恢复后保持维护并人工对账。
+推荐在全新 Debian 12/13 VPS 安装 v0.3.1，并在隔离环境核对后再迁移业务。确需升级既有健康站点时，应等待正式 Release，在维护窗口执行 `msboost upgrade --version v0.3.1`；升级保留原 `.env`、管理员和主密钥，并在切换前备份当前选定数据库。已卸载保数据的站点先 `msboost repair` 再升级。网站升级不会自动更新独立执行机或节点；BBR 修复由新版执行机执行，必须按[Agent 安装与更新](docs/agent-installation.md)逐台安排。原库损坏时不要强行普通升级，按[独立新数据库恢复](docs/backup-recovery.md)校验快照并导入新库；持有整站包且使用全新 VPS 时，走[整站恢复入口](docs/disaster-backup.md#全新-vps-一键恢复)，不要先安装空站点。旧库、密钥及备份保留，恢复后保持维护并人工对账。
 
 ## 组成与职责
 

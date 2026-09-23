@@ -22,7 +22,7 @@ var diagnostics = map[string]Diagnostic{
 	"ssh_handshake":          {"ssh_handshake", "ssh_handshake", "SSH 握手失败", "确认端口提供的是 SSH 服务，并检查服务端算法配置和网络连接。"},
 	"ssh_session":            {"ssh_session", "ssh_session", "SSH 会话建立失败", "检查 VPS 的会话数、资源限制和 SSH 服务状态。"},
 	"task_timeout":           {"task_timeout", "execution", "任务执行超时或连接中断", "先核实 VPS 状态和服务是否已经创建；不会自动重试操作。"},
-	"unsupported_system":     {"unsupported_system", "preflight", "服务器系统或架构不受支持", "使用支持的完整 systemd VPS；MSBOOST 建议 Debian 12 amd64。"},
+	"unsupported_system":     {"unsupported_system", "preflight", "服务器系统或架构不受支持", "客户节点请使用完整 systemd 的 Debian 11/12/13 amd64 或 arm64 VPS；建议优先 Debian 12/13。"},
 	"missing_dependency":     {"missing_dependency", "dependencies", "必需的系统依赖不可用", "检查 apt 软件源、网络和磁盘空间，再安装缺失的依赖。"},
 	"download_failed":        {"download_failed", "download", "远端下载失败", "检查 VPS 到 GitHub 和软件源的 DNS、HTTPS 网络及代理设置。"},
 	"integrity_failed":       {"integrity_failed", "integrity", "安装资源完整性校验失败", "停止使用该资源，检查下载是否完整并联系管理员核对固定版本校验值。"},

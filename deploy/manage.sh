@@ -6,7 +6,7 @@ umask 077
 INSTALL_ROOT=/opt/msboost
 PROJECT=msboost
 MARKER=MSBOOST_DEPLOY_V1
-VERSION=v0.3.0
+VERSION=v0.3.1
 SOURCE_DIR=
 DOMAIN=
 IP_ADDRESS=
@@ -22,7 +22,7 @@ die() { printf '错误：%s\n' "$*" >&2; return 1; }
 note() { printf '%s\n' "$*" >&2; }
 usage() {
   printf '%s\n' \
-    'MSBOOST Debian 12（amd64/arm64），安装目录 /opt/msboost，Compose 项目 msboost' \
+    'MSBOOST 控制面 Debian 12/13（amd64/arm64），安装目录 /opt/msboost，Compose 项目 msboost' \
     '  msboost install --domain panel.example.com --email 12345678@qq.com' \
     '  msboost install --ip SERVER_IPV4 --email 12345678@qq.com --allow-insecure-http' \
     '  msboost upgrade [--version vX.Y.Z] [--build]' \
@@ -50,11 +50,22 @@ menu() {
 }
 require_platform() (
   [[ $(id -u) == 0 ]] || { die '请在目标服务器以 root 或 sudo 运行'; return 1; }
-  [[ $(uname -s) == Linux && -r /etc/os-release ]] || { die '仅支持 Debian 12 Linux'; return 1; }
-  local ID VERSION_ID
+  [[ $(uname -s) == Linux && -r /etc/os-release ]] || { die '控制面仅支持 Debian 12/13 Linux'; return 1; }
+  local ID VERSION_ID VERSION_CODENAME expected
   . /etc/os-release
-  [[ $ID == debian && $VERSION_ID == 12 ]] || { die '仅支持 Debian 12；其他系统请自行审核部署文件'; return 1; }
+  case ${VERSION_ID:-} in
+    12) expected=bookworm ;;
+    13) expected=trixie ;;
+    *) die '控制面仅支持 Debian 12/13；其他系统请自行审核部署文件'; return 1 ;;
+  esac
+  [[ ${ID:-} == debian && ${VERSION_CODENAME:-} == "$expected" ]] || { die 'Debian 系统版本与代号不一致，拒绝配置软件源'; return 1; }
   case "$(uname -m)" in x86_64|aarch64) ;; *) die '当前只发布 amd64/arm64 镜像'; return 1 ;; esac
+)
+debian_codename() (
+  require_platform || return
+  local VERSION_ID
+  . /etc/os-release
+  case $VERSION_ID in 12) printf bookworm ;; 13) printf trixie ;; esac
 )
 require_release_version() {
   [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { die '版本格式必须为 vX.Y.Z'; return 2; }
@@ -142,7 +153,7 @@ ensure_docker() {
   if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then
     docker info >/dev/null 2>&1 || { die 'Docker 不可用；请修复 Docker 服务，安装器不会重置现有 Docker'; return 1; }
   else
-    local pkg
+    local pkg suite
     for pkg in docker.io docker-compose podman-docker containerd runc; do
       if [[ $(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true) == 'install ok installed' ]]; then
         die "检测到 $pkg，请自行评估其他工作负载并迁移到官方 Docker；不会自动卸载冲突包"; return 1
@@ -158,7 +169,8 @@ ensure_docker() {
     install -d -m 0755 /etc/apt/keyrings || return
     curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/msboost-docker.asc || return
     chmod 0644 /etc/apt/keyrings/msboost-docker.asc || return
-    printf '# MSBOOST_DEPLOY_V1\nTypes: deb\nURIs: https://download.docker.com/linux/debian\nSuites: bookworm\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/msboost-docker.asc\n' "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/msboost-docker.sources || return
+    suite=$(debian_codename) || return
+    printf '# MSBOOST_DEPLOY_V1\nTypes: deb\nURIs: https://download.docker.com/linux/debian\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/msboost-docker.asc\n' "$suite" "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/msboost-docker.sources || return
     chmod 0644 /etc/apt/sources.list.d/msboost-docker.sources || return
     apt-get update || return
     DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return

@@ -1,4 +1,22 @@
-# MSBOOST v0.3.0 · 第三次最终版补充说明 2.4
+# MSBOOST 发布说明
+
+## v0.3.1 · 真实 VPS 排障与平台兼容
+
+源码版本号本身不代表正式发布。v0.3.1 须等标签 CI、双架构镜像及 Release 资产全部完成后才可按下列入口安装。
+
+- 控制面新增 Debian 13，保留 Debian 12；按实际系统代号选择 Docker apt 软件源。控制面不接受 Debian 11。客户 VPS 免费部署工具以 Debian 11/12/13 为兼容目标，但 Debian 11 已结束官方 LTS，不建议承载公开生产服务；面板 DD 目标仍固定 Debian 12。
+- 修复部分 VPS 的 `/etc/sysctl.conf` 或 `99-sysctl.conf` 覆盖 BBR 参数：新版执行机在客户 VPS 使用 `zz-msboost-bbr.conf`，完整重放后再次应用并核对；仅移除内容完全匹配的旧项目文件，不覆盖运营者配置。必须升级执行机 Agent；单独升级网站不会更改已有 Agent 的脚本。
+- 修复 Debian 11 systemd 247 不认识 `%d` 凭据路径导致免费自备中转启动失败：改用已在 247 上验证的 `${CREDENTIALS_DIRECTORY}/config.json` 无 shell 路径展开，继续通过 `LoadCredential` 隔离配置；清理器同时识别新版、v0.3.0 和更早的受管单元。德国 Debian 11 VPS 已通过真实自备中转安装及限定范围清理，原节点保持运行。
+- 修复从严格权限源码目录构建时，非 root 应用进程无法读取固定 DD 脚本导致容器不健康。镜像构建现在明确授予公开内置脚本读取权限。
+- 会员端枫叶数量统一显示“个”；线路状态去掉旧租约与协议代次等运维信息；单次 TCP 连接初检不再伪装为丢包率测试，也不宣称游戏协议验收。
+- 真实 Debian 13 控制面全新构建、HTTPS、管理登录、只读后台接口、修复/保留数据卸载/恢复通过；5 台 Debian 11/12/13 客户 VPS 免费部署与 BBR/FQ 检查通过。两台完成 DD 重装并再部署；Debian 11 免费自备中转与定域清理通过，单节点捐赠中转获得真实 HTTP 200。范围和未覆盖项见[本轮验收记录](acceptance-vps-20260923.md)。发布制品须待标签 CI 和校验全部通过，源码验收本身不代表已发布。
+
+```sh
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.3.1/install.sh -o /root/msboost-install.sh
+bash /root/msboost-install.sh
+```
+
+## 历史：v0.3.0 · 第三次最终版补充说明 2.4
 
 源码版本号本身不代表正式发布。请以标签、Release 资产、双架构镜像、摘要及 CI 均成功为可安装条件；生产 msboost.de 和现有 Agent 不会自动升级。
 

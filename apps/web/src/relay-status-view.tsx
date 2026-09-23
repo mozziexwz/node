@@ -12,9 +12,11 @@ export function trafficAmount(value: unknown) {
 export function RelayStatusDetail({
   rule,
   routeOnline,
+  member = false,
 }: {
   rule: RecordData;
   routeOnline?: boolean;
+  member?: boolean;
 }) {
   const status = relayStatus(rule, routeOnline);
   return (
@@ -29,17 +31,29 @@ export function RelayStatusDetail({
       </p>
       {status.stopText && (
         <div className="mt8">
-          <Notice tone="orange">{status.stopText}</Notice>
+          <Notice tone="orange">
+            {member
+              ? "线路正在处理请求，完成前暂不能修改配置。"
+              : status.stopText}
+          </Notice>
         </div>
       )}
       {status.recoveryText && (
         <div className="mt8">
-          <Notice tone="orange">{status.recoveryText}</Notice>
+          <Notice tone="orange">
+            {member
+              ? "线路正在维护核对，暂不能操作。如持续出现，请联系客服。"
+              : status.recoveryText}
+          </Notice>
         </div>
       )}
       {status.accountingText && (
         <div className="mt8">
-          <Notice tone="orange">{status.accountingText}</Notice>
+          <Notice tone="orange">
+            {member
+              ? "流量统计暂未同步，请稍后刷新；若持续异常请联系客服。"
+              : status.accountingText}
+          </Notice>
         </div>
       )}
     </section>

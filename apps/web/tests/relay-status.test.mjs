@@ -17,6 +17,7 @@ const helperCode = ts.transpileModule(
 ).outputText;
 const {
   relayStatus,
+  relayMemberLabel,
   relayNeedsRecovery,
   relaySegmentStopText,
   relayAccountingVisible,
@@ -75,6 +76,11 @@ test("pending stop retains resources; recovery overrides optimistic confirmation
   assert.equal(relayNeedsRecovery(rule), true);
   const view = relayStatus(rule);
   assert.equal(view.label, "恢复核对中");
+  assert.equal(relayMemberLabel(rule), "线路维护中");
+  assert.equal(
+    relayMemberLabel({ offlinePolicy: "lease", state: "pausing" }),
+    "处理中",
+  );
   assert.equal(view.keepLastConfirmed, false);
   assert.match(view.stopText, /待节点停止确认，端口及旧目标继续占用/);
   assert.match(view.recoveryText, /本机 root 受信恢复流程逐规则核对/);
@@ -295,8 +301,7 @@ test(
               routeName: "完整保留线路",
               status: "success",
               latencyMs: 33,
-              packetLossPercent: 0,
-              message: "仅为控制面视角的 TCP 路径样本；延迟是入口建连时间，不验证每跳/Mieru/游戏协议",
+              message: "入口与目标分别完成了一次网络连接检查；未验证整条中转链或游戏实际连接。",
             },
           });
         if (request.method() !== "GET") {
@@ -391,17 +396,22 @@ test(
             await expect(diagnosis).toContainText(
               "入口(完整保留线路)->目标(MSBOOST)",
             );
-            await expect(diagnosis).toContainText("成功");
+            await expect(diagnosis).toContainText("初检通过");
+            await expect(diagnosis).not.toContainText("丢包率");
             await expect(diagnosis).toContainText("33");
-            await expect(diagnosis).toContainText("0.00%");
-            await expect(diagnosis).toContainText("不验证每跳/Mieru/游戏协议");
+            await expect(diagnosis).toContainText("未验证整条中转链或游戏实际连接");
             await diagnosis
               .getByRole("button", { name: "关闭", exact: true })
               .click();
+            await expect(recovery).toContainText("线路维护中");
             await expect(recovery).toContainText(
-              "待节点停止确认，端口及旧目标继续占用",
+              "线路正在维护核对，暂不能操作",
             );
-            await expect(recovery).toContainText("计量状态降级");
+            await expect(recovery).toContainText("流量统计暂未同步");
+            await expect(recovery).not.toContainText("租约");
+            await expect(recovery).not.toContainText("v1");
+            await expect(recovery).not.toContainText("root");
+            await expect(recovery).not.toContainText("端口及旧目标");
             await expect(
               recovery.getByRole("button", { name: "恢复", exact: true }),
             ).toBeDisabled();

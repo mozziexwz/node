@@ -125,7 +125,7 @@ func TestCleanupPythonIsolatedInventoryAndMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"preview", "cleanup", "legacy-cleanup", "credential-mismatch-load", "credential-mismatch-exec", "credential-other-name", "changed", "unknown", "symlink", "dropin", "stop-hook", "continued-hook", "propagated-stop", "also-unit", "failure-trigger", "new-section"} {
+	for _, scenario := range []string{"preview", "cleanup", "old-v030-cleanup", "legacy-cleanup", "credential-mismatch-load", "credential-mismatch-exec", "credential-other-name", "changed", "unknown", "symlink", "dropin", "stop-hook", "continued-hook", "propagated-stop", "also-unit", "failure-trigger", "new-section"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			write := func(path, data string) {
@@ -142,9 +142,12 @@ func TestCleanupPythonIsolatedInventoryAndMutation(t *testing.T) {
 			write(conf+"/config.json", `{"services":[{"name":"msboost-free","addr":":30001"}]}`)
 			write(conf+"/ufw-owned", "30001\n")
 			unitText := cleanupUnitFixture(t, root, "relay")
+			if scenario == "old-v030-cleanup" {
+				unitText = strings.Replace(unitText, "-C ${CREDENTIALS_DIRECTORY}/config.json", "-C %d/config.json", 1)
+			}
 			if scenario == "legacy-cleanup" {
 				unitText = strings.Replace(unitText, "LoadCredential=config.json:", "LoadCredential=config:", 1)
-				unitText = strings.Replace(unitText, "-C %d/config.json", "-C %d/config", 1)
+				unitText = strings.Replace(unitText, "-C ${CREDENTIALS_DIRECTORY}/config.json", "-C %d/config", 1)
 			}
 			write(unit, unitText)
 			write("usr/local/libexec/msboost-free/gost-"+strings.Repeat("a", 64), "fixture binary")
@@ -194,10 +197,10 @@ subprocess.run=fake_run
 				case "credential-mismatch-load":
 					text = strings.Replace(text, "LoadCredential=config.json:", "LoadCredential=config:", 1)
 				case "credential-mismatch-exec":
-					text = strings.Replace(text, "-C %d/config.json", "-C %d/config", 1)
+					text = strings.Replace(text, "-C ${CREDENTIALS_DIRECTORY}/config.json", "-C ${CREDENTIALS_DIRECTORY}/config", 1)
 				case "credential-other-name":
 					text = strings.Replace(text, "LoadCredential=config.json:", "LoadCredential=other.json:", 1)
-					text = strings.Replace(text, "-C %d/config.json", "-C %d/other.json", 1)
+					text = strings.Replace(text, "-C ${CREDENTIALS_DIRECTORY}/config.json", "-C ${CREDENTIALS_DIRECTORY}/other.json", 1)
 				}
 				write(unit, text)
 			case "changed":
@@ -233,7 +236,7 @@ subprocess.run=fake_run
 				write(unit, text)
 			}
 			out, err = run("cleanup", report.Digest)
-			if scenario == "cleanup" || scenario == "legacy-cleanup" {
+			if scenario == "cleanup" || scenario == "old-v030-cleanup" || scenario == "legacy-cleanup" {
 				if err != nil {
 					t.Fatalf("cleanup: %s %v", out, err)
 				}
@@ -414,6 +417,7 @@ func cleanupUnitFixture(t *testing.T, root, scope string) string {
 		t.Fatal("unit template terminator missing")
 	}
 	template = strings.NewReplacer("${APP_USER}", "msboost", "${APP_GROUP}", "msboost", "${STATE_DIR}", "/var/lib/msboost", "${APP_DIR}", "/etc/msboost", "${BIN}", "/usr/local/bin/msboost", "${confdir}", "/etc/msboost-free/task1", "${gost_sha}", strings.Repeat("a", 64)).Replace(template)
+	template = strings.ReplaceAll(template, "\\${CREDENTIALS_DIRECTORY}", "${CREDENTIALS_DIRECTORY}")
 	for _, prefix := range []string{"/etc/", "/usr/", "/var/"} {
 		template = strings.ReplaceAll(template, prefix, root+prefix)
 	}

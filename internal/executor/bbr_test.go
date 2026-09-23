@@ -8,7 +8,8 @@ import (
 )
 
 func TestBBRTuningIsLimitedToCustomerVPSTasks(t *testing.T) {
-	if strings.Contains(bbrTuneScript, "/etc/sysctl.conf") {
+	if strings.Contains(bbrTuneScript, "cat > /etc/sysctl.conf") ||
+		strings.Contains(bbrTuneScript, "bbr_conf=/etc/sysctl.conf") {
 		t.Fatal("BBR tuning must not replace the operator sysctl.conf")
 	}
 	for _, line := range []string{
@@ -30,10 +31,14 @@ func TestBBRTuningIsLimitedToCustomerVPSTasks(t *testing.T) {
 			t.Fatalf("missing or duplicated BBR setting %q", line)
 		}
 	}
-	for _, want := range []string{"/etc/sysctl.d/99-msboost-bbr.conf", "cmp -s", "sysctl -p", "sysctl --system", "modprobe tcp_bbr"} {
+	for _, want := range []string{"/etc/sysctl.d/zz-msboost-bbr.conf", "cmp -s", "sysctl -p", "sysctl --system", "modprobe tcp_bbr"} {
 		if !strings.Contains(bbrTuneScript, want) {
 			t.Fatalf("BBR script missing %q", want)
 		}
+	}
+	if strings.Count(bbrTuneScript, `sysctl -p "$bbr_conf"`) != 2 ||
+		strings.LastIndex(bbrTuneScript, `sysctl -p "$bbr_conf"`) < strings.Index(bbrTuneScript, "sysctl --system") {
+		t.Fatal("BBR settings must be reapplied after provider sysctl.conf is replayed")
 	}
 
 	remote := &fakeRemote{run: func(SSH, string) ([]byte, error) {

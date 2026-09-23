@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
-# Run inside the official Debian 12 container with the repository mounted read-only.
+# Run inside the official Debian 12 or 13 container with the repository mounted read-only.
 # This intentionally uses the real /etc/os-release and the real require_platform.
 # No apt, network request, Docker daemon or deployment is used by this test.
 set -Eeuo pipefail
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 [[ $(id -u) == 0 && $(uname -s) == Linux && -r /etc/os-release ]] || {
-  printf '%s\n' 'Run this test as root inside: docker run --rm --network none -v "$PWD:/src:ro" debian:12 bash /src/deploy/platform_test.sh' >&2
+  printf '%s\n' 'Run this test as root inside a Debian 12/13 container with the repository mounted read-only.' >&2
   exit 2
 }
 
 # Prove this is the real Debian fixture containing the colliding VERSION key.
-(
+fixture_suite=$(
   . /etc/os-release
-  [[ ${ID:-} == debian && ${VERSION_ID:-} == 12 && -n ${VERSION:-} && -n ${NAME:-} && -n ${PRETTY_NAME:-} ]] || fail 'real Debian 12 os-release fixture is required'
-  [[ $VERSION != v0.3.0 ]] || fail 'OS fixture does not exercise release-version collision'
+  [[ ${ID:-} == debian && ${VERSION_ID:-} =~ ^(12|13)$ && -n ${VERSION:-} && -n ${NAME:-} && -n ${PRETTY_NAME:-} ]] || fail 'real Debian 12/13 os-release fixture is required'
+  [[ $VERSION != v0.3.1 ]] || fail 'OS fixture does not exercise release-version collision'
+  printf '%s' "$VERSION_CODENAME"
 )
 
 TEST_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
-readonly EXPECTED_VERSION=v0.3.0
+readonly EXPECTED_VERSION=v0.3.1
 source "$TEST_REPO/deploy/manage.sh"
 [[ $VERSION == "$EXPECTED_VERSION" ]] || fail 'default release version does not match this regression fixture'
 
@@ -33,7 +34,8 @@ before=$(declare -p VERSION PRETTY_NAME NAME ID VERSION_ID VERSION_CODENAME HOME
 require_platform
 after=$(declare -p VERSION PRETTY_NAME NAME ID VERSION_ID VERSION_CODENAME HOME_URL)
 [[ $before == "$after" ]] || fail 'require_platform leaked os-release values into its caller'
-printf '%s\n' 'PASS: real Debian 12 platform check preserves caller VERSION and OS-name sentinels'
+[[ $(debian_codename) == "$fixture_suite" ]] || fail 'Docker apt suite does not match the actual Debian release'
+printf 'PASS: real Debian %s platform and apt suite preserve caller sentinels\n' "$fixture_suite"
 
 check_install_entry() (
   local mode=$1
@@ -61,7 +63,7 @@ check_install_entry() (
     *) fail 'invalid test mode' ;;
   esac
   [[ $entered == 1 && $VERSION == "$EXPECTED_VERSION" ]] || fail "$mode CLI did not reach the safe installation stub"
-  printf 'PASS: real Debian 12 manage_main install (%s version)\n' "$mode"
+  printf 'PASS: real Debian %s manage_main install (%s version)\n' "$fixture_suite" "$mode"
 )
 
 check_install_entry default

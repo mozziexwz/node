@@ -63,7 +63,10 @@ Wants=network-online.target
 Type=simple
 DynamicUser=true
 LoadCredential=config.json:${confdir}/config.json
-ExecStart=/usr/local/libexec/msboost-free/gost-${gost_sha} -C %d/config.json
+# systemd 247 (Debian 11) supports LoadCredential and environment expansion
+# in ExecStart, but not the newer %d specifier. Escape the dollar sign here so
+# the installing shell writes it literally into the unit for systemd to expand.
+ExecStart=/usr/local/libexec/msboost-free/gost-${gost_sha} -C \${CREDENTIALS_DIRECTORY}/config.json
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

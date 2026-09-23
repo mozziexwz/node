@@ -383,17 +383,16 @@ func TestSupplement24RouteLevelPurgeAndDiagnose(t *testing.T) {
 	}
 	response = commerceTestRequest(mux, user, http.MethodPost, "/api/user/routes/"+diagnosticRoute.ID+"/diagnose", nil)
 	var diagnosis struct {
-		Path              string `json:"path"`
-		Status            string `json:"status"`
-		PacketLossPercent int    `json:"packetLossPercent"`
-		Scope             string `json:"scope"`
+		Path   string `json:"path"`
+		Status string `json:"status"`
+		Scope  string `json:"scope"`
 	}
-	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &diagnosis) != nil || diagnosis.Status != "success" || diagnosis.PacketLossPercent != 0 || diagnosis.Path != "入口(诊断线路)->目标(MSBOOST)" || diagnosis.Scope != "tcp_path" {
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &diagnosis) != nil || diagnosis.Status != "success" || diagnosis.Path != "入口(诊断线路)->目标(MSBOOST)" || diagnosis.Scope != "tcp_path" || strings.Contains(response.Body.String(), "packetLossPercent") {
 		t.Fatalf("successful fixed-endpoint diagnosis failed: %d %s", response.Code, response.Body.String())
 	}
 	_ = targetListener.Close()
 	response = commerceTestRequest(mux, user, http.MethodPost, "/api/user/routes/"+diagnosticRoute.ID+"/diagnose", nil)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"failed"`) || !strings.Contains(response.Body.String(), `"packetLossPercent":100`) || !strings.Contains(response.Body.String(), "目标 MSBOOST 连接失败") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"failed"`) || strings.Contains(response.Body.String(), "packetLossPercent") || !strings.Contains(response.Body.String(), "目标 MSBOOST 连接失败") {
 		t.Fatalf("downstream target failure was misreported: %d %s", response.Code, response.Body.String())
 	}
 }

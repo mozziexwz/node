@@ -17,12 +17,15 @@ test(
           import {createRoot} from 'react-dom/client';
           import './app.css';
           import {ResourcePage} from './admin';
-          import {Plans} from './business';
+          import {Plans, Wallet} from './business';
           createRoot(document.getElementById('fixture')).render(
             React.createElement(React.Fragment, null,
               React.createElement('section', {className: 'admin-fixture'}, React.createElement(ResourcePage, {kind: 'plans'})),
               React.createElement('section', {className: 'member-fixture'}, React.createElement(Plans, {
-                user: {balanceCents: 500000, emailVerifiedAt: 1},
+                user: {balanceCents: 0, emailVerifiedAt: 1},
+                onRefresh: () => {},
+              })),
+              React.createElement('section', {className: 'wallet-fixture'}, React.createElement(Wallet, {
                 onRefresh: () => {},
               })),
             ),
@@ -101,6 +104,8 @@ test(
         });
       if (url.pathname === "/api/admin/plans" && request.method() === "GET")
         return requestRoute.fulfill({ json: { plans: [basePlan] } });
+      if (url.pathname === "/api/wallet" && request.method() === "GET")
+        return requestRoute.fulfill({ json: { balanceCents: 0, ledger: [] } });
       if (url.pathname === "/api/plans" && request.method() === "GET")
         return requestRoute.fulfill({
           json: {
@@ -133,6 +138,8 @@ test(
       await page.addScriptTag({ content: script });
 
       const member = page.locator(".member-fixture");
+      await expect(member.locator(".summary")).toContainText("可用枫叶：0 个");
+      await expect(page.locator(".wallet-fixture .stat-value")).toHaveText("0 个");
       const holderCard = member
         .locator(".card")
         .filter({ hasText: "老用户权益" });

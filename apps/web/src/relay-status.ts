@@ -100,6 +100,17 @@ export function relayStatus(rule: RecordData, routeOnline?: boolean) {
   };
 }
 
+// Members need an actionable summary, not the operator's lease/protocol
+// reconciliation details. The underlying safety gates still use relayStatus.
+export function relayMemberLabel(rule: RecordData, routeOnline?: boolean) {
+  const status = relayStatus(rule, routeOnline);
+  if (status.recovery) return "线路维护中";
+  if (status.stopPending) return "处理中";
+  if (status.control === "offline") return "线路状态待确认";
+  if (status.stopConfirmed) return "已停止";
+  return status.label;
+}
+
 export function relaySegmentStopText(segment: RecordData) {
   if (segment.protocolVersion >= 2) {
     return segment.stopConfirmed === true &&
