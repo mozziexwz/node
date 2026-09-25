@@ -61,8 +61,7 @@ relay_recovery_read() {
   esac
 }
 docker() {
-  [[ $1 == --host && $2 == unix:///var/run/docker.sock && -z ${DOCKER_HOST+x} && -z ${DOCKER_CONTEXT+x} ]] || fail 'remote Docker context accepted'
-  shift 2
+  [[ $1 != --host && -z ${DOCKER_HOST+x} && -z ${DOCKER_CONTEXT+x} && -z ${DOCKER_DEFAULT_PLATFORM+x} ]] || fail 'helper bypassed the pinned manager Docker wrapper or accepted a remote context'
   [[ "$*" != *"$TEST_REQUEST_SECRET"* && "$*" != *"$TEST_RESULT_SECRET"* && "$*" != *"$TEST_ERROR_SECRET"* && "$*" != *"$TEST_ENV_SECRET"* ]] || fail 'private JSON/key in command argv'
   trace "$*"
   case "$1" in

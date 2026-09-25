@@ -67,7 +67,7 @@ func TestReadOnlyFingerprintRemainsAvailableForUnverifiedPaidUsersAndMaintenance
 		}
 		// Free execution remains blocked despite obtaining a valid public key.
 		denied := httptest.NewRecorder()
-		service.create(denied, taskRequest(t, user, "POST", "/api/tasks", "read-only-probe-guard", executor.Request{Kind: "deploy", Mode: "repair", SSH: taskSSHFixture()}))
+		service.create(denied, taskRequest(t, user, "POST", "/api/tasks", "read-only-probe-guard", executor.Request{Kind: "deploy", Mode: "fresh", SSH: taskSSHFixture()}))
 		if denied.Code != 403 {
 			t.Fatal("read-only probe bypassed execution gate")
 		}
@@ -79,7 +79,7 @@ func TestSSHTrustPersistsAndRequiresExplicitChangedKey(t *testing.T) {
 	connection := taskSSHFixture()
 	connection.TrustMode = "tofu"
 	w := httptest.NewRecorder()
-	service.create(w, taskRequest(t, user, "POST", "/api/tasks", "tofu-first", executor.Request{Kind: "deploy", Mode: "repair", SSH: connection}))
+	service.create(w, taskRequest(t, user, "POST", "/api/tasks", "tofu-first", executor.Request{Kind: "deploy", Mode: "fresh", SSH: connection}))
 	if w.Code != 202 {
 		t.Fatal(w.Body.String())
 	}
@@ -96,13 +96,13 @@ func TestSSHTrustPersistsAndRequiresExplicitChangedKey(t *testing.T) {
 	connection.Fingerprint = "SHA256:" + strings.Repeat("B", 43)
 	restarted.probes[taskProbeKey(user.ID, connection)] = taskProbe{Fingerprint: connection.Fingerprint, Expires: time.Now().Add(time.Minute)}
 	w = httptest.NewRecorder()
-	restarted.create(w, taskRequest(t, user, "POST", "/api/tasks", "tofu-changed", executor.Request{Kind: "deploy", Mode: "repair", SSH: connection}))
+	restarted.create(w, taskRequest(t, user, "POST", "/api/tasks", "tofu-changed", executor.Request{Kind: "deploy", Mode: "fresh", SSH: connection}))
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "指纹已变化") {
 		t.Fatalf("changed key not blocked %d %s", w.Code, w.Body.String())
 	}
 	connection.ReplaceFingerprint = old
 	w = httptest.NewRecorder()
-	restarted.create(w, taskRequest(t, user, "POST", "/api/tasks", "tofu-confirmed", executor.Request{Kind: "deploy", Mode: "repair", SSH: connection}))
+	restarted.create(w, taskRequest(t, user, "POST", "/api/tasks", "tofu-confirmed", executor.Request{Kind: "deploy", Mode: "fresh", SSH: connection}))
 	if w.Code != 202 {
 		t.Fatal(w.Body.String())
 	}

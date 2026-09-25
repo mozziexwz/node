@@ -22,8 +22,8 @@
 
 | kind | 额外参数 |
 |---|---|
-| `deploy` | `ssh`；`mode:"fresh"` 或 `"repair"`，UI 初始选择 `fresh` |
-| `relay` | `ssh`；`clientConfig` 为 JSON 对象，只允许一个 profile、server 和 TCP 端口；可选 `front:SSH` 增加第二台前置机，不能替代中转；`remark` 可选、最多 60 字符且不得含换行 |
+| `deploy` | `ssh`；仅接受 `mode:"fresh"`。每次重新生成受管节点认证与端口，不重装操作系统；失败时安装器仍以私有快照回滚。部署前只读核验目标为 Debian 11 或以上版本。 |
+| `relay` | `ssh`；`clientConfig` 为 JSON 对象，只允许一个 profile、server 和 TCP 端口；可选 `front:SSH` 增加第二台前置机，不能替代中转；`remark` 可选、最多 60 字符且不得含换行。中转及前置 VPS 均先只读核验为 Debian 11 或以上版本。 |
 | `dd` | `ssh`；`dd:{confirmErase:true,portMode:"keep"\|"new",newPort?,passwordMode:"keep"\|"new",newPassword?}`，仅固定 Debian 12 重装流程 |
 | `cleanup-preview` / `cleanup` | 见下节；不接受前置机、客户端配置或 DD 参数 |
 

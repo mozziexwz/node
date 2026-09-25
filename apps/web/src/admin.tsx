@@ -100,7 +100,7 @@ const schemas: Record<string, Resource> = {
       { key: "enabled", label: "上架", type: "checkbox", default: false },
       {
         key: "maxPurchasesPerUser",
-        label: "每人限兑次数（0 不限兑）",
+        label: "每人限兑次数（0不限兑）",
         type: "number",
         default: 0,
         min: 0,
@@ -109,12 +109,6 @@ const schemas: Record<string, Resource> = {
       {
         key: "currentHoldersOnly",
         label: "仅允许当前该权益有效用户兑换",
-        type: "checkbox",
-        default: false,
-      },
-      {
-        key: "trial",
-        label: "体验权益（每位用户仅可兑换一次）",
         type: "checkbox",
         default: false,
       },
@@ -127,7 +121,6 @@ const schemas: Record<string, Resource> = {
       ["rateMbps", "每规则限速"],
       ["maxPurchasesPerUser", "每人限兑"],
       ["currentHoldersOnly", "仅当前持有人"],
-      ["trial", "体验权益"],
       ["enabled", "已上架"],
     ],
   },
@@ -267,7 +260,10 @@ export function ResourcePage({ kind }: { kind: string }) {
   const [editing, setEditing] = useState<RecordData | null>(null),
     [values, setValues] = useState<RecordData>({}),
     [message, setMessage] = useState(""),
+    [success, setSuccess] = useState(""),
     [token, setToken] = useState<RecordData | null>(null);
+  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.3.3/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
+  const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;
   function open(row: RecordData = {}) {
     const initial: RecordData = {};
     for (const f of s.fields) {
@@ -305,10 +301,12 @@ export function ResourcePage({ kind }: { kind: string }) {
         </Button>
       </Header>
       <ErrorNotice error={error || message} />
+      {success && <Notice>{success}</Notice>}
       {kind === "plans" && (
         <Notice>
           L3 权益可使用 L1、L2、L3 线路，L2 可使用 L1、L2 线路，L1 仅可使用 L1
-          线路。“仅允许当前该权益有效用户兑换”用于暂停接纳新用户，但保留当前有效持有人的续兑；体验权益则对每位用户终身限兑一次，不能续兑。两项不能同时启用。
+          线路。每人限兑次数填写 0
+          表示不限兑；“仅允许当前该权益有效用户兑换”用于暂停接纳新用户，但保留当前有效持有人的续兑。重置限兑计数只影响该权益之后的限兑判断，不撤销历史订单或已生效权益。
         </Notice>
       )}
       {kind === "agents" && message && (
@@ -337,7 +335,34 @@ export function ResourcePage({ kind }: { kind: string }) {
             ...s.columns.map(([key]) => show(row[key], key)),
             <div className="actions">
               <Button onClick={() => open(row)}>编辑</Button>
-              {["executors", "agents"].includes(kind) && (
+              {kind === "plans" && (
+                <Button
+                  onClick={async () => {
+                    if (
+                      !confirm(
+                        `重置“${row.name}”所有用户的限兑计数？该操作不会撤销历史订单或已生效权益，但不能恢复原计数。`,
+                      )
+                    )
+                      return;
+                    try {
+                      setMessage("");
+                      setSuccess("");
+                      await post(
+                        `${s.url}/${row.id}/reset-redemption-count`,
+                        {},
+                      );
+                      setSuccess(`已重置“${row.name}”所有用户的限兑计数。`);
+                      reload();
+                    } catch (e) {
+                      setMessage((e as Error).message);
+                    }
+                  }}
+                >
+                  重置限兑计数
+                </Button>
+              )}
+              {(kind === "executors" ||
+                (kind === "agents" && row.enrollmentAllowed === true)) && (
                 <Button
                   onClick={async () => {
                     if (
@@ -349,7 +374,10 @@ export function ResourcePage({ kind }: { kind: string }) {
                     )
                       return;
                     try {
-                      setToken(await post(`${s.url}/${row.id}/enrollment`, {}));
+                      setToken({
+                        ...(await post(`${s.url}/${row.id}/enrollment`, {})),
+                        reinstall: true,
+                      });
                       reload();
                     } catch (e) {
                       setMessage((e as Error).message);
@@ -358,6 +386,18 @@ export function ResourcePage({ kind }: { kind: string }) {
                 >
                   部署 / 重装
                 </Button>
+              )}
+              {kind === "agents" && row.enrollmentAllowed !== true && (
+                <span className="muted" role="note">
+                  {row.enrollmentBlockedReason || "普通部署/重装已锁定。"}{" "}
+                  <a
+                    href="https://github.com/mozziexwz/node/blob/v0.3.3/docs/relay-recovery.md"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    查看受信恢复指引
+                  </a>
+                </span>
               )}
               {!s.noDelete && (
                 <Button
@@ -480,19 +520,9 @@ export function ResourcePage({ kind }: { kind: string }) {
                     <Check
                       key={f.key}
                       checked={!!values[f.key]}
-                      onChange={(e) => {
-                        const next = {
-                          ...values,
-                          [f.key]: e.target.checked,
-                        };
-                        if (kind === "plans" && e.target.checked) {
-                          if (f.key === "trial")
-                            next.currentHoldersOnly = false;
-                          if (f.key === "currentHoldersOnly")
-                            next.trial = false;
-                        }
-                        setValues(next);
-                      }}
+                      onChange={(e) =>
+                        setValues({ ...values, [f.key]: e.target.checked })
+                      }
                       label={f.label}
                     />
                   ) : f.options ? (
@@ -552,8 +582,17 @@ export function ResourcePage({ kind }: { kind: string }) {
             在目标 Debian VPS 的 root
             终端运行下面命令，再粘贴令牌。令牌不会进入命令行历史；不要发给客户。节点注册令牌有有效期，过期可重新生成。
           </Notice>
+          {kind === "agents" && (
+            <Notice tone="orange">
+              {token.reinstall ? "已生成新的节点注册令牌。" : "若目标 VPS 曾安装中转 Agent，"}
+              旧 keep_last 状态会优先使用旧身份，新令牌不会自动重新绑定。仅在旧身份已无当前控制面业务、确认旧转发及现有连接均可中断时，使用下方“已有节点全新重装”命令；安装器会校验受管归属并将旧状态移入 root 私有备份。已确认 v2 或仍有关联业务的节点禁止普通令牌轮换，须先走受信恢复流程。
+            </Notice>
+          )}
+          <p className="mt16">
+            {kind === "agents" ? "首次部署到空白 VPS：" : "安装执行机："}
+          </p>
           <pre className="code-panel mt16">
-            {`curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.3.2/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`}
+            {agentBootstrapCommand}
           </pre>
           {location.protocol !== "https:" && (
             <Notice tone="orange">
@@ -563,13 +602,28 @@ export function ResourcePage({ kind }: { kind: string }) {
           )}
           <Button
             onClick={() =>
-              void copyText(
-                `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.3.2/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`,
-              ).catch((e) => setMessage(e.message))
+              void copyText(agentBootstrapCommand).catch((e) =>
+                setMessage(e.message),
+              )
             }
           >
-            复制安装命令
+            复制首次安装命令
           </Button>
+          {kind === "agents" && (
+            <>
+              <p className="mt16">已有节点全新重装（旧转发与现有连接将中断）：</p>
+              <pre className="code-panel mt16">{relayFreshResetCommand}</pre>
+              <Button
+                onClick={() =>
+                  void copyText(relayFreshResetCommand).catch((e) =>
+                    setMessage(e.message),
+                  )
+                }
+              >
+                复制全新重装命令
+              </Button>
+            </>
+          )}
           <pre className="code-panel mt16">
             {token.token || token.enrollmentToken}
           </pre>
@@ -638,6 +692,11 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
       setMessage((e as Error).message);
     }
   }
+  function usage(c: RecordData) {
+    const used = c.usedCount ?? c.uses?.length ?? (c.usedAt ? 1 : 0);
+    const limit = c.maxUses ?? 1;
+    return `${used} / ${limit === 0 ? "不限" : limit}`;
+  }
   return (
     <>
       <Header
@@ -645,7 +704,7 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
         sub={
           invitations
             ? "邀请码仅用于注册；每码使用次数独立计算。"
-            : "兑换码只兑换枫叶，不直接兑换权益。"
+            : "兑换码只兑换枫叶，不直接兑换权益。每个码可设置使用总次数，同一用户不能重复使用同一码。"
         }
       >
         <Button primary onClick={() => setCreating(true)}>
@@ -667,7 +726,7 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
         >
           <option value="">未归档记录</option>
           {[
-            ["active", "未使用 / 启用"],
+            ["active", "可使用 / 启用"],
             ["disabled", "停用"],
             ["used", "已使用"],
             ["archived", "已删除（归档）"],
@@ -714,9 +773,10 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
             />,
             invitations ? "完整邀请码" : "完整兑换码",
             invitations ? "使用次数" : "枫叶",
+            ...(!invitations ? ["使用次数"] : []),
             "状态",
             "批次",
-            ...(!invitations ? ["使用用户", "使用时间"] : []),
+            ...(!invitations ? ["最近使用用户", "最近使用时间"] : []),
             "操作",
           ]}
           rows={rows.map((c) => [
@@ -733,20 +793,22 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
               }
             />,
             <span className="mono">{c.code}</span>,
-            invitations
-              ? `${c.usedCount ?? c.uses?.length ?? 0} / ${c.maxUses}`
-              : `${leaves(c.amountCents)}枫叶`,
+            invitations ? usage(c) : `${leaves(c.amountCents)}枫叶`,
+            ...(!invitations ? [usage(c)] : []),
             (
               {
-                active: "未使用 / 启用",
+                active: "可使用 / 启用",
                 disabled: "停用",
-                used: "已使用",
+                used: "次数已用尽",
                 archived: "已归档",
               } as Record<string, string>
             )[c.status] || c.status,
             c.batch || c.note || "—",
             ...(!invitations
-              ? [c.usedByEmail || c.usedBy || "—", date(c.usedAt)]
+              ? [
+                  c.uses?.at(-1)?.userEmail || c.usedByEmail || c.usedBy || "—",
+                  date(c.uses?.at(-1)?.usedAt || c.usedAt),
+                ]
               : []),
             <div className="actions">
               <Button
@@ -756,9 +818,7 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
               >
                 复制
               </Button>
-              {invitations && (
-                <Button onClick={() => setEditing(c)}>次数与记录</Button>
-              )}
+              <Button onClick={() => setEditing(c)}>次数与记录</Button>
             </div>,
           ])}
         />
@@ -778,7 +838,10 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
                       maxUses: Number(f.get("maxUses")),
                       note: String(f.get("batch")),
                     }
-                  : { amountCents: leafCents(f.get("amount"), 1) }),
+                  : {
+                      amountCents: leafCents(f.get("amount"), 1),
+                      maxUses: Number(f.get("maxUses")),
+                    }),
                 batch: String(f.get("batch")),
               })
             }
@@ -806,53 +869,80 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
                 required
               />
             ) : (
-              <Field
-                label="每个兑换码枫叶"
-                name="amount"
-                type="number"
-                min={1}
-                step="1"
-                defaultValue={10}
-                required
-              />
+              <>
+                <Field
+                  label="每个兑换码枫叶"
+                  name="amount"
+                  type="number"
+                  min={1}
+                  step="1"
+                  defaultValue={10}
+                  required
+                />
+                <Field
+                  label="每个兑换码允许使用次数（0 不限）"
+                  name="maxUses"
+                  type="number"
+                  min={0}
+                  step="1"
+                  defaultValue={1}
+                  required
+                />
+                <p className="muted">同一用户不能重复使用同一个兑换码。</p>
+              </>
             )}
             <Field label="批次 / 备注" name="batch" />
           </AsyncForm>
         </Modal>
       )}
       {editing && (
-        <Modal title="邀请码使用次数与记录" onClose={() => setEditing(null)}>
+        <Modal
+          title={invitations ? "邀请码使用次数与记录" : "兑换码使用次数与记录"}
+          onClose={() => setEditing(null)}
+        >
           <p className="mono">{editing.code}</p>
-          <AsyncForm
-            onSubmit={(f) =>
-              post(
-                url + "/" + editing.id,
-                {
-                  maxUses: Number(f.get("maxUses")),
-                  enabled: editing.enabled,
-                  note: editing.note || "",
-                },
-                "PUT",
-              )
-            }
-            onDone={() => {
-              setEditing(null);
-              reload();
-            }}
-          >
-            <Field
-              label="允许使用次数"
-              type="number"
-              name="maxUses"
-              defaultValue={editing.maxUses}
-              min={1}
-            />
-          </AsyncForm>
+          {invitations ? (
+            <AsyncForm
+              onSubmit={(f) =>
+                post(
+                  url + "/" + editing.id,
+                  {
+                    maxUses: Number(f.get("maxUses")),
+                    enabled: editing.enabled,
+                    note: editing.note || "",
+                  },
+                  "PUT",
+                )
+              }
+              onDone={() => {
+                setEditing(null);
+                reload();
+              }}
+            >
+              <Field
+                label="允许使用次数"
+                type="number"
+                name="maxUses"
+                defaultValue={editing.maxUses}
+                min={1}
+              />
+            </AsyncForm>
+          ) : (
+            <Notice>
+              已使用{" "}
+              {editing.usedCount ??
+                editing.uses?.length ??
+                (editing.usedAt ? 1 : 0)}{" "}
+              次； 允许总次数{" "}
+              {editing.maxUses === 0 ? "不限" : (editing.maxUses ?? 1)} 次。
+              同一用户不能重复使用同一码；总次数在生成时设定。
+            </Notice>
+          )}
           <Table
             headers={["用户", "使用时间"]}
             rows={(editing.uses || []).map((v: RecordData) => [
-              v.email || v.userId,
-              date(v.createdAt || v.at),
+              v.userEmail || v.email || v.userId,
+              date(v.usedAt || v.createdAt || v.at),
             ])}
           />
         </Modal>

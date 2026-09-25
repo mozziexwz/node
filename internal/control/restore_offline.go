@@ -261,13 +261,19 @@ func validateOfflineFinancialReferences(s *State) error {
 		// Deleting an account intentionally retains its historical orders and
 		// ledgers. A missing historical user is not corruption and must not prevent
 		// recovery; never fabricate an account or attach its money to a new user.
-		if json.Unmarshal(raw, &order) != nil || order.ID != id || order.UserID == "" {
+		if json.Unmarshal(raw, &order) != nil || order.ID != id || order.UserID == "" || order.RedemptionCountEpoch < 0 {
 			return errors.New("兑换记录与用户身份关联无效")
 		}
 		if order.ChannelID != "" && order.ChannelID != "balance" {
 			if _, ok := LoadDoc[PaymentChannel](s, "payment_channels", order.ChannelID); !ok {
 				return errors.New("兑换记录支付渠道缺失")
 			}
+		}
+	}
+	for id, raw := range s.Docs["plans"] {
+		var plan Plan
+		if json.Unmarshal(raw, &plan) != nil || plan.ID != id || plan.RedemptionCountEpoch < 0 {
+			return errors.New("权益限兑计数状态无效")
 		}
 	}
 	for _, raw := range s.Docs["payment_trades"] {
@@ -287,7 +293,25 @@ func validateOfflineFinancialReferences(s *State) error {
 	}
 	for id, raw := range s.Docs["cards"] {
 		var card BalanceCard
-		if json.Unmarshal(raw, &card) != nil || card.ID != id || card.AmountCents < 0 || card.Status == "used" && card.UsedBy == "" {
+		if json.Unmarshal(raw, &card) != nil || card.ID != id || card.AmountCents < 0 || card.UsedCount < 0 || card.MaxUses < 0 || card.Status == "used" && card.UsedBy == "" {
+			return errors.New("兑换码记录或使用关系无效")
+		}
+		if card.CardVersion >= 2 {
+			if card.UsedCount != int64(len(card.Uses)) || card.MaxUses > 0 && card.UsedCount > card.MaxUses {
+				return errors.New("兑换码使用次数记录不一致")
+			}
+			seen := make(map[string]bool, len(card.Uses))
+			for _, use := range card.Uses {
+				if use.UserID == "" || seen[use.UserID] || use.UsedAt <= 0 {
+					return errors.New("兑换码存在重复或无效的会员使用记录")
+				}
+				seen[use.UserID] = true
+			}
+			if len(card.Uses) > 0 && card.UsedBy != card.Uses[0].UserID {
+				return errors.New("兑换码首次使用记录不一致")
+			}
+		}
+		if card.Status == "used" && cardUseCount(card) == 0 {
 			return errors.New("兑换码记录或使用关系无效")
 		}
 	}

@@ -49,6 +49,37 @@ func verifyAsset(a Asset) error {
 func prepareAsset(a Asset) string {
 	return "set -Eeuo pipefail\numask 077\n" + diagnosticPrelude + "[ \"$(id -u)\" = 0 ]\nwork=$(mktemp -d /run/msboost-task.XXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\nprintf '%s' '" + base64.StdEncoding.EncodeToString(a.Data) + "' | base64 -d > \"$work/installer.sh\"\nprintf '%s  %s\\n' '" + a.SHA256 + "' \"$work/installer.sh\" | sha256sum -c - >/dev/null\n"
 }
+
+// Debian eligibility is checked on every customer VPS before BBR, package
+// installation, or any other managed-state mutation. A rejected host receives
+// only this read-only SSH command.
+const debianPreflightScript = `set -Eeuo pipefail
+export LC_ALL=C
+if [ ! -r /etc/os-release ]; then
+  printf 'MSBOOST_ERROR_CODE=unsupported_debian\nMSBOOST_ERROR_PHASE=preflight\n'
+  exit 1
+fi
+. /etc/os-release
+if [ "${ID:-}" != debian ] || [[ ! "${VERSION_ID:-}" =~ ^[0-9]+$ ]] || (( 10#${VERSION_ID:-0} < 11 )); then
+  printf 'MSBOOST_ERROR_CODE=unsupported_debian\nMSBOOST_ERROR_PHASE=preflight\n'
+  exit 1
+fi
+[ "$(id -u)" = 0 ]
+[ -d /run/systemd/system ]
+command -v systemctl >/dev/null
+printf 'MSBOOST_READY=1\n'
+`
+
+func (e *Engine) preflightDebian(ctx context.Context, host SSH, r Result) (Result, bool) {
+	out, err := e.Remote.Run(ctx, host, debianPreflightScript)
+	if err != nil {
+		return failRemote(r, "preflight", out, err), false
+	}
+	if marker(out, "MSBOOST_READY") != "1" {
+		return failRemote(r, "preflight", out, diagnosticError("execution_failed")), false
+	}
+	return r, true
+}
 func marker(out []byte, key string) string {
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.HasPrefix(line, key+"=") {
@@ -109,15 +140,15 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	if err := verifyAsset(job.Script); err != nil {
 		return failed(r, "integrity", err.Error())
 	}
-	script := prepareAsset(job.Script) + bbrTuneScript + encodedAssignment("MSBOOST_SERVER_IP", job.Request.SSH.Host) + "export MSBOOST_SERVER_IP\nmsboost_phase=install\n"
-	if job.Request.Mode == "fresh" {
-		script += encodedAssignment("node_user", "msboost-"+randomHex(8)) + encodedAssignment("node_pass", randomHex(24))
-		// The original installer performs ownership checks and transactional rollback.
-		// Explicit new credentials implement fresh mode; it intentionally preserves its safe port selection.
-		script += "bash \"$work/installer.sh\" \"$node_user\" \"$node_pass\" >\"$work/private.log\" 2>&1\n"
-	} else {
-		script += "bash \"$work/installer.sh\" >\"$work/private.log\" 2>&1\n"
+	if checked, ok := e.preflightDebian(ctx, job.Request.SSH, r); !ok {
+		return checked
 	}
+	script := prepareAsset(job.Script) + bbrTuneScript + encodedAssignment("MSBOOST_SERVER_IP", job.Request.SSH.Host) + "export MSBOOST_SERVER_IP\nmsboost_phase=install\n"
+	script += encodedAssignment("node_user", "msboost-"+randomHex(8)) + encodedAssignment("node_pass", randomHex(24))
+	// Fresh mode replaces the prior managed authentication and port. The
+	// installer still snapshots managed files so a failed replacement can roll
+	// back without deleting an existing working node.
+	script += "MSBOOST_FORCE_FRESH=1 bash \"$work/installer.sh\" \"$node_user\" \"$node_pass\" >\"$work/private.log\" 2>&1\n"
 	script += "msboost_phase=service\nsystemctl is-active --quiet msboost.service\nmsboost_phase=config\nprintf 'MSBOOST_CONFIG='\nbase64 -w0 /root/直连.json\nprintf '\\n'\n"
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	if err != nil {
@@ -221,8 +252,8 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 		if s == nil {
 			continue
 		}
-		if out, runErr := e.Remote.Run(ctx, *s, "set -Eeuo pipefail\n"+diagnosticPrelude+"[ \"$(id -u)\" = 0 ]\n[ -d /run/systemd/system ]\ncommand -v systemctl >/dev/null\nprintf 'MSBOOST_READY=1\\n'\n"); runErr != nil {
-			return failRemote(r, "preflight", out, runErr)
+		if checked, ok := e.preflightDebian(ctx, *s, r); !ok {
+			return checked
 		}
 	}
 	port, err := e.installRelay(ctx, job.Request.SSH, target, info.TargetPort, job.ID+"r", 625000)

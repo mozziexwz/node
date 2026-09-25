@@ -248,11 +248,11 @@ func TestTaskIdempotencyAndNoPersistedCredentials(t *testing.T) {
 			t.Fatal("idempotency replay created another job")
 		}
 	}
-	request.Mode = "repair"
+	request.Remark = "different-request"
 	w := httptest.NewRecorder()
 	s.create(w, taskRequest(t, u, "POST", "/api/tasks", "same-key-123", request))
 	if w.Code != 409 {
-		t.Fatal("same key accepted changed mode")
+		t.Fatal("same key accepted changed request")
 	}
 	_ = a.Store.View(func(state *State) error {
 		data, _ := json.Marshal(state)

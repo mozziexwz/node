@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # msboost unattended installer for common IPv4 systemd VPS distributions.
 # Usage: sudo bash msboost.sh [username] [password] [tcp_port]
-# Existing generated credentials and port are reused when arguments are omitted.
+# Standalone use reuses omitted values. The managed fresh workflow sets
+# MSBOOST_FORCE_FRESH=1 so prior credentials and port cannot be inherited.
 
 set -Eeuo pipefail
 umask 077
@@ -455,14 +456,20 @@ random_hex() {
 USER_NAME="${1:-}"
 USER_PASS="${2:-}"
 PORT="${3:-}"
+OLD_CONFIG_PORT="$(state_value PORT)"
+if [[ "${OLD_CONFIG_PORT}" =~ ^[0-9]{1,5}$ ]]; then
+  OLD_CONFIG_PORT=$((10#${OLD_CONFIG_PORT}))
+else
+  OLD_CONFIG_PORT=""
+fi
 
-if [[ -z "${USER_NAME}" ]]; then
+if [[ "${MSBOOST_FORCE_FRESH:-0}" != 1 && -z "${USER_NAME}" ]]; then
   USER_NAME="$(state_value USER_NAME)"
 fi
-if [[ -z "${USER_PASS}" ]]; then
+if [[ "${MSBOOST_FORCE_FRESH:-0}" != 1 && -z "${USER_PASS}" ]]; then
   USER_PASS="$(state_value USER_PASS)"
 fi
-if [[ -z "${PORT}" ]]; then
+if [[ "${MSBOOST_FORCE_FRESH:-0}" != 1 && -z "${PORT}" ]]; then
   PORT="$(state_value PORT)"
 fi
 
@@ -491,6 +498,9 @@ random_free_port() {
   for attempt in $(seq 1 100); do
     raw="$(od -An -N2 -tu2 /dev/urandom | tr -d ' \n')"
     candidate=$((20000 + raw % 40000))
+    if [[ "${MSBOOST_FORCE_FRESH:-0}" == 1 && -n "${OLD_CONFIG_PORT}" && "${candidate}" == "${OLD_CONFIG_PORT}" ]]; then
+      continue
+    fi
     if ! port_in_use "${candidate}"; then
       printf '%s' "${candidate}"
       return 0

@@ -83,8 +83,8 @@ func ValidateRequest(r Request) error {
 		if ip, err := netip.ParseAddr(r.SSH.Host); err != nil || !ip.Is4() {
 			return errors.New("当前 MSBOOST 安装脚本要求公网 IPv4 服务器")
 		}
-		if r.Mode != "fresh" && r.Mode != "repair" {
-			return errors.New("请选择全新安装或安全修复")
+		if r.Mode != "fresh" {
+			return errors.New("部署 MSBOOST 仅支持全新安装")
 		}
 		if r.Front != nil || r.DD != nil || len(r.ClientConfig) > 0 {
 			return errors.New("部署参数不匹配")

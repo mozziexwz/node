@@ -8,8 +8,9 @@ trap '[[ -n $TEST_WORK && -d $TEST_WORK && ! -L $TEST_WORK ]] && rm -rf -- "$TES
 source "$TEST_REPO/install.sh"
 source "$TEST_REPO/deploy/version_test.sh"
 version_check_tree "$TEST_REPO" "$INITIAL_VERSION" || { printf '%s\n' 'FAIL: release entrypoint defaults disagree' >&2; exit 1; }
-# Negative consistency cases operate only on local fixture copies. In
-# particular, a stale clipboard URL must fail even if the visible URL is new.
+# Negative consistency cases operate only on local fixture copies. The
+# displayed and copied admin commands share one template; a stale URL in that
+# template must fail.
 version_fixture="$TEST_WORK/version-fixture"
 mkdir -p "$version_fixture/deploy" "$version_fixture/cmd/server" "$version_fixture/apps/web/src"
 for file in install.sh agent.sh Dockerfile .env.example deploy/manage.sh deploy/compose.yml deploy/compose.build.yml cmd/server/main.go apps/web/package.json apps/web/package-lock.json apps/web/src/admin.tsx; do
@@ -17,23 +18,23 @@ for file in install.sh agent.sh Dockerfile .env.example deploy/manage.sh deploy/
 done
 version_check_tree "$version_fixture" "$INITIAL_VERSION"
 if version_check_tree "$version_fixture" v0.0.0; then printf '%s\n' 'FAIL: mismatched release tag accepted' >&2; exit 1; fi
-awk 'BEGIN {seen=0} /raw.githubusercontent.com\/mozziexwz\/node\/v0.3.2\/agent.sh/ {seen++; if (seen==2) sub("/v0.3.2/agent.sh", "/v0.2.4/agent.sh")} {print}' "$TEST_REPO/apps/web/src/admin.tsx" > "$version_fixture/apps/web/src/admin.tsx"
-if version_check_tree "$version_fixture" "$INITIAL_VERSION"; then printf '%s\n' 'FAIL: stale admin clipboard command accepted' >&2; exit 1; fi
+awk '/raw.githubusercontent.com\/mozziexwz\/node\/v0.3.3\/agent.sh/ {sub("/v0.3.3/agent.sh", "/v0.2.4/agent.sh")} {print}' "$TEST_REPO/apps/web/src/admin.tsx" > "$version_fixture/apps/web/src/admin.tsx"
+if version_check_tree "$version_fixture" "$INITIAL_VERSION"; then printf '%s\n' 'FAIL: stale shared admin command accepted' >&2; exit 1; fi
 cp -- "$TEST_REPO/apps/web/src/admin.tsx" "$version_fixture/apps/web/src/admin.tsx"
-sed '0,/"version": "0.3.2"/s//"version": "0.2.4"/' "$TEST_REPO/apps/web/package-lock.json" > "$version_fixture/apps/web/package-lock.json"
+sed '0,/"version": "0.3.3"/s//"version": "0.2.4"/' "$TEST_REPO/apps/web/package-lock.json" > "$version_fixture/apps/web/package-lock.json"
 if version_check_tree "$version_fixture" "$INITIAL_VERSION"; then printf '%s\n' 'FAIL: stale web package-lock version accepted' >&2; exit 1; fi
-printf '%s\n' 'PASS: cross-entrypoint version defaults, actual tag mismatch, stale clipboard and package-lock rejection'
+printf '%s\n' 'PASS: cross-entrypoint version defaults, actual tag mismatch, stale admin command and package-lock rejection'
 export BOOTSTRAP_TEST_TRACE="$TEST_WORK/manager-args"
 export BOOTSTRAP_TEST_EXIT=0
-MOCK_LATEST_BODY=$'{\n  "tag_name": "v0.3.2"\n}'
+MOCK_LATEST_BODY=$'{\n  "tag_name": "v0.3.3"\n}'
 mkdir -p "$TEST_WORK/fixture/deploy" "$TEST_WORK/release"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$@" > "$BOOTSTRAP_TEST_TRACE"' 'exit "$BOOTSTRAP_TEST_EXIT"' > "$TEST_WORK/fixture/deploy/manage.sh"
 printf '%s\n' '# test bootstrap placeholder' > "$TEST_WORK/fixture/install.sh"
-tar -czf "$TEST_WORK/release/msboost-deploy-v0.3.2.tar.gz" -C "$TEST_WORK/fixture" deploy install.sh
+tar -czf "$TEST_WORK/release/msboost-deploy-v0.3.3.tar.gz" -C "$TEST_WORK/fixture" deploy install.sh
 # A separate synthetic older asset proves explicit historical restore-version
 # selection still works; this stub does not perform a real disaster restore.
-cp -- "$TEST_WORK/release/msboost-deploy-v0.3.2.tar.gz" "$TEST_WORK/release/msboost-deploy-v0.2.3.tar.gz"
-(cd "$TEST_WORK/release" && sha256sum msboost-deploy-v0.3.2.tar.gz msboost-deploy-v0.2.3.tar.gz > SHA256SUMS)
+cp -- "$TEST_WORK/release/msboost-deploy-v0.3.3.tar.gz" "$TEST_WORK/release/msboost-deploy-v0.2.3.tar.gz"
+(cd "$TEST_WORK/release" && sha256sum msboost-deploy-v0.3.3.tar.gz msboost-deploy-v0.2.3.tar.gz > SHA256SUMS)
 cp "$TEST_WORK/release/SHA256SUMS" "$TEST_WORK/good-checksum"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -48,13 +49,13 @@ curl() {
   done
   if [[ $url == https://api.github.com/repos/mozziexwz/node/releases/latest ]]; then printf '%s\n' "$MOCK_LATEST_BODY"; return; fi
   [[ -n $output ]] || return 22
-  case "$url" in https://github.com/mozziexwz/node/releases/download/v0.3.2/*|https://github.com/mozziexwz/node/releases/download/v0.2.3/*) ;; *) return 22 ;; esac
+  case "$url" in https://github.com/mozziexwz/node/releases/download/v0.3.3/*|https://github.com/mozziexwz/node/releases/download/v0.2.3/*) ;; *) return 22 ;; esac
   cp "$TEST_WORK/release/${url##*/}" "$output"
 }
 
 (bootstrap_main install --domain panel.example.com --email 12345678@qq.com)
 grep -qx 'install' "$BOOTSTRAP_TEST_TRACE" || fail 'install action not forwarded'
-grep -qx 'v0.3.2' "$BOOTSTRAP_TEST_TRACE" || fail 'release version not forwarded'
+grep -qx 'v0.3.3' "$BOOTSTRAP_TEST_TRACE" || fail 'release version not forwarded'
 grep -qx -- '--source-dir' "$BOOTSTRAP_TEST_TRACE" || fail 'verified bundle path missing'
 rm -- "$BOOTSTRAP_TEST_TRACE"
 (bootstrap_main disaster-restore --version v0.2.3 --archive /root/historical-v0.2.3.tar.gz)
@@ -65,23 +66,23 @@ rm -- "$BOOTSTRAP_TEST_TRACE"
 (bootstrap_main upgrade)
 grep -qx 'upgrade' "$BOOTSTRAP_TEST_TRACE" || fail 'latest-release upgrade resolution failed'
 rm -- "$BOOTSTRAP_TEST_TRACE"
-(bootstrap_main upgrade --version v0.3.2 --recover-incomplete)
+(bootstrap_main upgrade --version v0.3.3 --recover-incomplete)
 grep -qx -- '--recover-incomplete' "$BOOTSTRAP_TEST_TRACE" || fail 'incomplete recovery flag not forwarded to verified manager'
 grep -qx -- '--source-dir' "$BOOTSTRAP_TEST_TRACE" || fail 'recovery bypassed verified bundle'
 rm -- "$BOOTSTRAP_TEST_TRACE"
-MOCK_LATEST_BODY='{"url":"https://api.github.com/repos/mozziexwz/node/releases/1","id":1,"tag_name":"v0.3.2","target_commitish":"main","assets":[],"body":"release note with escaped \"tag_name\": \"v9.9.9\""}'
+MOCK_LATEST_BODY='{"url":"https://api.github.com/repos/mozziexwz/node/releases/1","id":1,"tag_name":"v0.3.3","target_commitish":"main","assets":[],"body":"release note with escaped \"tag_name\": \"v9.9.9\""}'
 (bootstrap_main upgrade)
 grep -qx 'upgrade' "$BOOTSTRAP_TEST_TRACE" || fail 'compact GitHub release response did not resolve upgrade'
-grep -qx 'v0.3.2' "$BOOTSTRAP_TEST_TRACE" || fail 'compact release tag parsed incorrectly'
+grep -qx 'v0.3.3' "$BOOTSTRAP_TEST_TRACE" || fail 'compact release tag parsed incorrectly'
 rm -- "$BOOTSTRAP_TEST_TRACE"
-MOCK_LATEST_BODY='{"url":"https://api.github.com/repos/mozziexwz/node/releases/1","tag_name":"v0.3.2/../../bad"}'
+MOCK_LATEST_BODY='{"url":"https://api.github.com/repos/mozziexwz/node/releases/1","tag_name":"v0.3.3/../../bad"}'
 if (bootstrap_main upgrade); then fail 'compact API response bypassed strict tag validation'; fi
 [[ ! -e $BOOTSTRAP_TEST_TRACE ]] || fail 'manager executed with invalid API tag'
 MOCK_LATEST_BODY='{"url":"https://api.github.com/repos/mozziexwz/node/releases/1","assets":[]}'
 if (bootstrap_main upgrade); then fail 'API response without a tag was accepted'; fi
 [[ ! -e $BOOTSTRAP_TEST_TRACE ]] || fail 'manager executed without an API tag'
 
-printf '%064d  msboost-deploy-v0.3.2.tar.gz\n' 0 > "$TEST_WORK/release/SHA256SUMS"
+printf '%064d  msboost-deploy-v0.3.3.tar.gz\n' 0 > "$TEST_WORK/release/SHA256SUMS"
 if (bootstrap_main install --domain panel.example.com --email 12345678@qq.com); then fail 'tampered archive checksum accepted'; fi
 [[ ! -e $BOOTSTRAP_TEST_TRACE ]] || fail 'manager executed after checksum mismatch'
 cp "$TEST_WORK/good-checksum" "$TEST_WORK/release/SHA256SUMS"
@@ -89,7 +90,7 @@ MOCK_FETCH_FAIL=1
 if (bootstrap_main install); then fail 'download failure reported success'; fi
 [[ ! -e $BOOTSTRAP_TEST_TRACE ]] || fail 'manager executed after download failure'
 MOCK_FETCH_FAIL=0
-if (bootstrap_main install --version 'v0.3.2/../../bad'); then fail 'unsafe release version accepted'; fi
+if (bootstrap_main install --version 'v0.3.3/../../bad'); then fail 'unsafe release version accepted'; fi
 export BOOTSTRAP_TEST_EXIT=42
 if (bootstrap_main install --domain panel.example.com --email 12345678@qq.com); then fail 'installer failure swallowed'; fi
 printf '%s\n' 'PASS: compact/formatted release JSON, strict tags, checksum, fetch failure, forwarding and exit propagation'

@@ -20,6 +20,14 @@ MOCK_REPORT=$(printf 'MSBOOST_BACKUP_ACTIVITY_INSPECT_V1\n1\n1\n%s\n%s\n17894000
 VALID_REPORT=$MOCK_REPORT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 trace() { printf '%s\n' "$*" >> "$TRACE"; }
+# Exercise the real manager wrapper before replacing Docker with the fixtures
+# below. Reconcile/recovery must pass exactly one local --host even if the
+# caller's environment points at a remote daemon.
+mkdir -p "$TEST_WORK/mock-bin"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s|%s|%s|%s|%s|%s\n" "$1" "$2" "$3" "${DOCKER_HOST-unset}" "${DOCKER_CONTEXT-unset}" "${DOCKER_DEFAULT_PLATFORM-unset}"' > "$TEST_WORK/mock-bin/docker"
+chmod 0700 "$TEST_WORK/mock-bin/docker"
+pin_result=$(PATH="$TEST_WORK/mock-bin:$PATH" DOCKER_HOST=tcp://untrusted.invalid DOCKER_CONTEXT=untrusted DOCKER_DEFAULT_PLATFORM=linux/arm64 backup_activity_docker ps)
+[[ $pin_result == '--host|unix:///var/run/docker.sock|ps|unset|unset|unset' ]] || fail 'recovery helper did not invoke the real manager wrapper with one pinned local Docker host'
 id() { printf '%s' "$MOCK_UID"; }
 uname() { if [[ ${1:-} == -m ]]; then printf x86_64; else printf '%s' "$MOCK_SYSTEM"; fi; }
 stat() { case "$2" in %u) printf 0 ;; %a) printf '%s' "$MOCK_MODE" ;; *) fail 'unexpected stat' ;; esac; }
@@ -35,8 +43,7 @@ backup_activity_read_confirmation() {
   confirmation=$MOCK_CONFIRM
 }
 docker() {
-  [[ $1 == --host && $2 == unix:///var/run/docker.sock && -z ${DOCKER_HOST+x} && -z ${DOCKER_CONTEXT+x} && -z ${DOCKER_DEFAULT_PLATFORM+x} ]] || fail 'helper allowed a remote Docker context'
-  shift 2
+  [[ $1 != --host && -z ${DOCKER_HOST+x} && -z ${DOCKER_CONTEXT+x} && -z ${DOCKER_DEFAULT_PLATFORM+x} ]] || fail 'helper bypassed the pinned manager Docker wrapper or allowed a remote context'
   [[ "$*" != *"$TEST_FINGERPRINT"* && "$*" != *RECONCILE_BACKUP* ]] || fail 'confirmation proof leaked into process arguments'
   trace "$*"
   case "$1" in

@@ -617,9 +617,15 @@ func (a *App) relayAgents(w http.ResponseWriter, r *http.Request) {
 		commerceError(w, 403, err)
 		return
 	}
-	out := []RelayAgent{}
+	type relayAgentAdminView struct {
+		RelayAgent
+		EnrollmentAllowed       bool   `json:"enrollmentAllowed"`
+		EnrollmentBlockedReason string `json:"enrollmentBlockedReason,omitempty"`
+	}
+	out := []relayAgentAdminView{}
 	err := a.Store.View(func(s *State) error {
 		for _, agent := range ListDocs[RelayAgent](s, "relay_agents") {
+			blockedReason := relayEnrollmentBlockReason(s, agent)
 			agent.RequireFront = false
 			agent.TokenHash = ""
 			agent.EnrollmentHash = ""
@@ -628,7 +634,7 @@ func (a *App) relayAgents(w http.ResponseWriter, r *http.Request) {
 			if agent.LastSeen > time.Now().UnixMilli()-relayLeaseMS {
 				agent.ControlStatus = "online"
 			}
-			out = append(out, agent)
+			out = append(out, relayAgentAdminView{RelayAgent: agent, EnrollmentAllowed: blockedReason == "", EnrollmentBlockedReason: blockedReason})
 		}
 		return nil
 	})

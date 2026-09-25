@@ -107,8 +107,8 @@ func TestSupplement24PlanPoliciesAndLegacyHolderInference(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := commerceTestRequest(mux, legacyTrialUser, http.MethodPost, "/api/orders", map[string]any{"planId": trial.ID, "channelId": "balance", "requestId": "legacy-other-trial", "confirmReplace": true})
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "终身只能") {
-		t.Fatalf("legacy paid order bypassed global trial guard: %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusCreated {
+		t.Fatalf("legacy trial history unexpectedly blocked unlimited plan: %d %s", response.Code, response.Body.String())
 	}
 
 	response = commerceTestRequest(mux, user, http.MethodGet, "/api/plans", nil)
@@ -159,16 +159,16 @@ func TestSupplement24PlanPoliciesAndLegacyHolderInference(t *testing.T) {
 			rejected++
 		}
 	}
-	if created != 1 || rejected != 1 {
-		t.Fatalf("trial lifetime guard was not transaction-safe: created=%d rejected=%d", created, rejected)
+	if created != 2 || rejected != 0 {
+		t.Fatalf("unlimited plan unexpectedly rejected concurrent redemptions: created=%d rejected=%d", created, rejected)
 	}
 	response = commerceTestRequest(mux, user, http.MethodPost, "/api/orders", map[string]any{"planId": trial.ID, "channelId": "balance", "requestId": "trial-again-0001", "confirmReplace": true})
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "终身只能") {
-		t.Fatalf("trial was redeemable twice: %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusCreated {
+		t.Fatalf("unlimited plan rejected repeat redemption: %d %s", response.Code, response.Body.String())
 	}
 	response = commerceTestRequest(mux, user, http.MethodPost, "/api/orders", map[string]any{"planId": trial2.ID, "channelId": "balance", "requestId": "other-trial-0001", "confirmReplace": true})
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "终身只能") {
-		t.Fatalf("second trial plan bypassed lifetime guard: %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusCreated {
+		t.Fatalf("separate unlimited plan rejected redemption: %d %s", response.Code, response.Body.String())
 	}
 	response = commerceTestRequest(mux, user, http.MethodGet, "/api/plans", nil)
 	var policyListing struct {
@@ -181,8 +181,8 @@ func TestSupplement24PlanPoliciesAndLegacyHolderInference(t *testing.T) {
 	for _, plan := range policyListing.Plans {
 		if plan.Trial {
 			trialViews++
-			if plan.Eligible || !strings.Contains(plan.Reason, "终身只能") {
-				t.Fatalf("redeemed trial not exposed as disabled with reason: %+v", plan)
+			if !plan.Eligible {
+				t.Fatalf("legacy trial flag incorrectly enforces lifetime restriction: %+v", plan)
 			}
 		}
 		if plan.CurrentHoldersOnly {
@@ -193,8 +193,8 @@ func TestSupplement24PlanPoliciesAndLegacyHolderInference(t *testing.T) {
 		t.Fatalf("all trial choices should remain listed: %+v", policyListing.Plans)
 	}
 	response = commerceTestRequest(mux, admin, http.MethodPost, "/api/admin/plans", Plan{Name: "冲突策略", PriceCents: 0, Days: 1, TrafficBytes: commerceGB, RateMbps: 1, Enabled: true, Level: 1, Trial: true, CurrentHoldersOnly: true})
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("conflicting plan policies accepted: %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("legacy trial flag unexpectedly conflicts with holder-only policy: %d %s", response.Code, response.Body.String())
 	}
 	normal := Plan{ID: "formerly-normal", Name: "已有历史的普通权益", PriceCents: 100, Days: 1, TrafficBytes: commerceGB, RateMbps: 1, Enabled: true, Level: 1}
 	if err := a.Store.Update(func(s *State) error {
@@ -207,8 +207,8 @@ func TestSupplement24PlanPoliciesAndLegacyHolderInference(t *testing.T) {
 	}
 	normal.Trial = true
 	response = commerceTestRequest(mux, admin, http.MethodPut, "/api/admin/plans/"+normal.ID, normal)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "不能改为体验权益") {
-		t.Fatalf("historical normal plan was converted to trial: %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("legacy trial display flag unexpectedly blocked plan edit: %d %s", response.Code, response.Body.String())
 	}
 }
 

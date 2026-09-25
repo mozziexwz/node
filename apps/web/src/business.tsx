@@ -219,8 +219,10 @@ export function Plans({
                 <h3>{p.name}</h3>
                 <div className="actions">
                   <Badge tone="orange">L{p.level || 1}</Badge>
-                  {p.trial && <Badge>体验权益</Badge>}
-                  {p.currentHoldersOnly && <Badge>仅限当前持有人续兑</Badge>}
+                  {!p.enabled && <Badge>已下架 · 仅限当前持有人续兑</Badge>}
+                  {p.enabled && p.currentHoldersOnly && (
+                    <Badge>仅限当前持有人续兑</Badge>
+                  )}
                 </div>
               </div>
               <div className="price num">
@@ -237,10 +239,11 @@ export function Plans({
                     ? `每位用户限兑${p.maxPurchasesPerUser}次，已兑换${data?.purchasedCounts?.[p.id] || 0}次`
                     : "兑换次数不限"}
                 </li>
-                {p.trial && <li>每位用户终身仅可兑换一次，不能续兑体验权益</li>}
-                {p.currentHoldersOnly && (
+                {!p.enabled ? (
+                  <li>已下架，仅当前仍有效且持有此权益的用户可续兑</li>
+                ) : p.currentHoldersOnly ? (
                   <li>仅当前仍有效且持有此权益的用户可续兑</li>
-                )}
+                ) : null}
               </ul>
               {blockedReason && (
                 <p className="muted plan-ineligible" role="status">

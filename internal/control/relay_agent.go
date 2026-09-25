@@ -18,7 +18,6 @@ func (a *App) relayRenewEnrollment(w http.ResponseWriter, r *http.Request) {
 	}
 	token := commerceID() + commerceID()
 	expires := time.Now().Add(15 * time.Minute).UnixMilli()
-	keepLast := false
 	err = a.Store.Update(func(s *State) error {
 		if _, retired := s.Docs[relayRetirementCollection][r.PathValue("id")]; retired {
 			return errRelayRetirement
@@ -27,14 +26,13 @@ func (a *App) relayRenewEnrollment(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return errors.New("Agent不存在")
 		}
+		if reason := relayEnrollmentBlockReason(s, agent); reason != "" {
+			return errors.New(reason)
+		}
 		agent.EnrollmentHash = commerceHash(token)
 		agent.EnrollmentExpires = expires
 		agent.TokenHash = ""
 		agent.LastSeen = 0
-		keepLast = agent.ProtocolVersion == relayruntime.ProtocolV2
-		if keepLast {
-			agent.ReconcileState, agent.KeepLastConfirmed = "recovery_required", false
-		}
 		if err := SaveDoc(s, "relay_agents", agent.ID, agent); err != nil {
 			return err
 		}
@@ -44,11 +42,37 @@ func (a *App) relayRenewEnrollment(w http.ResponseWriter, r *http.Request) {
 		commerceError(w, 409, err)
 		return
 	}
-	if keepLast {
-		WriteJSON(w, 200, map[string]any{"enrollmentToken": token, "expiresAt": expires, "installArgs": a.relayInstallationInstructions(), "reconcileState": "recovery_required", "message": "旧管理令牌已撤销，但离线保留的转发可能仍在运行；端口与旧目标继续保留。须通过受信恢复核对或独立本机/网络隔离处理，重新安装不等于无损接管。"})
-		return
-	}
 	WriteJSON(w, 200, map[string]any{"enrollmentToken": token, "expiresAt": expires, "previousLeaseExpiresAt": time.Now().UnixMilli() + relayLeaseMS, "installArgs": a.relayInstallationInstructions(), "message": "旧令牌已撤销。请停止旧进程，最迟45秒旧租约失效后使用新注册令牌启动。"})
+}
+
+// Enrollment is only a bootstrap operation. A confirmed v2 identity or a
+// referenced node needs the separately authenticated recovery workflow; simply
+// replacing its bearer token can strand a healthy keep_last relay.
+func relayEnrollmentBlockReason(s *State, agent RelayAgent) string {
+	if restoreAgentNeedsRecovery(s, agent) {
+		return "节点已确认 v2 或存在保留运行状态，禁止普通部署/重装；请先进行受信恢复核对"
+	}
+	malformed := false
+	routes := backupPauseReadDocs[Route](s, "routes", func(string) { malformed = true }, func(k string, v Route) bool { return k != "" && k == v.ID })
+	rules := backupPauseReadDocs[UserRule](s, "user_rules", func(string) { malformed = true }, func(k string, v UserRule) bool { return k != "" && k == v.UserID+":"+v.RouteID && v.ID != "" })
+	if malformed {
+		return "线路或用户中转记录异常，禁止轮换节点令牌；请先核对业务数据"
+	}
+	for _, route := range routes {
+		for _, id := range relayRouteAgents(route) {
+			if id == agent.ID {
+				return "节点仍有关联线路，禁止普通部署/重装；请先核对业务并走受信恢复"
+			}
+		}
+	}
+	for _, rule := range rules {
+		for _, segment := range rule.Segments {
+			if segment.AgentID == agent.ID {
+				return "节点仍有关联用户中转，禁止普通部署/重装；请先核对业务并走受信恢复"
+			}
+		}
+	}
+	return ""
 }
 
 func (a *App) relayRegisterAgent(w http.ResponseWriter, r *http.Request) {

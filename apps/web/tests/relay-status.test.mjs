@@ -354,10 +354,21 @@ test(
               agents: [
                 {
                   id: "synthetic-agent",
-                  name: "合成节点",
+                  name: "已有业务节点",
                   address: "198.51.100.11",
                   online: false,
                   enabled: true,
+                  protocolVersion: 2,
+                  enrollmentAllowed: false,
+                  enrollmentBlockedReason: "节点已确认 v2，禁止普通部署/重装",
+                },
+                {
+                  id: "fresh-agent",
+                  name: "未注册空节点",
+                  address: "198.51.100.12",
+                  online: false,
+                  enabled: true,
+                  enrollmentAllowed: true,
                 },
               ],
             },
@@ -558,19 +569,39 @@ test(
         },
       );
       await t.test(
-        "node re-enrollment warns before any write; the table labels management connection",
+        "protected node has no ordinary reinstall; empty node still warns before any write",
         async () => {
           const { page, requests, errors } = await fixture("agents");
           try {
             await expect(
               page.getByRole("columnheader", { name: "管理连接", exact: true }),
             ).toBeVisible();
+            const protectedNode = page
+              .getByRole("row")
+              .filter({ hasText: "已有业务节点" });
+            await expect(
+              protectedNode.getByRole("button", {
+                name: "部署 / 重装",
+                exact: true,
+              }),
+            ).toHaveCount(0);
+            await expect(protectedNode.getByRole("note")).toContainText(
+              "禁止普通部署/重装",
+            );
+            await expect(
+              protectedNode.getByRole("link", { name: "查看受信恢复指引" }),
+            ).toHaveAttribute(
+              "href",
+              /\/v0\.3\.3\/docs\/relay-recovery\.md$/,
+            );
             let warning = "";
             page.once("dialog", async (dialog) => {
               warning = dialog.message();
               await dialog.dismiss();
             });
             await page
+              .getByRole("row")
+              .filter({ hasText: "未注册空节点" })
               .getByRole("button", { name: "部署 / 重装", exact: true })
               .click();
             assert.match(warning, /仅撤销管理凭据不保证旧转发停止/);

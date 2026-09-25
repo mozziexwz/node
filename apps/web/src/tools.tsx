@@ -539,7 +539,6 @@ export function ToolPage({
   const [ssh, setSSH] = useState(newSSH),
     [front, setFront] = useState(newSSH),
     [useFront, setUseFront] = useState(false),
-    [mode, setMode] = useState("fresh"),
     [portMode, setPortMode] = useState("keep"),
     [passwordMode, setPasswordMode] = useState("keep"),
     [newPort, setNewPort] = useState(""),
@@ -579,7 +578,7 @@ export function ToolPage({
         {
           kind,
           ssh: pinnedSSH,
-          ...(kind === "deploy" ? { mode } : {}),
+          ...(kind === "deploy" ? { mode: "fresh" } : {}),
           ...(kind === "relay"
             ? {
                 clientConfig: config,
@@ -676,35 +675,9 @@ export function ToolPage({
                 />
                 {kind === "deploy" && (
                   <>
-                    <fieldset className="fieldset">
-                      <legend>执行策略</legend>
-                      <div className="radio-cards">
-                        {[
-                          [
-                            "fresh",
-                            "全新安装",
-                            "重新部署受管的 MSBOOST 组件，不重装操作系统。",
-                          ],
-                          [
-                            "repair",
-                            "安全升级 / 修复",
-                            "优先保留已有认证与端口，失败可回滚受管变更。",
-                          ],
-                        ].map(([v, t, d]) => (
-                          <label className="radio-card" key={v}>
-                            <input
-                              type="radio"
-                              checked={mode === v}
-                              onChange={() => setMode(v)}
-                            />
-                            <span>
-                              <strong>{t}</strong>
-                              <small>{d}</small>
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    </fieldset>
+                    <Notice tone="orange">
+                      每次均全新部署受管 MSBOOST 组件，重新生成认证和端口；不会重装操作系统。请先备份旧配置，原配置部署成功后将失效。
+                    </Notice>
                     <Notice tone="orange">
                       本功能仅限游戏用途，禁止用于翻墙、公共代理、违法活动或其他与游戏无关的用途。(MSBOOST
                       将屏蔽部分网站)
@@ -816,6 +789,9 @@ export function ToolPage({
                   </>
                 )}
                 <ErrorNotice error={error} />
+                {(kind === "deploy" || kind === "relay") && (
+                  <Notice tone="orange">仅支持 Debian 系统部署（Debian 11 或以上版本）。</Notice>
+                )}
                 <div className="form-actions">
                   <Button type="submit" primary disabled={busy}>
                     {busy

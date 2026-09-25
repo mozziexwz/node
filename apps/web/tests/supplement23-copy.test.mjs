@@ -240,6 +240,9 @@ test(
               ),
             ).toBeVisible();
             await expect(
+              page.getByText("仅支持 Debian 系统部署（Debian 11 或以上版本）。", { exact: true }),
+            ).toBeVisible();
+            await expect(
               page.locator('[data-testid="cleanup-panel"] > summary'),
             ).toHaveText("清理中转服务器配置");
             await navigate(page, "deploy");
@@ -249,6 +252,11 @@ test(
             await expect(page.locator(".page-heading p")).toHaveText(
               "在你的VPS上部署游戏节点，并下载MSBOOST配置文件。",
             );
+            await expect(page.getByText("安全升级 / 修复", { exact: true })).toHaveCount(0);
+            await expect(page.getByText(/每次均全新部署受管 MSBOOST 组件/)).toBeVisible();
+            await expect(
+              page.getByText("仅支持 Debian 系统部署（Debian 11 或以上版本）。", { exact: true }),
+            ).toBeVisible();
             await navigate(page, "dd");
             await expect(page.getByRole("heading", { level: 1 })).toHaveText(
               "DD 系统",

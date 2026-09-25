@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -163,25 +165,74 @@ func TestDDRequiresPreparationAndRebootEvidence(t *testing.T) {
 		})
 	}
 }
-func TestFreshRepairAndIntegrity(t *testing.T) {
-	for _, mode := range []string{"fresh", "repair"} {
-		remote := &fakeRemote{run: func(SSH, string) ([]byte, error) { return nil, errors.New("stop before real install") }}
-		e := &Engine{Remote: remote}
-		e.Execute(context.Background(), Job{ID: "deploy", Request: Request{Kind: "deploy", SSH: testSSH("8.8.8.8"), Mode: mode}, Script: testAsset()})
-		if len(remote.scripts) != 1 {
-			t.Fatal("missing command")
+func TestFreshOnlyAndIntegrity(t *testing.T) {
+	remote := &fakeRemote{run: func(_ SSH, script string) ([]byte, error) {
+		if script == debianPreflightScript {
+			return []byte("MSBOOST_READY=1\n"), nil
 		}
-		hasNew := strings.Contains(remote.scripts[0], `"$node_user" "$node_pass"`)
-		if hasNew != (mode == "fresh") {
-			t.Fatalf("incorrect mode %s", mode)
-		}
+		return nil, errors.New("stop before real install")
+	}}
+	e := &Engine{Remote: remote}
+	e.Execute(context.Background(), Job{ID: "deploy", Request: Request{Kind: "deploy", SSH: testSSH("8.8.8.8"), Mode: "fresh"}, Script: testAsset()})
+	if len(remote.scripts) != 2 || remote.scripts[0] != debianPreflightScript ||
+		!strings.Contains(remote.scripts[1], `"$node_user" "$node_pass"`) ||
+		!strings.Contains(remote.scripts[1], `MSBOOST_FORCE_FRESH=1`) {
+		t.Fatal("fresh mode did not preflight and replace managed credentials/port")
 	}
-	remote := &fakeRemote{run: func(SSH, string) ([]byte, error) { t.Fatal("tampered script executed"); return nil, nil }}
+	rejected := &fakeRemote{run: func(SSH, string) ([]byte, error) { t.Fatal("repair reached SSH"); return nil, nil }}
+	out := (&Engine{Remote: rejected}).Execute(context.Background(), Job{Request: Request{Kind: "deploy", Mode: "repair", SSH: testSSH("8.8.8.8")}, Script: testAsset()})
+	if out.State != "failed" || out.ErrorCode != "invalid_request" {
+		t.Fatal("legacy repair mode accepted", out)
+	}
+	remote = &fakeRemote{run: func(SSH, string) ([]byte, error) { t.Fatal("tampered script executed"); return nil, nil }}
 	asset := testAsset()
 	asset.Data = append(asset.Data, byte('x'))
-	out := (&Engine{Remote: remote}).Execute(context.Background(), Job{Request: Request{Kind: "deploy", Mode: "fresh", SSH: testSSH("8.8.8.8")}, Script: asset})
+	out = (&Engine{Remote: remote}).Execute(context.Background(), Job{Request: Request{Kind: "deploy", Mode: "fresh", SSH: testSSH("8.8.8.8")}, Script: asset})
 	if out.State != "failed" || out.Phase != "integrity" {
 		t.Fatal(out)
+	}
+}
+
+func TestManagedFreshInstallerCannotReusePriorAuthOrPort(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "installers", "node", "msboost.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+	for _, guard := range []string{
+		`if [[ "${MSBOOST_FORCE_FRESH:-0}" != 1 && -z "${USER_NAME}" ]]; then`,
+		`if [[ "${MSBOOST_FORCE_FRESH:-0}" != 1 && -z "${USER_PASS}" ]]; then`,
+		`if [[ "${MSBOOST_FORCE_FRESH:-0}" != 1 && -z "${PORT}" ]]; then`,
+		`"${candidate}" == "${OLD_CONFIG_PORT}"`,
+	} {
+		if !strings.Contains(script, guard) {
+			t.Fatalf("managed fresh guard missing: %s", guard)
+		}
+	}
+}
+
+func TestDebianPreflightRejectsBeforeMutation(t *testing.T) {
+	for _, kind := range []string{"deploy", "relay"} {
+		t.Run(kind, func(t *testing.T) {
+			remote := &fakeRemote{run: func(_ SSH, script string) ([]byte, error) {
+				if script != debianPreflightScript {
+					t.Fatal("unsupported OS reached mutating script")
+				}
+				return []byte("MSBOOST_ERROR_CODE=unsupported_debian\nMSBOOST_ERROR_PHASE=preflight\n"), errors.New("unsupported")
+			}}
+			request := Request{Kind: kind, SSH: testSSH("8.8.8.8"), Mode: "fresh"}
+			if kind == "relay" {
+				request.Mode = ""
+				request.ClientConfig = []byte(sampleConfig)
+			}
+			result := (&Engine{Remote: remote}).Execute(context.Background(), Job{ID: "reject-os", Request: request, Script: testAsset()})
+			if result.State != "failed" || result.ErrorCode != "unsupported_debian" || result.Phase != "preflight" || len(remote.scripts) != 1 {
+				t.Fatal("OS not rejected before mutation", result, len(remote.scripts))
+			}
+			if result.Message != "当前服务器非 Debian 系统，请在 VPS 服务商面板重装 Debian 11 或以上版本系统后再次尝试。" {
+				t.Fatal(result.Message)
+			}
+		})
 	}
 }
 func TestFrontAddsHopWithoutSkippingRelay(t *testing.T) {

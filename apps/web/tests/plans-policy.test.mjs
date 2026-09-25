@@ -81,13 +81,23 @@ test(
         name: "体验权益",
         currentHoldersOnly: false,
         trial: true,
-        eligible: false,
-        reason: "体验权益每位会员终身只能兑换一次",
+        maxPurchasesPerUser: 1,
+        eligible: true,
+        reason: "",
       },
       {
         ...basePlan,
         id: "open-plan",
         name: "开放权益",
+        currentHoldersOnly: false,
+        eligible: true,
+        reason: "",
+      },
+      {
+        ...basePlan,
+        id: "unlisted-plan",
+        name: "已下架权益",
+        enabled: false,
         currentHoldersOnly: false,
         eligible: true,
         reason: "",
@@ -139,7 +149,9 @@ test(
 
       const member = page.locator(".member-fixture");
       await expect(member.locator(".summary")).toContainText("可用枫叶：0 个");
-      await expect(page.locator(".wallet-fixture .stat-value")).toHaveText("0 个");
+      await expect(page.locator(".wallet-fixture .stat-value")).toHaveText(
+        "0 个",
+      );
       const holderCard = member
         .locator(".card")
         .filter({ hasText: "老用户权益" });
@@ -149,8 +161,9 @@ test(
         holderCard.getByRole("button", { name: "暂不可兑换" }),
       ).toBeDisabled();
       const trialCard = member.locator(".card").filter({ hasText: "体验权益" });
-      await expect(trialCard).toContainText("每位用户终身仅可兑换一次");
-      await expect(trialCard).toContainText("体验权益每位会员终身只能兑换一次");
+      await expect(trialCard).toContainText("每位用户限兑1次，已兑换1次");
+      await expect(trialCard).toContainText("已达到此权益的兑换次数上限");
+      await expect(trialCard).not.toContainText("终身");
       await expect(
         trialCard.getByRole("button", { name: "暂不可兑换" }),
       ).toBeDisabled();
@@ -159,6 +172,16 @@ test(
           .locator(".card")
           .filter({ hasText: "开放权益" })
           .getByRole("button", { name: "选择权益" }),
+      ).toBeEnabled();
+      const unlistedCard = member
+        .locator(".card")
+        .filter({ hasText: "已下架权益" });
+      await expect(unlistedCard).toContainText("已下架 · 仅限当前持有人续兑");
+      await expect(unlistedCard).toContainText(
+        "仅当前仍有效且持有此权益的用户可续兑",
+      );
+      await expect(
+        unlistedCard.getByRole("button", { name: "选择权益" }),
       ).toBeEnabled();
 
       const admin = page.locator(".admin-fixture");
@@ -171,19 +194,34 @@ test(
       const holders = dialog.getByRole("checkbox", {
         name: "仅允许当前该权益有效用户兑换",
       });
-      const trial = dialog.getByRole("checkbox", {
-        name: "体验权益（每位用户仅可兑换一次）",
-      });
       await expect(holders).toBeChecked();
-      await expect(trial).not.toBeChecked();
-      await trial.check();
-      await expect(holders).not.toBeChecked();
+      await expect(
+        dialog.getByRole("checkbox", { name: /体验权益/ }),
+      ).toHaveCount(0);
+      await dialog
+        .getByRole("spinbutton", { name: "每人限兑次数（0不限兑）" })
+        .fill("2");
       await dialog.getByRole("button", { name: "保存" }).click();
       await expect.poll(() => writes.length).toBe(1);
       assert.equal(writes[0].path, "/api/admin/plans/holders-plan");
       assert.equal(writes[0].method, "PUT");
-      assert.equal(writes[0].body.currentHoldersOnly, false);
-      assert.equal(writes[0].body.trial, true);
+      assert.equal(writes[0].body.currentHoldersOnly, true);
+      assert.equal(writes[0].body.maxPurchasesPerUser, 2);
+      assert.equal("trial" in writes[0].body, false);
+      page.once("dialog", (confirmation) => confirmation.accept());
+      await admin
+        .getByRole("row")
+        .filter({ hasText: "老用户权益" })
+        .getByRole("button", { name: "重置限兑计数" })
+        .click();
+      await expect.poll(() => writes.length).toBe(2);
+      assert.equal(
+        writes[1].path,
+        "/api/admin/plans/holders-plan/reset-redemption-count",
+      );
+      assert.equal(writes[1].method, "POST");
+      assert.deepEqual(writes[1].body, {});
+      await expect(admin).toContainText("已重置“老用户权益”所有用户的限兑计数");
       assert.deepEqual(errors, []);
     } finally {
       await browser.close();

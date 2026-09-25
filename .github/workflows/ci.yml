@@ -129,6 +129,9 @@ jobs:
           bash agent.sh --help
           bash deploy/manage_test.sh
           bash deploy/bootstrap_test.sh
+          bash deploy/backup_activity_recovery_test.sh
+          bash deploy/relay_recovery_test.sh
+          bash deploy/agent_migration_test.sh
           bash deploy/disaster_test.sh
           bash deploy/disaster_joint_validation_test.sh
           bash deploy/relay_dynamic_user_validation_test.sh
@@ -273,4 +276,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ github.ref_name }}
         run: |
-          gh release create "$VERSION" .runtime/release/* --verify-tag --title "MSBOOST $VERSION" --notes-file docs/release-notes.md
+          awk -v heading="## $VERSION " '
+            index($0, heading) == 1 { found = 1 }
+            found && /^## / && index($0, heading) != 1 { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' docs/release-notes.md > .runtime/current-release-notes.md
+          test -s .runtime/current-release-notes.md
+          gh release create "$VERSION" .runtime/release/* --verify-tag --title "MSBOOST $VERSION" --notes-file .runtime/current-release-notes.md

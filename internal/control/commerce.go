@@ -18,19 +18,20 @@ const commerceDay = int64(24 * time.Hour / time.Millisecond)
 const commerceGB = int64(1000000000)
 
 type Plan struct {
-	ID                  string `json:"id"`
-	Name                string `json:"name"`
-	PriceCents          int64  `json:"priceCents"`
-	Days                int64  `json:"days"`
-	TrafficBytes        int64  `json:"trafficBytes"`
-	RateMbps            int64  `json:"rateMbps"`
-	Enabled             bool   `json:"enabled"`
-	Version             int64  `json:"version"`
-	CreatedAt           int64  `json:"createdAt"`
-	MaxPurchasesPerUser int64  `json:"maxPurchasesPerUser"`
-	Level               int    `json:"level"`
-	Trial               bool   `json:"trial"`
-	CurrentHoldersOnly  bool   `json:"currentHoldersOnly"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	PriceCents           int64  `json:"priceCents"`
+	Days                 int64  `json:"days"`
+	TrafficBytes         int64  `json:"trafficBytes"`
+	RateMbps             int64  `json:"rateMbps"`
+	Enabled              bool   `json:"enabled"`
+	Version              int64  `json:"version"`
+	CreatedAt            int64  `json:"createdAt"`
+	MaxPurchasesPerUser  int64  `json:"maxPurchasesPerUser"`
+	RedemptionCountEpoch int64  `json:"redemptionCountEpoch"`
+	Level                int    `json:"level"`
+	Trial                bool   `json:"trial"`
+	CurrentHoldersOnly   bool   `json:"currentHoldersOnly"`
 }
 type commercePlanView struct {
 	Plan
@@ -54,34 +55,93 @@ type BalanceCard struct {
 	SealedCode  string `json:"sealedCode,omitempty"`
 	Code        string `json:"code,omitempty"`
 	AmountCents int64  `json:"amountCents"`
-	Status      string `json:"status"`
-	Batch       string `json:"batch"`
-	UsedBy      string `json:"usedBy,omitempty"`
-	UsedByEmail string `json:"usedByEmail,omitempty"`
-	CreatedAt   int64  `json:"createdAt"`
-	UsedAt      int64  `json:"usedAt,omitempty"`
+	// CardVersion distinguishes legacy one-use codes from newly generated
+	// codes, where MaxUses == 0 explicitly means unlimited redemptions.
+	CardVersion int              `json:"cardVersion,omitempty"`
+	MaxUses     int64            `json:"maxUses"`
+	UsedCount   int64            `json:"usedCount"`
+	Uses        []BalanceCardUse `json:"uses,omitempty"`
+	Status      string           `json:"status"`
+	Batch       string           `json:"batch"`
+	UsedBy      string           `json:"usedBy,omitempty"`
+	UsedByEmail string           `json:"usedByEmail,omitempty"`
+	CreatedAt   int64            `json:"createdAt"`
+	UsedAt      int64            `json:"usedAt,omitempty"`
+}
+type BalanceCardUse struct {
+	UserID    string `json:"userId"`
+	UserEmail string `json:"userEmail,omitempty"`
+	UsedAt    int64  `json:"usedAt"`
 }
 type Order struct {
-	ID                 string `json:"id"`
-	UserID             string `json:"userId"`
-	UserEmail          string `json:"userEmail,omitempty"`
-	Plan               Plan   `json:"plan"`
-	AmountCents        int64  `json:"amountCents"`
-	Currency           string `json:"currency"`
-	ChannelID          string `json:"channelId"`
-	State              string `json:"state"`
-	RequestID          string `json:"requestId"`
-	TradeNo            string `json:"tradeNo,omitempty"`
-	PaymentURL         string `json:"paymentUrl,omitempty"`
-	CreatedAt          int64  `json:"createdAt"`
-	ExpiresAt          int64  `json:"expiresAt"`
-	PaidAt             int64  `json:"paidAt,omitempty"`
-	EntitlementVersion int64  `json:"entitlementVersion"`
-	ReviewReason       string `json:"reviewReason,omitempty"`
+	ID                   string `json:"id"`
+	UserID               string `json:"userId"`
+	UserEmail            string `json:"userEmail,omitempty"`
+	Plan                 Plan   `json:"plan"`
+	AmountCents          int64  `json:"amountCents"`
+	Currency             string `json:"currency"`
+	ChannelID            string `json:"channelId"`
+	State                string `json:"state"`
+	RequestID            string `json:"requestId"`
+	TradeNo              string `json:"tradeNo,omitempty"`
+	PaymentURL           string `json:"paymentUrl,omitempty"`
+	CreatedAt            int64  `json:"createdAt"`
+	ExpiresAt            int64  `json:"expiresAt"`
+	PaidAt               int64  `json:"paidAt,omitempty"`
+	EntitlementVersion   int64  `json:"entitlementVersion"`
+	RedemptionCountEpoch int64  `json:"redemptionCountEpoch"`
+	ReviewReason         string `json:"reviewReason,omitempty"`
 }
 type commerceIdempotency struct {
 	ObjectID    string `json:"objectId"`
 	Fingerprint string `json:"fingerprint"`
+}
+
+func cardUseLimit(c BalanceCard) int64 {
+	if c.CardVersion < 2 {
+		return 1
+	}
+	return c.MaxUses
+}
+
+func cardUseCount(c BalanceCard) int64 {
+	count := c.UsedCount
+	if int64(len(c.Uses)) > count {
+		count = int64(len(c.Uses))
+	}
+	if c.UsedBy != "" && count == 0 {
+		count = 1
+	}
+	return count
+}
+
+func cardUsedBy(c BalanceCard, userID string) bool {
+	if c.UsedBy == userID {
+		return true
+	}
+	for _, use := range c.Uses {
+		if use.UserID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func cardAdminView(s *State, c BalanceCard) BalanceCard {
+	c.MaxUses = cardUseLimit(c)
+	c.UsedCount = cardUseCount(c)
+	if len(c.Uses) == 0 && c.UsedBy != "" {
+		c.Uses = []BalanceCardUse{{UserID: c.UsedBy, UsedAt: c.UsedAt}}
+	}
+	for i := range c.Uses {
+		if user := s.Users[c.Uses[i].UserID]; user != nil {
+			c.Uses[i].UserEmail = user.Email
+		}
+	}
+	if user := s.Users[c.UsedBy]; user != nil {
+		c.UsedByEmail = user.Email
+	}
+	return c
 }
 
 func commerceID() string {
@@ -161,33 +221,6 @@ func effectiveCurrentPlanID(s *State, user *User, now int64) string {
 	return latestSuccessfulPlanID(s, user.ID)
 }
 
-func successfulPlanCount(s *State, userID, planID string) int64 {
-	var count int64
-	for _, order := range ListDocs[Order](s, "orders") {
-		if order.UserID == userID && order.Plan.ID == planID && order.State == "paid" {
-			count++
-		}
-	}
-	return count
-}
-
-func trialPreviouslyRedeemed(s *State, userID string) bool {
-	for _, order := range ListDocs[Order](s, "orders") {
-		if order.UserID != userID || order.State != "paid" {
-			continue
-		}
-		if order.Plan.Trial {
-			return true
-		}
-		// Trial did not exist in legacy snapshots. If that same plan is now
-		// explicitly marked as a trial, its successful history still counts.
-		if current, ok := LoadDoc[Plan](s, "plans", order.Plan.ID); ok && current.Trial {
-			return true
-		}
-	}
-	return false
-}
-
 func planPolicyAllowed(s *State, plan Plan, user *User, now int64) error {
 	if user == nil {
 		return errors.New("账号已失效")
@@ -196,14 +229,13 @@ func planPolicyAllowed(s *State, plan Plan, user *User, now int64) error {
 	// restriction on the live plan must also take effect. Apply the stricter
 	// union so neither changing the plan nor replaying an old order bypasses it.
 	if current, ok := LoadDoc[Plan](s, "plans", plan.ID); ok {
-		plan.Trial = plan.Trial || current.Trial
+		// Unlisting stops new customers but must not cut off renewal for an
+		// existing, still-valid holder of this exact entitlement. This also
+		// applies when an old pending payment is fulfilled after unlisting.
+		if !current.Enabled && effectiveCurrentPlanID(s, user, now) != plan.ID {
+			return errors.New("权益已下架，仅当前有效持有者可续兑")
+		}
 		plan.CurrentHoldersOnly = plan.CurrentHoldersOnly || current.CurrentHoldersOnly
-	}
-	if plan.Trial && plan.CurrentHoldersOnly {
-		return errors.New("权益兑换策略配置冲突，请联系管理员")
-	}
-	if plan.Trial && trialPreviouslyRedeemed(s, user.ID) {
-		return errors.New("体验权益每位会员终身只能兑换一次")
 	}
 	if plan.CurrentHoldersOnly {
 		if effectiveCurrentPlanID(s, user, now) != plan.ID {
@@ -226,6 +258,11 @@ func fulfillOrder(s *State, o *Order, u *User, now int64) error {
 	}
 	if err := planPurchaseLimit(s, o.Plan, u.ID); err != nil {
 		return err
+	}
+	// A pending checkout always consumes the current quota epoch at the time
+	// of fulfillment, including when an administrator reset it in between.
+	if current, ok := LoadDoc[Plan](s, "plans", o.Plan.ID); ok {
+		o.RedemptionCountEpoch = current.RedemptionCountEpoch
 	}
 	u.ExpiresAt = now + o.Plan.Days*commerceDay
 	u.TrafficTotal = o.Plan.TrafficBytes
@@ -251,15 +288,19 @@ func fulfillOrder(s *State, o *Order, u *User, now int64) error {
 // purchase and every payment path observes the same transaction-locked limit.
 func planPurchaseLimit(s *State, plan Plan, userID string) error {
 	limit := plan.MaxPurchasesPerUser
-	if current, ok := LoadDoc[Plan](s, "plans", plan.ID); ok && current.MaxPurchasesPerUser > 0 && (limit == 0 || current.MaxPurchasesPerUser < limit) {
-		limit = current.MaxPurchasesPerUser
+	epoch := plan.RedemptionCountEpoch
+	if current, ok := LoadDoc[Plan](s, "plans", plan.ID); ok {
+		epoch = current.RedemptionCountEpoch
+		if current.MaxPurchasesPerUser > 0 && (limit == 0 || current.MaxPurchasesPerUser < limit) {
+			limit = current.MaxPurchasesPerUser
+		}
 	}
 	if limit == 0 {
 		return nil
 	}
 	var used int64
 	for _, o := range ListDocs[Order](s, "orders") {
-		if o.UserID == userID && o.Plan.ID == plan.ID && o.State == "paid" {
+		if o.UserID == userID && o.Plan.ID == plan.ID && o.State == "paid" && o.RedemptionCountEpoch == epoch {
 			used++
 		}
 	}
@@ -279,6 +320,7 @@ func (a *App) RegisterCommerce(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/admin/plans", a.commercePlans)
 	mux.HandleFunc("POST /api/admin/plans", a.commerceSavePlan)
 	mux.HandleFunc("PUT /api/admin/plans/{id}", a.commerceSavePlan)
+	mux.HandleFunc("POST /api/admin/plans/{id}/reset-redemption-count", a.commerceResetPlanRedemptionCount)
 	mux.HandleFunc("DELETE /api/admin/plans/{id}", a.commerceDeletePlan)
 	mux.HandleFunc("GET /api/admin/cards", a.commerceCards)
 	mux.HandleFunc("POST /api/admin/cards", a.commerceGenerateCards)
@@ -300,19 +342,26 @@ func (a *App) commercePlans(w http.ResponseWriter, r *http.Request) {
 	requireVerifiedEmail := false
 	err := a.Store.View(func(s *State) error {
 		requireVerifiedEmail = boolSetting(s, "purchaseRequireVerifiedEmail")
+		plans := ListDocs[Plan](s, "plans")
+		planEpochs := make(map[string]int64, len(plans))
+		for _, p := range plans {
+			planEpochs[p.ID] = p.RedemptionCountEpoch
+		}
 		if viewer != nil {
 			for _, order := range ListDocs[Order](s, "orders") {
-				if order.UserID == viewer.ID && order.State == "paid" {
+				if order.UserID == viewer.ID && order.State == "paid" && order.RedemptionCountEpoch == planEpochs[order.Plan.ID] {
 					purchasedCounts[order.Plan.ID]++
 				}
 			}
 		}
-		for _, p := range ListDocs[Plan](s, "plans") {
+		now := time.Now().UnixMilli()
+		for _, p := range plans {
 			p.Level = entitlementLevel(p.Level)
-			if !p.Enabled && !admin {
+			unlistedHolder := !p.Enabled && viewer != nil && effectiveCurrentPlanID(s, s.Users[viewer.ID], now) == p.ID
+			if !p.Enabled && !admin && !unlistedHolder {
 				continue
 			}
-			view := commercePlanView{Plan: p, Eligible: p.Enabled}
+			view := commercePlanView{Plan: p, Eligible: p.Enabled || unlistedHolder}
 			if p.PriceCents < 0 || p.PriceCents%100 != 0 {
 				view.Eligible = false
 				view.Reason = "权益枫叶数配置无效，请联系管理员"
@@ -329,11 +378,14 @@ func (a *App) commercePlans(w http.ResponseWriter, r *http.Request) {
 				out = append(out, view)
 				continue
 			}
-			if policyErr := planPolicyAllowed(s, p, s.Users[viewer.ID], time.Now().UnixMilli()); policyErr != nil {
+			if policyErr := planPolicyAllowed(s, p, s.Users[viewer.ID], now); policyErr != nil {
 				if p.CurrentHoldersOnly {
 					continue
 				}
 				view.Eligible, view.Reason = false, policyErr.Error()
+			}
+			if view.Eligible && p.MaxPurchasesPerUser > 0 && purchasedCounts[p.ID] >= p.MaxPurchasesPerUser {
+				view.Eligible, view.Reason = false, "已达到该权益每位用户兑换次数上限"
 			}
 			out = append(out, view)
 		}
@@ -358,8 +410,8 @@ func (a *App) commerceSavePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	invalidLevel := p.Level < 0 || p.Level > 3
 	p.Level = entitlementLevel(p.Level)
-	if invalidLevel || p.Trial && p.CurrentHoldersOnly || strings.TrimSpace(p.Name) == "" || len(p.Name) > 100 || p.Days < 1 || p.Days > 31 || p.PriceCents < 0 || p.PriceCents > 100000000 || p.PriceCents%100 != 0 || p.TrafficBytes < 1 || p.TrafficBytes > 1000000000000000 || p.RateMbps < 1 || p.RateMbps > 100000 || p.MaxPurchasesPerUser < 0 || p.MaxPurchasesPerUser > 1000000 {
-		commerceError(w, 400, errors.New("权益名称、枫叶数（必须为整数）、1–31 天、流量、速率、等级或兑换策略无效；体验权益不能仅限当前持有者"))
+	if invalidLevel || strings.TrimSpace(p.Name) == "" || len(p.Name) > 100 || p.Days < 1 || p.Days > 31 || p.PriceCents < 0 || p.PriceCents > 100000000 || p.PriceCents%100 != 0 || p.TrafficBytes < 1 || p.TrafficBytes > 1000000000000000 || p.RateMbps < 1 || p.RateMbps > 100000 || p.MaxPurchasesPerUser < 0 || p.MaxPurchasesPerUser > 1000000 {
+		commerceError(w, 400, errors.New("权益名称、枫叶数（必须为整数）、1–31 天、流量、速率、等级或限兑次数无效"))
 		return
 	}
 	p.ID = r.PathValue("id")
@@ -369,21 +421,45 @@ func (a *App) commerceSavePlan(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return errors.New("权益不存在")
 			}
-			if p.Trial && !old.Trial {
-				for _, order := range ListDocs[Order](s, "orders") {
-					if order.Plan.ID == p.ID {
-						return errors.New("已被兑换记录引用的普通权益不能改为体验权益，请新建体验权益")
-					}
-				}
-			}
+			p.RedemptionCountEpoch = old.RedemptionCountEpoch
 			p.CreatedAt = old.CreatedAt
 			p.Version = old.Version + 1
 		} else {
 			p.ID = commerceID()
+			p.RedemptionCountEpoch = 0
 			p.CreatedAt = time.Now().UnixMilli()
 			p.Version = 1
 		}
 		return SaveDoc(s, "plans", p.ID, p)
+	})
+	if err != nil {
+		commerceError(w, 409, err)
+		return
+	}
+	WriteJSON(w, 200, p)
+}
+func (a *App) commerceResetPlanRedemptionCount(w http.ResponseWriter, r *http.Request) {
+	admin, err := a.Admin(r)
+	if err != nil {
+		commerceError(w, 403, err)
+		return
+	}
+	var p Plan
+	err = a.Store.Update(func(s *State) error {
+		var ok bool
+		p, ok = LoadDoc[Plan](s, "plans", r.PathValue("id"))
+		if !ok {
+			return errors.New("权益不存在")
+		}
+		if p.RedemptionCountEpoch == math.MaxInt64 {
+			return errors.New("限兑计数无法再次重置")
+		}
+		p.RedemptionCountEpoch++
+		p.Version++
+		if err := SaveDoc(s, "plans", p.ID, p); err != nil {
+			return err
+		}
+		return commerceAudit(s, admin.ID, "plans.reset-redemption-count", p.ID)
 	})
 	if err != nil {
 		commerceError(w, 409, err)
@@ -422,7 +498,7 @@ func (a *App) commerceWallet(w http.ResponseWriter, r *http.Request) {
 		for _, e := range ListDocs[LedgerEntry](s, "ledger") {
 			if e.UserID == u.ID {
 				if e.Kind == "card" {
-					if card, ok := LoadDoc[BalanceCard](s, "cards", e.Reference); ok && card.UsedBy == u.ID {
+					if card, ok := LoadDoc[BalanceCard](s, "cards", e.Reference); ok && cardUsedBy(card, u.ID) {
 						plain, err := a.Open(card.SealedCode)
 						if err != nil {
 							return errors.New("兑换码记录解密失败")
@@ -484,22 +560,32 @@ func (a *App) commerceRedeem(w http.ResponseWriter, r *http.Request) {
 			if card.CodeHash != hash {
 				continue
 			}
-			if card.UsedBy != "" {
+			if cardUsedBy(card, u.ID) {
 				return errors.New("兑换码无效或已被使用")
 			}
 			if card.Status != "active" {
 				return errors.New("兑换码无效或已被使用")
 			}
+			if limit := cardUseLimit(card); limit > 0 && cardUseCount(card) >= limit {
+				return errors.New("兑换码已达到使用次数上限")
+			}
 			if card.AmountCents < 100 || card.AmountCents%100 != 0 {
 				return errors.New("兑换码枫叶面额无效，请联系管理员")
 			}
 			user := s.Users[u.ID]
-			if err := appendLedger(s, user, card.AmountCents, "card", card.ID, "兑换码兑换", time.Now().UnixMilli()); err != nil {
+			now := time.Now().UnixMilli()
+			if err := appendLedger(s, user, card.AmountCents, "card", card.ID, "兑换码兑换", now); err != nil {
 				return err
 			}
-			card.Status = "used"
-			card.UsedBy = u.ID
-			card.UsedAt = time.Now().UnixMilli()
+			card.Uses = append(card.Uses, BalanceCardUse{UserID: u.ID, UserEmail: user.Email, UsedAt: now})
+			card.UsedCount = cardUseCount(card)
+			if card.UsedBy == "" {
+				card.UsedBy = u.ID
+				card.UsedAt = now
+			}
+			if limit := cardUseLimit(card); limit > 0 && card.UsedCount >= limit {
+				card.Status = "used"
+			}
 			if err := SaveDoc(s, "cards", card.ID, card); err != nil {
 				return err
 			}
@@ -537,10 +623,7 @@ func (a *App) commerceCards(w http.ResponseWriter, r *http.Request) {
 			c.Code = string(plain)
 			c.SealedCode = ""
 			c.CodeHash = ""
-			if user := s.Users[c.UsedBy]; user != nil {
-				c.UsedByEmail = user.Email
-			}
-			out = append(out, c)
+			out = append(out, cardAdminView(s, c))
 		}
 		return commerceAudit(s, admin.ID, "cards.list", "all")
 	})
@@ -560,13 +643,18 @@ func (a *App) commerceGenerateCards(w http.ResponseWriter, r *http.Request) {
 		Count       int    `json:"count"`
 		AmountCents int64  `json:"amountCents"`
 		Batch       string `json:"batch"`
+		MaxUses     *int64 `json:"maxUses"`
 	}
 	if err := Decode(r, &in); err != nil {
 		commerceError(w, 400, err)
 		return
 	}
-	if in.Count < 1 || in.Count > 1000 || in.AmountCents < 100 || in.AmountCents > 100000000 || in.AmountCents%100 != 0 || len(in.Batch) > 100 {
-		commerceError(w, 400, errors.New("数量须为1–1000，枫叶面额必须为正整数"))
+	maxUses := int64(1) // Existing API callers omitted this field: preserve one-use codes.
+	if in.MaxUses != nil {
+		maxUses = *in.MaxUses
+	}
+	if in.Count < 1 || in.Count > 1000 || in.AmountCents < 100 || in.AmountCents > 100000000 || in.AmountCents%100 != 0 || len(in.Batch) > 100 || maxUses < 0 || maxUses > 1000000 {
+		commerceError(w, 400, errors.New("数量须为1–1000，枫叶面额必须为正整数，使用次数须为0–1000000（0为不限）"))
 		return
 	}
 	out := []BalanceCard{}
@@ -577,7 +665,7 @@ func (a *App) commerceGenerateCards(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			c := BalanceCard{ID: commerceID(), CodeHash: commerceHash(code), SealedCode: sealed, AmountCents: in.AmountCents, Status: "active", Batch: in.Batch, CreatedAt: time.Now().UnixMilli()}
+			c := BalanceCard{ID: commerceID(), CodeHash: commerceHash(code), SealedCode: sealed, AmountCents: in.AmountCents, CardVersion: 2, MaxUses: maxUses, Status: "active", Batch: in.Batch, CreatedAt: time.Now().UnixMilli()}
 			if err := SaveDoc(s, "cards", c.ID, c); err != nil {
 				return err
 			}
@@ -621,16 +709,16 @@ func (a *App) commerceBatchCards(w http.ResponseWriter, r *http.Request) {
 			}
 			switch in.Action {
 			case "enable":
-				if c.UsedBy != "" {
-					return errors.New("已使用的兑换码不可重新启用")
+				if limit := cardUseLimit(c); limit > 0 && cardUseCount(c) >= limit || c.Status == "archived" {
+					return errors.New("已用尽或已归档的兑换码不可重新启用")
 				}
 				c.Status = "active"
 			case "disable":
-				if c.UsedBy == "" {
+				if c.Status != "archived" && c.Status != "used" {
 					c.Status = "disabled"
 				}
 			case "delete":
-				if c.UsedBy != "" {
+				if cardUseCount(c) > 0 {
 					c.Status = "archived"
 				} else {
 					DeleteDoc(s, "cards", id)
@@ -652,7 +740,7 @@ func (a *App) commerceBatchCards(w http.ResponseWriter, r *http.Request) {
 			c.Code = string(plain)
 			c.SealedCode = ""
 			c.CodeHash = ""
-			out = append(out, c)
+			out = append(out, cardAdminView(s, c))
 		}
 		return commerceAudit(s, admin.ID, "cards."+in.Action, strings.Join(in.IDs, ","))
 	})
@@ -768,7 +856,7 @@ func (a *App) commerceCreateOrder(w http.ResponseWriter, r *http.Request) {
 			return errors.New("剩余时间不少于30天且剩余流量不少于10GB，暂不可再次兑换")
 		}
 		p, ok := LoadDoc[Plan](s, "plans", in.PlanID)
-		if !ok || !p.Enabled {
+		if !ok {
 			return errors.New("权益不可兑换")
 		}
 		if p.PriceCents < 0 || p.PriceCents%100 != 0 {

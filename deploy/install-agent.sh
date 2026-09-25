@@ -17,19 +17,22 @@ usage() {
 令牌文件必须归 root 所有，权限 0600 或更严格，只包含对应角色的注册令牌。
 安装过程不会回显令牌。GOST 固定为已审核的 3.3.0，不使用 latest。
 只更新带 MSBOOST 所有权标记的安装；服务启动失败时尝试恢复原程序、服务与配置。
-v0.3.2 新装 relay 默认启用 keep_last；可显式 --offline-policy lease 兼容旧链。
+新装 relay 默认启用 keep_last；可显式 --offline-policy lease 兼容旧链。
 已有 lease 服务切换 keep_last 还需 --acknowledge-relay-restart。
-首次升级会重启 Agent/GOST 并中断原连接；新模式以整条线路节点实际确认生效。
+已有 keep_last 状态会优先使用旧管理令牌，不能靠粘贴新注册令牌重新绑定控制面。
+仅在旧转发允许全部断开时，显式传 --fresh-reset --acknowledge-relay-restart；
+安装器只归档本项目受管的 Relay v2 状态，保留 root 私有备份后重新注册。
 HELP
 }
 fail() { printf '错误：%s\n' "$*" >&2; exit 1; }
 step() { printf '\n  → %s\n' "$*" >&2; }
 install_agent_parse_args() {
-capability=''; server=''; agent_file=''; agent_sha=''; token_file=''; gost_version=''; offline_policy=''; offline_policy_set=0; acknowledge_restart=0
+capability=''; server=''; agent_file=''; agent_sha=''; token_file=''; gost_version=''; offline_policy=''; offline_policy_set=0; acknowledge_restart=0; fresh_reset=0
 while (( $# )); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --acknowledge-relay-restart) acknowledge_restart=1; shift ;;
+    --fresh-reset) fresh_reset=1; shift ;;
     --capability|--server|--agent|--agent-sha256|--token-file|--gost-version|--offline-policy)
       (( $# >= 2 )) || fail "缺少 $1 参数"
       case "$1" in
@@ -48,8 +51,9 @@ done
 [[ "$capability" == executor || "$capability" == relay ]] || fail '请选择 executor（控制执行机）或 relay（中转节点）。'
 if [[ $capability == relay ]]; then
   [[ -n $offline_policy ]] || offline_policy=keep_last
+  [[ $fresh_reset == 0 || ( $offline_policy == keep_last && $acknowledge_restart == 1 ) ]] || fail '全新重置中转节点需要 keep_last，并同时传 --acknowledge-relay-restart 明确确认旧连接将断开。'
 else
-  [[ $offline_policy_set == 0 && $acknowledge_restart == 0 ]] || fail '中转离线策略与重启确认只适用于 relay。'
+  [[ $offline_policy_set == 0 && $acknowledge_restart == 0 && $fresh_reset == 0 ]] || fail '中转离线策略、重启确认和全新重置只适用于 relay。'
   offline_policy=lease
 fi
 [[ $offline_policy == lease || $offline_policy == keep_last ]] || fail 'offline-policy 仅允许 lease 或 keep_last。'
@@ -121,6 +125,98 @@ relay_unit_uses_v2() {
   [[ $count == 1 && $role == 1 && $policy == 1 && $state_path == 1 && $gost_path == 1 ]]
 }
 
+# Resolve only systemd's two documented StateDirectory layouts. Never follow
+# an arbitrary link supplied at either path into a third-party directory.
+relay_state_location_at() {
+  local public=$1 private=$2
+  [[ ! -L $private ]] || return 1
+  if [[ -L $public ]]; then
+    [[ $(readlink -f -- "$public") == "$private" && -d $private ]] || return 1
+    printf '%s\n' "$private"
+  elif [[ -d $private ]]; then
+    [[ ! -e $public ]] || return 1
+    printf '%s\n' "$private"
+  elif [[ -d $public ]]; then
+    printf '%s\n' "$public"
+  elif [[ -e $public || -L $public || -e $private || -L $private ]]; then
+    return 1
+  fi
+}
+
+relay_state_has_identity_at() {
+  local dir=$1
+  [[ -e $dir/relay-v2-state.json || -L $dir/relay-v2-state.json ]]
+}
+
+# A fresh reset archives the complete private directory. Reject unexpected
+# entries, symlinks, hardlinks and nested directories so no other application
+# data can be moved under an MSBOOST-sounding path.
+relay_fresh_state_manifest_at() (
+  local dir=$1 entry name mode
+  [[ -d $dir && ! -L $dir ]] || return 1
+  mode=$(stat -c %a -- "$dir") || return 1
+  [[ $mode =~ ^[0-7]{3,4}$ && $((8#$mode & 0077)) == 0 ]] || return 1
+  shopt -s nullglob dotglob
+  for entry in "$dir"/*; do
+    name=${entry##*/}
+    [[ ! -L $entry ]] || return 1
+    case $name in
+      relay-token.json|relay-v2-state.json|relay-v2.lock|traffic-v2-journal.json|traffic-journal.json)
+        [[ -f $entry && $(stat -c %h -- "$entry") == 1 ]] || return 1 ;;
+      recovery.sock) [[ -S $entry ]] || return 1 ;;
+      rule-*.json)
+        # relayruntime.randomID is 24 random bytes encoded as 48 hex chars.
+        [[ $name =~ ^rule-[a-f0-9]{48}\.json$ && -f $entry && $(stat -c %h -- "$entry") == 1 ]] || return 1 ;;
+      *) return 1 ;;
+    esac
+  done
+)
+
+relay_unit_state_path() {
+  local unit_path=$1 line i
+  local -a words=()
+  relay_unit_uses_v2 "$unit_path" || return 1
+  while IFS= read -r line; do
+    [[ $line == ExecStart=* ]] || continue
+    read -r -a words <<< "${line#ExecStart=}"
+    for ((i=1; i<${#words[@]}; i+=2)); do
+      if [[ ${words[i]} == --state-dir ]]; then printf '%s\n' "${words[i+1]}"; return 0; fi
+    done
+  done < "$unit_path"
+  return 1
+}
+
+relay_fresh_reset_preflight_at() {
+  local public=$1 private=$2 old_unit=$3 marker=$4 requested=$5 state='' unit_state=''
+  relay_reset_state=''
+  state=$(relay_state_location_at "$public" "$private") || fail '旧中转状态路径含未受信链接或布局，拒绝重置。'
+  [[ -n $state ]] || return 0
+  if [[ $requested == 0 ]]; then
+    if relay_state_has_identity_at "$state" || { [[ -e $state/relay-token.json || -L $state/relay-token.json ]] && relay_unit_uses_v2 "$old_unit"; }; then
+      fail '检测到已有 Relay v2 身份。旧 keep_last 状态会优先使用旧管理令牌，粘贴新注册令牌不会重新绑定。若需全新注册，请确认所有旧转发可中断，再显式使用 --fresh-reset --acknowledge-relay-restart。'
+    fi
+    return 0
+  fi
+  [[ -f $marker && ! -L $marker && $(< "$marker") == MSBOOST_AGENT_MANAGED_V1 ]] || fail '旧 Agent 无本项目受管所有权标记，拒绝归档状态。'
+  [[ $(stat -c %u -- "$marker") == 0 && -f $old_unit && ! -L $old_unit && $(stat -c %u -- "$old_unit") == 0 ]] || fail '旧 Agent 所有权不可信，拒绝归档状态。'
+  unit_state=$(relay_unit_state_path "$old_unit") || fail '旧 Relay systemd 单元不是本项目受管的 keep_last 形态，拒绝归档状态。'
+  [[ $(readlink -f -- "$unit_state") == "$state" ]] || fail '旧 Relay 单元与状态目录不一致，拒绝归档状态。'
+  relay_fresh_state_manifest_at "$state" || fail '旧 Relay 状态目录包含外来文件、不安全链接或权限，拒绝移动；请人工核查。'
+  relay_reset_state=$state
+}
+
+# A token file proves only /register succeeded. A nonempty durable control
+# epoch is written by runV2 only after a successful authenticated /v2/sync;
+# otherwise systemd can be active while the dashboard still says offline.
+relay_registration_ready_at() {
+  local dir=$1 policy=$2
+  [[ -f $dir/relay-token.json && ! -L $dir/relay-token.json ]] || return 1
+  [[ $policy == keep_last ]] || return 0
+  [[ -f $dir/relay-v2-state.json && ! -L $dir/relay-v2-state.json ]] || return 1
+  grep -Eq '"controlEpoch":"[A-Za-z0-9_.:-]+"' "$dir/relay-v2-state.json" || return 1
+  ! grep -Eq '"recoveryRequired":true' "$dir/relay-v2-state.json"
+}
+
 relay_migration_preflight() {
   local role=$1 policy=$2 active=$3 acknowledged=$4 candidate=$5 evidence=0
   relay_v2_evidence && evidence=1 || true
@@ -146,6 +242,26 @@ install_agent_cleanup() {
   if (( mutation && ! committed )); then
     systemctl stop "$unit" >/dev/null 2>&1 || true
     systemctl disable "$unit" >/dev/null 2>&1 || true
+    if (( ${relay_reset_moved:-0} )); then
+      local state_restore_ok=1
+      if [[ -e $relay_reset_state || -L $relay_reset_state ]]; then
+        if [[ -d $relay_reset_state && ! -L $relay_reset_state && ! -e $backup/failed-new-relay-state ]] && mv -T -- "$relay_reset_state" "$backup/failed-new-relay-state"; then
+          :
+        else
+          state_restore_ok=0
+        fi
+      fi
+      if (( state_restore_ok )) && [[ -d $backup/relay-state && ! -L $backup/relay-state && ! -e $relay_reset_state ]] && mv -T -- "$backup/relay-state" "$relay_reset_state"; then
+        :
+      else
+        state_restore_ok=0
+      fi
+      if (( ! state_restore_ok )); then
+        printf '全新重置失败且旧状态未能安全自动恢复；已停止服务，旧私有状态留在 %s。不要重复安装，请人工核查。\n' "$backup" >&2
+        [[ "$stage" == /tmp/msboost-agent.* ]] && rm -rf -- "$stage"
+        exit "$code"
+      fi
+    fi
     if ! relay_rollback_allowed "$capability" "$backup"; then
       printf '新 v2 状态已存在，禁止自动回滚到旧程序/lease 单元。已停用本次安装的服务，保留兼容新文件和全部状态；请用兼容 v2 版本修复。原私有备份：%s\n' "$backup" >&2
       [[ "$stage" == /tmp/msboost-agent.* ]] && rm -rf -- "$stage"
@@ -244,6 +360,10 @@ if [[ ! -f "$managed/managed-v1" ]]; then
 else
   [[ "$(< "$managed/managed-v1")" == MSBOOST_AGENT_MANAGED_V1 ]] || fail '已有安装的所有权标记不正确。'
 fi
+relay_reset_state=''; relay_reset_moved=0
+if [[ $capability == relay ]]; then
+  relay_fresh_reset_preflight_at /var/lib/msboost-relay /var/lib/private/msboost-relay "$unitfile" "$managed/managed-v1" "$fresh_reset"
+fi
 backup=''; mutation=0; committed=0; was_active=0
 systemctl is-active --quiet "$unit" && was_active=1 || true
 stage=$(mktemp -d /tmp/msboost-agent.XXXXXX)
@@ -321,8 +441,11 @@ fi
 printf '\n[Install]\nWantedBy=multi-user.target\n' >> "$stage/unit"
 
 step '保存私有回滚备份并安装服务'
+[[ -d /var/backups && ! -L /var/backups && $(stat -c %u -- /var/backups) == 0 && ! -L /var/backups/msboost-agent ]] || fail 'Agent 备份父路径不是受信 root 目录。'
 install -d -m 0700 /var/backups/msboost-agent
+[[ -d /var/backups/msboost-agent && ! -L /var/backups/msboost-agent && $(stat -c '%u:%a' -- /var/backups/msboost-agent) == 0:700 ]] || fail 'Agent 私有备份目录所有权或权限不安全。'
 backup=$(mktemp -d "/var/backups/msboost-agent/${capability}.XXXXXXXX")
+[[ -d $backup && ! -L $backup && $(stat -c '%u:%a' -- "$backup") == 0:700 ]] || fail 'Agent 私有备份创建失败或权限不安全。'
 [[ ! -f "$binary" ]] || cp -p -- "$binary" "$backup/binary"
 [[ ! -f "$envfile" ]] || cp -p -- "$envfile" "$backup/environment"
 [[ ! -f "$unitfile" ]] || cp -p -- "$unitfile" "$backup/unit"
@@ -330,8 +453,28 @@ backup=$(mktemp -d "/var/backups/msboost-agent/${capability}.XXXXXXXX")
 # immediately before mutation while the cross-role installation lock is held.
 was_active=0; systemctl is-active --quiet "$unit" && was_active=1 || true
 relay_migration_preflight "$capability" "$offline_policy" "$was_active" "$acknowledge_restart" "$stage/msboost-agent"
+if [[ $capability == relay ]]; then
+  relay_fresh_reset_preflight_at /var/lib/msboost-relay /var/lib/private/msboost-relay "$unitfile" "$managed/managed-v1" "$fresh_reset"
+fi
+if [[ -n $relay_reset_state ]]; then
+  [[ $relay_reset_state == /var/lib/msboost-relay || $relay_reset_state == /var/lib/private/msboost-relay ]] || fail '拒绝移动非受管状态路径。'
+  [[ ! -L $(dirname -- "$relay_reset_state") && $(stat -c %u -- "$(dirname -- "$relay_reset_state")") == 0 ]] || fail '状态父目录不受 root 管理，拒绝移动。'
+  [[ $(stat -c %d -- "$relay_reset_state") == "$(stat -c %d -- "$backup")" ]] || fail '旧状态和私有备份不在同一文件系统，拒绝非原子的重置。'
+fi
 mutation=1
-systemctl stop "$unit" >/dev/null 2>&1 || true
+if (( fresh_reset )) && [[ -n $relay_reset_state ]]; then
+  systemctl stop "$unit" >/dev/null || fail '无法停止旧中转 Agent，状态未移动。'
+  systemctl is-active --quiet "$unit" && fail '旧中转 Agent 仍在运行，拒绝移动状态。'
+  relay_fresh_state_manifest_at "$relay_reset_state" || fail '停止服务后状态目录发生变化，拒绝移动。'
+  mv -T -- "$relay_reset_state" "$backup/relay-state" || fail '旧 Relay 状态归档失败，未启动新服务。'
+  relay_reset_moved=1
+  # Keep systemd's public StateDirectory link from dangling while the new
+  # DynamicUser service is prepared; systemd will set the runtime owner.
+  mkdir -m 0700 -- "$relay_reset_state" || fail '无法创建空白受管状态目录，正尝试恢复旧状态。'
+  printf '旧 Relay v2 状态已归档到 root 私有备份；现有转发连接已明确中断。\n' >&2
+else
+  systemctl stop "$unit" >/dev/null 2>&1 || true
+fi
 install -d -m 0755 "$managed"
 printf 'MSBOOST_AGENT_MANAGED_V1\n' > "$managed/managed-v1"
 if [[ "$capability" == relay ]]; then install -m 0755 "$stage/gost" "$managed/gost-v3.3.0"; fi
@@ -344,5 +487,14 @@ step '启动服务并检查本机运行状态'
 systemctl restart "$unit"
 sleep 3
 systemctl is-active --quiet "$unit" || fail 'Agent 未保持运行，将尝试回滚；请随后检查服务日志。'
+if [[ $capability == relay ]]; then
+  registered=0
+  for attempt in $(seq 1 30); do
+    systemctl is-active --quiet "$unit" || fail '中转 Agent 在注册期间退出，将尝试回滚。'
+    if relay_registration_ready_at "$relay_state_dir" "$offline_policy"; then registered=1; break; fi
+    sleep 1
+  done
+  (( registered )) || fail '中转 Agent 未完成注册及真实 v2 控制同步：可能是令牌失效、WAF 阻断、网络故障或恢复核对。进程 active 不代表面板在线；已停止本次安装并尝试恢复旧状态，请检查服务日志。'
+fi
 committed=1
 printf '\n安装完成：%s\n程序和 GOST 已校验。请在控制面后台确认在线与注册状态。\n私有安装前备份：%s\n查看本机日志：journalctl -u %s -n 80 --no-pager\n请勿公开令牌或完整环境文件。\n' "$unit" "$backup" "$unit"

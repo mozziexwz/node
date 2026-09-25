@@ -5,7 +5,9 @@
 
 backup_activity_docker() (
   unset DOCKER_HOST DOCKER_CONTEXT DOCKER_DEFAULT_PLATFORM
-  docker --host unix:///var/run/docker.sock "$@"
+  # manage.sh's docker() wrapper already pins the local Unix socket. Passing a
+  # second --host here makes Docker reject every reconcile/recovery operation.
+  docker "$@"
 )
 
 backup_activity_open_tty() {

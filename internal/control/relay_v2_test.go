@@ -265,7 +265,7 @@ func TestRelayV2PolicyViewWaitsForAppliedGenerationButRetainsLastRuntime(t *test
 	}
 }
 
-func TestRelayV2AdminEditsPreserveCapabilityAndResetDoesNotPromiseLeaseStop(t *testing.T) {
+func TestRelayV2AdminEditsPreserveCapabilityAndRejectOrdinaryEnrollment(t *testing.T) {
 	f := newRelayV2Fixture(t)
 	f.ready(t)
 	admin := &User{ID: "operator", Role: "admin", Status: "active"}
@@ -296,17 +296,28 @@ func TestRelayV2AdminEditsPreserveCapabilityAndResetDoesNotPromiseLeaseStop(t *t
 	if w.Code != 202 || strings.Contains(w.Body.String(), "retryAfter") {
 		t.Fatal("v2 target reset falsely promised a time-based release")
 	}
-	w = commerceTestRequest(f.mux, admin, http.MethodPost, "/api/admin/relay-agents/"+input.ID+"/enrollment", nil)
-	if w.Code != 200 || strings.Contains(w.Body.String(), "previousLeaseExpiresAt") {
-		t.Fatal("token rotation falsely promised old forwarding stopped")
-	}
-	in := f.requests[0]
-	in.Sequence++
-	f.send(t, 0, in, 401)
+	var before RelayAgent
+	var recoveryBefore bool
 	if err := f.app.Store.View(func(s *State) error {
+		before, _ = LoadDoc[RelayAgent](s, "relay_agents", input.ID)
 		rule, _ := LoadDoc[UserRule](s, "user_rules", f.user.ID+":route")
-		if !relayRecoveryRequired(s, rule) {
-			t.Fatal("token rotation dropped recovery resource lock")
+		recoveryBefore = relayRecoveryRequired(s, rule)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w = commerceTestRequest(f.mux, admin, http.MethodPost, "/api/admin/relay-agents/"+input.ID+"/enrollment", nil)
+	if w.Code != 409 || strings.Contains(w.Body.String(), "enrollmentToken") {
+		t.Fatalf("confirmed v2 enrollment unexpectedly rotated: %d %s", w.Code, w.Body.String())
+	}
+	if err := f.app.Store.View(func(s *State) error {
+		after, _ := LoadDoc[RelayAgent](s, "relay_agents", input.ID)
+		if after.TokenHash != before.TokenHash || after.EnrollmentHash != before.EnrollmentHash || after.LastSeen != before.LastSeen || after.ReconcileState != before.ReconcileState || after.KeepLastConfirmed != before.KeepLastConfirmed {
+			t.Fatal("rejected enrollment mutated confirmed v2 identity")
+		}
+		rule, _ := LoadDoc[UserRule](s, "user_rules", f.user.ID+":route")
+		if relayRecoveryRequired(s, rule) != recoveryBefore {
+			t.Fatal("rejected enrollment changed recovery resource lock")
 		}
 		return nil
 	}); err != nil {

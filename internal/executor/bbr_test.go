@@ -41,18 +41,21 @@ func TestBBRTuningIsLimitedToCustomerVPSTasks(t *testing.T) {
 		t.Fatal("BBR settings must be reapplied after provider sysctl.conf is replayed")
 	}
 
-	remote := &fakeRemote{run: func(SSH, string) ([]byte, error) {
-		return nil, errors.New("stop before mutation")
+	remote := &fakeRemote{run: func(_ SSH, script string) ([]byte, error) {
+		if script == debianPreflightScript {
+			return []byte("MSBOOST_READY=1\n"), nil
+		}
+		return nil, errors.New("stop before install")
 	}}
 	(&Engine{Remote: remote}).Execute(context.Background(), Job{
 		ID:      "deploy-bbr",
 		Request: Request{Kind: "deploy", Mode: "fresh", SSH: testSSH("8.8.8.8")},
 		Script:  testAsset(),
 	})
-	if len(remote.scripts) != 1 || !strings.Contains(remote.scripts[0], bbrTuneScript) {
+	if len(remote.scripts) != 2 || remote.scripts[0] != debianPreflightScript || !strings.Contains(remote.scripts[1], bbrTuneScript) {
 		t.Fatal("MSBOOST deployment did not configure BBR on the customer VPS")
 	}
-	if strings.Index(remote.scripts[0], bbrTuneScript) > strings.Index(remote.scripts[0], `bash "$work/installer.sh"`) {
+	if strings.Index(remote.scripts[1], bbrTuneScript) > strings.Index(remote.scripts[1], `bash "$work/installer.sh"`) {
 		t.Fatal("BBR setup must finish before the MSBOOST installer begins")
 	}
 	if !strings.Contains(relayInstallScript, bbrTuneScript) {

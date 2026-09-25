@@ -32,11 +32,17 @@ version_check_tree() {
   [[ $value == "$base"$'\n'"$base" ]] || return 1
   value=$(grep -Eo 'https://raw\.githubusercontent\.com/mozziexwz/node/[^ /`]+/agent\.sh' "$repo/apps/web/src/admin.tsx") || return 1
   mapfile -t admin_urls <<< "$value"
-  # Bind both the visible installation command and the clipboard command.
-  [[ ${#admin_urls[@]} == 2 ]] || return 1
+  # The visible command and clipboard copy must share one version-pinned
+  # template, including the explicit fresh-reset variant.
+  [[ ${#admin_urls[@]} == 1 ]] || return 1
   for url in "${admin_urls[@]}"; do
     [[ $url == "https://raw.githubusercontent.com/mozziexwz/node/$tag/agent.sh" ]] || return 1
   done
+  grep -Fq -- '{agentBootstrapCommand}' "$repo/apps/web/src/admin.tsx" || return 1
+  grep -Fq -- 'copyText(agentBootstrapCommand)' "$repo/apps/web/src/admin.tsx" || return 1
+  grep -Fq -- 'const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;' "$repo/apps/web/src/admin.tsx" || return 1
+  grep -Fq -- '{relayFreshResetCommand}' "$repo/apps/web/src/admin.tsx" || return 1
+  grep -Fq -- 'copyText(relayFreshResetCommand)' "$repo/apps/web/src/admin.tsx" || return 1
 }
 version_test_main() {
   [[ $# -le 1 ]] || return 2
@@ -47,7 +53,7 @@ version_test_main() {
     tag=$(sed -n 's/^readonly INITIAL_VERSION=\(v[^[:space:]]*\)$/\1/p' "$repo/install.sh") || return 1
   fi
   if ! version_check_tree "$repo" "$tag"; then
-    printf '%s\n' 'FAIL: candidate/tag version differs across install, Agent, Compose, env, server, web package or admin clipboard defaults' >&2
+    printf '%s\n' 'FAIL: candidate/tag version differs across install, Agent, Compose, env, server, web package or admin command defaults' >&2
     return 1
   fi
   printf 'PASS: %s defaults and both admin Agent commands agree (publication not asserted)\n' "$tag"
