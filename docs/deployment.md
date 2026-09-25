@@ -1,12 +1,12 @@
 # MSBOOST 部署与运维
 
-控制面目标为 **Debian 12/13，amd64 或 arm64**。v0.3.3 的标签、Release 资产、双架构镜像和 CI 全部成功后，安装器才从公开 Release 下载部署包并校验 SHA256，默认使用预构建镜像 `ghcr.io/mozziexwz/node:v0.3.3`，不要求在 VPS 编译 Go 或网页。候选源码中的版本号本身不等于已经发布。客户 VPS 与 DD 的不同范围见[平台支持说明](platform-support.md)。
+控制面目标为 **Debian 12/13，amd64 或 arm64**。[v0.3.3 正式 Release](https://github.com/mozziexwz/node/releases/tag/v0.3.3)与[标签 CI](https://github.com/mozziexwz/node/actions/runs/36163149523)已发布并通过核验。安装器从公开 Release 下载部署包并校验 SHA256，默认使用预构建镜像 `ghcr.io/mozziexwz/node:v0.3.3`，不要求在 VPS 编译 Go 或网页。实际公开资产、真实 VPS 结果和未覆盖项见[正式发布后验收记录](acceptance-vps-20260926.md)；客户 VPS 与 DD 的不同范围见[平台支持说明](platform-support.md)。
 
-本文按当前 `install.sh`、`deploy/manage.sh`、Compose 和 `agent.sh` 编写。安装优先从 GHCR 拉取镜像；GHCR 包暂为私有或访问失败时，使用同版本 Release 的预构建镜像归档。两种渠道都不可用才明确失败，不会静默改为源码构建。实际发布状态以对应版本资产为准；本文不声明客户 VPS、支付或游戏链路已经通过验收。
+本文按当前 `install.sh`、`deploy/manage.sh`、Compose 和 `agent.sh` 编写。安装优先从 GHCR 拉取镜像；若访问失败，使用同版本 Release 的预构建镜像归档。两种渠道都不可用才明确失败，不会静默改为源码构建。v0.3.3 已有 Debian 11/12/13 客户 VPS 免费全新部署与公网 TCP 验收；这不等于真实支付、游戏协议、arm64 真机运行、DD 或完整整站卸载/恢复通过，详见[验收记录](acceptance-vps-20260926.md)。
 
 ## 1. Debian 12/13 一键安装
 
-推荐在全新 Debian 12/13 VPS 上以 root 安装 v0.3.3。先将真实域名解析到该 VPS，开放 TCP 80、443，并确保服务器能够访问 Docker、GitHub 和 GHCR。安装目录固定为 `/opt/msboost`，Compose 项目名为 `msboost`。下列入口只应在 v0.3.3 Release 及对应资产确实公开后使用；发布前需要立即安装时应使用已发布且资产完整的旧版本固定入口。
+推荐在全新 Debian 12/13 VPS 上以 root 安装 v0.3.3。先将真实域名解析到该 VPS，开放 TCP 80、443，并确保服务器能够访问 Docker、GitHub 和 GHCR。安装目录固定为 `/opt/msboost`，Compose 项目名为 `msboost`。下列入口固定到已发布的 v0.3.3；执行前仍须核对[Release](https://github.com/mozziexwz/node/releases/tag/v0.3.3)、`SHA256SUMS` 和本机适用架构，不能用未经核验的分支脚本替代。
 
 ```sh
 apt-get update
@@ -131,8 +131,8 @@ Compose 默认运行预构建 MSBOOST、PostgreSQL 17 和 Caddy。仅 Caddy 的 
 
 | 字段 | 用途 |
 |---|---|
-| `MSBOOST_VERSION` | 固定目标版本；v0.3.3 入口默认 `v0.3.3`，是否已发布仍以 Release 资产为准 |
-| `MSBOOST_IMAGE` | v0.3.3 发布后默认从 `ghcr.io/mozziexwz/node:v0.3.3` 获取，取得后固定 digest；归档方式记录独立本地标签 |
+| `MSBOOST_VERSION` | 固定目标版本；v0.3.3 入口默认 `v0.3.3`，安装时仍核对 Release 资产与清单 |
+| `MSBOOST_IMAGE` | v0.3.3 默认从 `ghcr.io/mozziexwz/node:v0.3.3` 获取，取得后固定 digest；归档方式记录独立本地标签 |
 | `MSBOOST_DATABASE_NAME` | 默认 `msboost`；仅在离线恢复核验全新数据库后手工切换。升级快照也备份这个选定库，不改 PostgreSQL 初始数据库名 |
 | `MSBOOST_IMAGE_ID` | 归档方式记录完整 `sha256:...` 镜像 ID，启动前与标签解析结果核对 |
 | `POSTGRES_IMAGE` / `CADDY_IMAGE` | 首次取得后保存不可变 digest，普通应用升级保留它们 |
