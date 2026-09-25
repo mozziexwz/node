@@ -23,12 +23,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v0.3.3" --jq '.object.sha // empty' 2>/dev/null || true)"
-          if [[ -n "$tag_sha" && "$tag_sha" != "$GITHUB_SHA" ]]; then
-            echo 'v0.3.3 already points to another commit; refusing to move it' >&2
-            exit 1
-          fi
-          if [[ -z "$tag_sha" ]]; then
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/tags/v0.3.3 -f sha="$GITHUB_SHA" >/dev/null
-          fi
+          # A create-only request fails if the tag already exists; never move it.
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/tags/v0.3.3 -f sha="$GITHUB_SHA" >/dev/null
           gh workflow run ci.yml --ref v0.3.3
