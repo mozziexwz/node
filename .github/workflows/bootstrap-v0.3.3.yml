@@ -1,0 +1,34 @@
+name: Bootstrap v0.3.3 release tag
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/bootstrap-v0.3.3.yml']
+permissions:
+  contents: write
+  actions: write
+concurrency: msboost-v0.3.3-bootstrap
+jobs:
+  tag-and-dispatch:
+    if: github.repository == 'mozziexwz/node'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the exact release source
+        run: |
+          set -Eeuo pipefail
+          bash deploy/version_test.sh v0.3.3
+          test -z "$(git status --porcelain)"
+      - name: Create the immutable tag and dispatch its full CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v0.3.3" --jq '.object.sha' 2>/dev/null || true)"
+          if [[ -n "$tag_sha" && "$tag_sha" != "$GITHUB_SHA" ]]; then
+            echo 'v0.3.3 already points to another commit; refusing to move it' >&2
+            exit 1
+          fi
+          if [[ -z "$tag_sha" ]]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/tags/v0.3.3 -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          gh workflow run ci.yml --ref v0.3.3

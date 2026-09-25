@@ -140,6 +140,7 @@ jobs:
       - run: go build ./cmd/server && go build ./cmd/agent && go build ./cmd/restore
   relay-endurance:
     name: Real GOST keep_last (${{ matrix.duration }})
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 55
     strategy:
