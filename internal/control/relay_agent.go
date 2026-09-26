@@ -45,6 +45,70 @@ func (a *App) relayRenewEnrollment(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, 200, map[string]any{"enrollmentToken": token, "expiresAt": expires, "previousLeaseExpiresAt": time.Now().UnixMilli() + relayLeaseMS, "installArgs": a.relayInstallationInstructions(), "message": "旧令牌已撤销。请停止旧进程，最迟45秒旧租约失效后使用新注册令牌启动。"})
 }
 
+// Fresh reset is an explicit replacement, never an in-place token rotation.
+// The old identity is retired under the same terminal-proof gate as DELETE,
+// then a distinct identity is created in the same transaction. The old Agent
+// may still be running until the operator stops it on the node VPS; no active
+// route or unproven keep_last rule is allowed through this path.
+func (a *App) relayFreshResetAgent(w http.ResponseWriter, r *http.Request) {
+	admin, err := a.Admin(r)
+	if err != nil {
+		commerceError(w, 403, err)
+		return
+	}
+	var in struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := Decode(r, &in); err != nil || in.Confirm != "INTERRUPT_AND_REPLACE_RELAY" {
+		commerceError(w, 400, errors.New("须明确确认旧节点身份失效、服务重启及现有连接可能中断"))
+		return
+	}
+	oldID := r.PathValue("id")
+	token := commerceID() + commerceID()
+	newID := commerceID()
+	expires := time.Now().Add(15 * time.Minute).UnixMilli()
+	var replacement RelayAgent
+	err = a.Store.Update(func(s *State) error {
+		old, ok := LoadDoc[RelayAgent](s, "relay_agents", oldID)
+		if !ok || old.ID != oldID {
+			return errors.New("节点不存在或已退役")
+		}
+		if !old.Enabled {
+			return errors.New("节点已停用；请先核对原因并启用，再申请全新重装")
+		}
+		if _, exists := s.Docs["relay_agents"][newID]; exists {
+			return errors.New("新节点 ID 冲突，请重试")
+		}
+		if _, exists := s.Docs[relayRetirementCollection][newID]; exists {
+			return errors.New("新节点 ID 已被退役，请重试")
+		}
+		if err := retireRelayAgent(s, oldID, time.Now().UnixMilli()); err != nil {
+			return err
+		}
+		replacement = RelayAgent{
+			ID: newID, Name: old.Name, Address: old.Address,
+			Addresses:  append([]string(nil), old.Addresses...),
+			PortRanges: append([]PortRange(nil), old.PortRanges...),
+			Enabled:    true, Capability: "relay",
+			EnrollmentHash: commerceHash(token), EnrollmentExpires: expires,
+		}
+		if err := SaveDoc(s, "relay_agents", newID, replacement); err != nil {
+			return err
+		}
+		return commerceAudit(s, admin.ID, "relay_agent.fresh_reset", oldID+":"+newID)
+	})
+	if err != nil {
+		commerceError(w, 409, err)
+		return
+	}
+	replacement.EnrollmentHash = ""
+	WriteJSON(w, 200, map[string]any{
+		"oldAgentId": oldID, "agent": replacement,
+		"enrollmentToken": token, "expiresAt": expires,
+		"message": "旧节点身份及管理凭据已失效。请到原 VPS 在维护窗口运行全新重装命令；脚本执行前旧本地进程可能仍在运行。",
+	})
+}
+
 // Enrollment is only a bootstrap operation. A confirmed v2 identity or a
 // referenced node needs the separately authenticated recovery workflow; simply
 // replacing its bearer token can strand a healthy keep_last relay.

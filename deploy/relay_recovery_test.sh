@@ -195,12 +195,12 @@ for fault in input-symlink output-symlink parent-symlink; do
   else printf 'SKIP: %s requires Linux symlink support\n' "$fault"; fi
 done
 fixture arguments
-if manage_main relay-recovery --json "$TEST_REQUEST_SECRET" > "$OUTPUT" 2>&1; then fail 'manager accepted JSON argv'; fi
+if manage_main relay-recovery > "$OUTPUT" 2>&1; then fail 'manager exposed removed relay recovery entrypoint'; fi
 assert_private_console
 source "$TEST_REPO/install.sh"
-if bootstrap_main relay-recovery --json "$TEST_REQUEST_SECRET" > "$OUTPUT" 2>&1; then fail 'bootstrap accepted JSON argv'; fi
+if bootstrap_main relay-recovery > "$OUTPUT" 2>&1; then fail 'bootstrap exposed removed relay recovery entrypoint'; fi
 assert_private_console
 read_tty() { printf 15; }
-[[ $(menu) == relay-recovery ]] || fail 'installed menu15 missing'
-grep -q '15) printf relay-recovery' "$TEST_REPO/install.sh" || fail 'bootstrap menu15 missing'
+if menu > "$OUTPUT" 2>&1; then fail 'installed menu still accepts removed choice 15'; fi
+if grep -q '15) printf relay-recovery' "$TEST_REPO/install.sh"; then fail 'bootstrap menu still exposes choice 15'; fi
 printf '%s\n' 'PASS: private relay recovery file transport, pinned local DB/server, no-overwrite publication, fsync failures, TTY/no-args guards, no secrets in console or Docker logs'

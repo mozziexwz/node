@@ -1,8 +1,13 @@
 package executor
 
+import _ "embed"
+
+//go:embed free_relay_guard.py
+var freeRelayGuardPython string
+
 // User values arrive only in base64-decoded variables. Python renders JSON and
 // systemd receives fixed paths; no supplied value becomes executable shell text.
-const relayInstallScript = `
+var relayInstallScript = `
 [ "$(id -u)" = 0 ]
 command -v systemctl >/dev/null
 command -v flock >/dev/null
@@ -54,6 +59,7 @@ curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-ti
 ` + relayBinaryScript + `
 install -d -m 0700 "$confdir"
 printf '%s\n' msboost-free-v1 > "$confdir/managed-by"
+` + "cat > \"$confdir/guard.py\" <<'PY'\n" + freeRelayGuardPython + "\nPY\nchmod 0600 -- \"$confdir/guard.py\"\n" + `
 cat > "/etc/systemd/system/$unit" <<EOF
 [Unit]
 Description=MSBOOST customer TCP forwarding
@@ -63,12 +69,15 @@ Wants=network-online.target
 Type=simple
 DynamicUser=true
 LoadCredential=config.json:${confdir}/config.json
+LoadCredential=guard.json:${confdir}/guard.json
+LoadCredential=guard.py:${confdir}/guard.py
 # systemd 247 (Debian 11) supports LoadCredential and environment expansion
 # in ExecStart, but not the newer %d specifier. Escape the dollar sign here so
 # the installing shell writes it literally into the unit for systemd to expand.
-ExecStart=/usr/local/libexec/msboost-free/gost-${gost_sha} -C \${CREDENTIALS_DIRECTORY}/config.json
+ExecStart=/usr/bin/python3 \${CREDENTIALS_DIRECTORY}/guard.py /usr/local/libexec/msboost-free/gost-${gost_sha} \${CREDENTIALS_DIRECTORY}/config.json \${CREDENTIALS_DIRECTORY}/guard.json
 Restart=on-failure
 RestartSec=3
+KillMode=control-group
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -80,29 +89,36 @@ EOF
 systemctl daemon-reload
 msboost_phase=service
 for attempt in $(seq 1 12); do
-  port=$(python3 - <<'PY'
+  ports=$(python3 - <<'PY'
 import secrets,socket
 for _ in range(100):
     port=20000+secrets.randbelow(40000)
-    with socket.socket() as s:
-        try: s.bind(('0.0.0.0',port))
+    with socket.socket() as public, socket.socket() as backend:
+        try:
+            public.bind(('0.0.0.0',port))
+            backend.bind(('127.0.0.1',0))
         except OSError: continue
-        print(port);break
+        backend_port=backend.getsockname()[1]
+        if backend_port==port: continue
+        print(port,backend_port);break
 else: raise SystemExit(1)
 PY
 )
-  python3 - "$port" "$target_host" "$target_port" "$confdir/config.json" "$rate_bytes" <<'PY'
+  read -r port backend_port <<< "$ports"
+  python3 - "$port" "$backend_port" "$target_host" "$target_port" "$confdir/config.json" "$confdir/guard.json" "$rate_bytes" <<'PY'
 import json,sys
-p,host,target,path,rate=sys.argv[1:]
+p,b,host,target,path,guard_path,rate=sys.argv[1:]
 address=('['+host+']' if ':' in host else host)+':'+target
-config={'services':[{'name':'msboost-free','addr':':'+p,'handler':{'type':'tcp'},'listener':{'type':'tcp'},'forwarder':{'nodes':[{'name':'target','addr':address}]},'limiter':'per-port'}],'limiters':[{'name':'per-port','limits':['$ 625000B 625000B']} ]}
+config={'services':[{'name':'msboost-free','addr':'127.0.0.1:'+b,'handler':{'type':'tcp'},'listener':{'type':'tcp'},'admission':'guard','forwarder':{'nodes':[{'name':'target','addr':address}]},'limiter':'per-port'}],'admissions':[{'name':'guard','whitelist':True,'matchers':['127.0.0.1']}],'limiters':[{'name':'per-port','limits':['$ 625000B 625000B']} ]}
 if int(rate)==0:
     config['services'][0].pop('limiter')
     config.pop('limiters')
 else:
     config['limiters'][0]['limits']=['$ '+rate+'B '+rate+'B']
 with open(path,'w') as f: json.dump(config,f)
+with open(guard_path,'w') as f: json.dump({'publicPort':int(p),'backendPort':int(b)},f)
 PY
+  chmod 0600 -- "$confdir/config.json" "$confdir/guard.json"
   systemctl reset-failed "$unit" >/dev/null 2>&1 || true
   systemctl restart "$unit"
   sleep 2

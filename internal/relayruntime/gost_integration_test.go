@@ -3,6 +3,8 @@ package relayruntime
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"net"
 	"net/http"
@@ -109,6 +111,38 @@ func testRealGostForwarding(t *testing.T, protocol string) {
 			t.Fatal("real GOST did not emit running/bind ACK")
 		}
 		time.Sleep(30 * time.Millisecond)
+	}
+	for _, greeting := range [][]byte{{0x05, 0x01, 0x00}, {0x04, 0x01, 0x00, 0x50, 127, 0, 0, 1, 0x00}} {
+		blocked, e := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)), time.Second)
+		if e != nil {
+			t.Fatal(e)
+		}
+		_ = blocked.SetDeadline(time.Now().Add(time.Second))
+		if _, e = blocked.Write(greeting); e != nil {
+			t.Fatal(e)
+		}
+		if n, e := blocked.Read(make([]byte, 1)); n != 0 || e == nil {
+			t.Fatalf("SOCKS handshake was not blocked: %x, n=%d, err=%v", greeting, n, e)
+		}
+		_ = blocked.Close()
+	}
+	if rules[0].Protocol == "tls" {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(rules[0].TLSCertificate)) {
+			t.Fatal("test TLS identity is invalid")
+		}
+		client, e := tls.DialWithDialer(&net.Dialer{Timeout: time.Second}, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(exitPort)), &tls.Config{RootCAs: pool, ServerName: "relay.integration.invalid", MinVersion: tls.VersionTLS12})
+		if e != nil {
+			t.Fatalf("pinned inter-node TLS handshake failed: %v", e)
+		}
+		_ = client.SetDeadline(time.Now().Add(time.Second))
+		if _, e := client.Write([]byte{0x05, 0x01, 0x00}); e != nil {
+			t.Fatal(e)
+		}
+		if n, e := client.Read(make([]byte, 1)); n != 0 || e == nil {
+			t.Fatalf("TLS-wrapped SOCKS greeting was not blocked: n=%d err=%v", n, e)
+		}
+		_ = client.Close()
 	}
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)), 3*time.Second)
 	if err != nil {

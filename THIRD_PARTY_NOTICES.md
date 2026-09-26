@@ -6,14 +6,13 @@
 
 `installers/node/msboost.sh` 从用户提供的 `mita一键脚本/msboost.sh` 原样导入，没有在该副本中添加本项目许可声明。来源文件未提供可据以给整个工程授权的统一许可；使用或分发前应由权利人明确其授权范围。
 
-UI 样式和产品需求来自用户提供的 `msboost-v4.1-ui` 文件夹；需求留档为 `docs/requirements/product-v4.1.md`。v4.1 是产品规划版本，不是本项目发布版本，也不是全部完成的声明。导入记录见 [source-manifest.json](docs/requirements/source-manifest.json)。
+UI 样式和产品需求来自用户提供的 `msboost-v4.1-ui` 文件夹及后续补充说明。历史规划和导入记录已从正式版当前目录移除，仍可在仓库旧提交中核对；它们不是运行依赖，也不能作为功能验收证明。
 
 当前字节校验值：
 
 | 文件 | SHA256 |
 |---|---|
 | `installers/node/msboost.sh` | `593b3f612e7537afe89444252883eb64f64bfa3ec4b0d367c56042d8b461ee24` |
-| `docs/requirements/product-v4.1.md` | `a18e6dd69414aa0ce6275299fa53c6143e8a05d3ac0ed1468a2713dc0edb866c` |
 
 MSBOOST 脚本运行时使用 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，默认版本 `v1.19.30`，可受 `MSBOOST_ENGINE_VERSION` 环境变量影响；上游 [该版本 LICENSE](https://github.com/MetaCubeX/mihomo/blob/v1.19.30/LICENSE) 为 GPLv3。相应下载、使用与分发应保留上游要求的许可及来源信息。脚本还读取 `meta-rules-dat` 的 [gfw.mrs](https://github.com/MetaCubeX/meta-rules-dat/blob/meta/geo/geosite/gfw.mrs)；该 URL 的资源会随上游分支变化，不能把脚本自身哈希误认为所有运行时资源均已冻结。
 
@@ -46,7 +45,7 @@ Executor 的客户中转安装和 Relay Agent 使用独立的 [go-gost/gost](htt
 | `gost_3.3.0_linux_amd64.tar.gz` | `676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5` |
 | `gost_3.3.0_linux_arm64.tar.gz` | `d03699e3f385d4ff5dad68046712adfcc7515325a064d2ab046e0bece30f8f8f` |
 
-准确下载链接及安装流程见 [Agent 安装说明](docs/agent-installation.md)。这些是上游 GOST 资产，不是本项目尚未发布的 Agent 二进制。分发 GOST 或包含它的交付物时应一并保留其许可与版权声明；校验摘要不能替代许可文本。
+准确下载链接及安装流程见 [Agent 安装说明](docs/agent-installation.md)。这些是上游 GOST 资产，与本项目独立构建的 Agent 二进制不同。分发 GOST 或包含它的交付物时应一并保留其许可与版权声明；校验摘要不能替代许可文本。
 
 FLVX `2.2.0-alpha4` 在需求中作为参考方向；当前工程未声明完成 FLVX 全量代码迁入、兼容性适配或原项目授权的重新授予。现有实现边界见 [安全模型与限制](docs/security-and-limits.md)。
 

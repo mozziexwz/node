@@ -394,7 +394,8 @@ for fault in maintenance-tty maintenance-eof maintenance-lost-tty cancel nonroot
 done
 installed_fixture maintenance-no-args
 expect_failure run_maintenance --force
-expect_failure manage_main disaster-backup-maintenance --yes
+expect_failure manage_main disaster-backup-maintenance
+(read_tty() { printf 14; }; expect_failure menu)
 assert_absent "$TRACE" 'compose stop'
 installed_fixture strict-timer-cannot-waive; MOCK_FAIL=legacy
 (

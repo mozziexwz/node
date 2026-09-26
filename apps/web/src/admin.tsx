@@ -261,9 +261,32 @@ export function ResourcePage({ kind }: { kind: string }) {
     [values, setValues] = useState<RecordData>({}),
     [message, setMessage] = useState(""),
     [success, setSuccess] = useState(""),
-    [token, setToken] = useState<RecordData | null>(null);
-  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v0.3.3/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
+    [token, setToken] = useState<RecordData | null>(null),
+    [blockedAgent, setBlockedAgent] = useState<RecordData | null>(null),
+    [deletedAgent, setDeletedAgent] = useState<RecordData | null>(null);
+  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.0.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
   const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;
+  const relayUninstallCommand = (id: string) =>
+    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.0.0/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
+  async function freshResetAgent(row: RecordData) {
+    if (
+      !confirm(
+        `全新重装“${row.name}”？仅在旧转发全部已明确停止、没有关联线路/用户中转时才会通过。成功后旧节点 ID 和管理凭据永久失效，并生成新 ID；原 VPS 的服务须在维护窗口使用新令牌重装，现有连接可能中断。`,
+      )
+    )
+      return;
+    try {
+      setMessage("");
+      const response = await post(`${s.url}/${row.id}/fresh-reset`, {
+        confirm: "INTERRUPT_AND_REPLACE_RELAY",
+      });
+      setBlockedAgent(null);
+      setToken({ ...response, reinstall: true, freshReset: true });
+      reload();
+    } catch (e) {
+      setMessage((e as Error).message);
+    }
+  }
   function open(row: RecordData = {}) {
     const initial: RecordData = {};
     for (const f of s.fields) {
@@ -388,28 +411,27 @@ export function ResourcePage({ kind }: { kind: string }) {
                 </Button>
               )}
               {kind === "agents" && row.enrollmentAllowed !== true && (
-                <span className="muted" role="note">
-                  {row.enrollmentBlockedReason || "普通部署/重装已锁定。"}{" "}
-                  <a
-                    href="https://github.com/mozziexwz/node/blob/v0.3.3/docs/relay-recovery.md"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    查看受信恢复指引
-                  </a>
-                </span>
+                <>
+                  <Badge tone="orange">重装受保护</Badge>
+                  <Button onClick={() => setBlockedAgent(row)}>
+                    查看限制 / 安全重装
+                  </Button>
+                </>
               )}
               {!s.noDelete && (
                 <Button
                   onClick={async () => {
                     if (
                       !confirm(
-                        `删除“${row.name || row.email}”？有关联业务的记录会被保护。`,
+                        kind === "agents"
+                          ? `删除节点“${row.name}”？有关联业务或缺少终态证明时服务端会拒绝。成功仅使面板旧身份失效，不会远程停止 VPS 上的 Agent；随后须在该 VPS 执行清理命令，旧连接会中断。`
+                          : `删除“${row.name || row.email}”？有关联业务的记录会被保护。`,
                       )
                     )
                       return;
                     try {
                       await api(s.url + "/" + row.id, { method: "DELETE" });
+                      if (kind === "agents") setDeletedAgent(row);
                       reload();
                     } catch (e) {
                       setMessage((e as Error).message);
@@ -573,6 +595,55 @@ export function ResourcePage({ kind }: { kind: string }) {
           </AsyncForm>
         </Modal>
       )}
+      {blockedAgent && kind === "agents" && (
+        <Modal title={`节点重装限制：${blockedAgent.name}`} onClose={() => setBlockedAgent(null)}>
+          <ErrorNotice error={message} />
+          <Notice tone="orange">
+            {blockedAgent.enrollmentBlockedReason || "普通令牌轮换已锁定。"}
+          </Notice>
+          <p className="mt16">
+            若无关联线路和用户中转，且历史转发已获明确停止确认，可申请安全全新重装：
+            后台会在同一事务内退役旧节点身份、撤销旧凭据并生成新节点和令牌。
+            原 VPS 上的旧进程不会由后台远程停止；请在维护窗口使用生成的全新重装命令。
+          </p>
+          <p className="muted mt16">
+            若仍有关联业务或停止证明不足，申请会被拒绝。请先在隧道管理及用户中转处理关联，
+            等待真实停止确认；不要因为管理连接离线就假定业务已停止。
+          </p>
+          <div className="actions mt16">
+            <Button primary onClick={() => void freshResetAgent(blockedAgent)}>
+              申请安全全新重装
+            </Button>
+            <a className="btn" href="#routes">管理关联隧道</a>
+            <a className="btn" href="#rules">管理用户中转</a>
+            <a
+              className="btn"
+              href="https://github.com/mozziexwz/node/blob/v1.0.0/docs/relay-recovery.md"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              受信恢复指引
+            </a>
+          </div>
+        </Modal>
+      )}
+      {deletedAgent && kind === "agents" && (
+        <Modal title="节点已从控制面退役" onClose={() => setDeletedAgent(null)}>
+          <Notice tone="orange">
+            已撤销“{deletedAgent.name}”的旧管理身份；这不等于原 VPS 上的进程已停止。
+            请在确认旧业务可中断后，到该节点 VPS 的 root 终端运行下方命令。
+            命令只接受与此节点 ID、控制面地址及本项目受管标记一致的安装；不删除其他服务。
+          </Notice>
+          <pre className="code-panel mt16">{relayUninstallCommand(deletedAgent.id)}</pre>
+          <Button onClick={() => void copyText(relayUninstallCommand(deletedAgent.id)).catch((e) => setMessage(e.message))}>
+            复制本机 Agent 清理命令
+          </Button>
+          <p className="muted mt16">
+            需要重新使用这台 VPS 时，先完成清理，再新增节点并使用新节点令牌安装。
+            如果清理脚本检测到本机仍有未停止转发或路径归属不明，会拒绝删除。
+          </p>
+        </Modal>
+      )}
       {token && (
         <Modal
           title="一键部署（令牌仅显示一次）"
@@ -584,23 +655,25 @@ export function ResourcePage({ kind }: { kind: string }) {
           </Notice>
           {kind === "agents" && (
             <Notice tone="orange">
-              {token.reinstall ? "已生成新的节点注册令牌。" : "若目标 VPS 曾安装中转 Agent，"}
+              {token.freshReset
+                ? `旧节点 ${token.oldAgentId} 已退役，原管理凭据失效；新节点 ${token.agent?.id} 已创建。请在 15 分钟内于原 VPS 完成全新重装。`
+                : token.reinstall ? "已生成新的节点注册令牌。" : "若目标 VPS 曾安装中转 Agent，"}
               旧 keep_last 状态会优先使用旧身份，新令牌不会自动重新绑定。仅在旧身份已无当前控制面业务、确认旧转发及现有连接均可中断时，使用下方“已有节点全新重装”命令；安装器会校验受管归属并将旧状态移入 root 私有备份。已确认 v2 或仍有关联业务的节点禁止普通令牌轮换，须先走受信恢复流程。
             </Notice>
           )}
-          <p className="mt16">
-            {kind === "agents" ? "首次部署到空白 VPS：" : "安装执行机："}
-          </p>
-          <pre className="code-panel mt16">
-            {agentBootstrapCommand}
-          </pre>
+          {!token.freshReset && <>
+            <p className="mt16">
+              {kind === "agents" ? "首次部署到空白 VPS：" : "安装执行机："}
+            </p>
+            <pre className="code-panel mt16">{agentBootstrapCommand}</pre>
+          </>}
           {location.protocol !== "https:" && (
             <Notice tone="orange">
               此站点尚未配置 HTTPS。请先使用域名和 TLS
               部署网站，再复制安装命令；Agent 不接受公网明文 HTTP。
             </Notice>
           )}
-          <Button
+          {!token.freshReset && <Button
             onClick={() =>
               void copyText(agentBootstrapCommand).catch((e) =>
                 setMessage(e.message),
@@ -608,7 +681,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             }
           >
             复制首次安装命令
-          </Button>
+          </Button>}
           {kind === "agents" && (
             <>
               <p className="mt16">已有节点全新重装（旧转发与现有连接将中断）：</p>

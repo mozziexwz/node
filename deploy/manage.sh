@@ -6,7 +6,7 @@ umask 077
 INSTALL_ROOT=/opt/msboost
 PROJECT=msboost
 MARKER=MSBOOST_DEPLOY_V1
-VERSION=v0.3.3
+VERSION=v1.0.0
 SOURCE_DIR=
 DOMAIN=
 IP_ADDRESS=
@@ -29,10 +29,7 @@ usage() {
     '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  msboost repair|status|logs|uninstall|purge' \
     '  msboost admin-password        本机交互修改已有管理员密码（不停止服务）' \
-    '  msboost backup-reconcile      核对异常网页备份（不停止服务，不解锁整站门禁）' \
-    '  msboost relay-recovery        受保护中转恢复 / TLS 维护（私有文件交互）' \
     '  msboost disaster-backup|disaster-config|disaster-disable' \
-    '  msboost disaster-backup-maintenance  单次手动维护备份（真实终端确认，接受旧链路中断）' \
     '  bash install.sh disaster-restore --archive /root/msboost-backup/整站备份.tar.gz' \
     '  --build 需显式选择，并提供已校验的完整源码包。' \
     'uninstall 保留配置、密钥、数据库、应用数据、证书及备份。' \
@@ -44,9 +41,9 @@ read_tty() {
   printf '%s' "$answer"
 }
 menu() {
-  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 一键整站灾难备份' '  9) 设置整站备份目录 / 远程密码 / 每日计划' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  12) 修改已有管理员密码（仅本机 root）' '  13) 核对异常网页备份（不停止服务）' '  14) 手动维护备份（确认旧链路可能中断）' '  15) 中转恢复 / TLS 维护（受保护私有文件）' '  0) 退出' >&2
+  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 一键整站灾难备份' '  9) 设置整站备份目录 / 远程密码 / 每日计划' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  12) 修改已有管理员密码（仅本机 root）' '  0) 退出' >&2
   local choice; choice=$(read_tty '请选择: ')
-  case "$choice" in 1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;; 5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 8) printf disaster-backup ;; 9) printf disaster-config ;; 10) printf disaster-restore ;; 11) printf disaster-disable ;; 12) printf admin-password ;; 13) printf backup-reconcile ;; 14) printf disaster-backup-maintenance ;; 15) printf relay-recovery ;; 0) printf exit ;; *) die '无效选择' ;; esac
+  case "$choice" in 1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;; 5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 8) printf disaster-backup ;; 9) printf disaster-config ;; 10) printf disaster-restore ;; 11) printf disaster-disable ;; 12) printf admin-password ;; 0) printf exit ;; *) die '无效选择' ;; esac
 }
 require_platform() (
   [[ $(id -u) == 0 ]] || { die '请在目标服务器以 root 或 sudo 运行'; return 1; }
@@ -629,9 +626,6 @@ manage_main() {
   if [[ $# == 0 ]]; then action=$(menu); else action=$1; shift; fi
   case "$action" in help|--help|-h) usage; return 0 ;; exit) return 0 ;; stop) action=uninstall ;; esac
   if [[ $action == admin-password && $# != 0 ]]; then die 'admin-password 不接受参数；邮箱和密码只能从本机终端输入'; return 2; fi
-  if [[ $action == backup-reconcile && $# != 0 ]]; then die 'backup-reconcile 不接受参数，只能从本机终端确认具体备份记录'; return 2; fi
-  if [[ $action == disaster-backup-maintenance && $# != 0 ]]; then die '手动维护备份不接受参数、自动确认或强制选项'; return 2; fi
-  if [[ $action == relay-recovery && $# != 0 ]]; then die 'relay-recovery 不接受参数，只能通过本机终端选择私有请求 / 结果文件'; return 2; fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --version|--source-dir|--domain|--ip|--email|--archive)
@@ -644,34 +638,11 @@ manage_main() {
       *) die "未知参数 $1"; return 2 ;;
     esac
   done
-  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-backup-maintenance|disaster-config|disaster-disable|disaster-restore|admin-password|backup-reconcile|relay-recovery) ;; *) usage; return 2 ;; esac
+  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-config|disaster-disable|disaster-restore|admin-password) ;; *) usage; return 2 ;; esac
   require_platform || return
   require_release_version || return
   assert_root_path || return
   [[ -z $DISASTER_ARCHIVE || $action == disaster-restore ]] || { die '--archive 仅用于灾难恢复'; return 2; }
-  if [[ $action == relay-recovery ]]; then
-    local relay_module_dir relay_module_file relay_module_mode
-    relay_module_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-    for relay_module_file in "$relay_module_dir" "$relay_module_dir/backup_activity_recovery.sh" "$relay_module_dir/relay_recovery.sh"; do
-      [[ ! -L $relay_module_file && $(stat -c %u "$relay_module_file") == 0 ]] || { die '中转恢复模块缺失或归属异常'; return 1; }
-      relay_module_mode=$(stat -c %a "$relay_module_file") || return
-      [[ $relay_module_mode =~ ^[0-7]{3,4}$ && $((8#$relay_module_mode & 0022)) == 0 ]] || { die '中转恢复模块可被其他用户写入'; return 1; }
-    done
-    [[ -f $relay_module_dir/backup_activity_recovery.sh && -f $relay_module_dir/relay_recovery.sh ]] || { die '中转恢复模块必须为普通文件'; return 1; }
-    source "$relay_module_dir/backup_activity_recovery.sh"
-    source "$relay_module_dir/relay_recovery.sh"
-  fi
-  if [[ $action == backup-reconcile ]]; then
-    local backup_activity_module backup_activity_file backup_activity_mode
-    backup_activity_module="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/backup_activity_recovery.sh"
-    [[ -f $backup_activity_module && ! -L $backup_activity_module ]] || { die '本版本尚未包含异常网页备份核对模块'; return 1; }
-    for backup_activity_file in "$(dirname "$backup_activity_module")" "$backup_activity_module"; do
-      [[ ! -L $backup_activity_file && $(stat -c %u "$backup_activity_file") == 0 ]] || { die '本机核对模块归属异常'; return 1; }
-      backup_activity_mode=$(stat -c %a "$backup_activity_file") || return
-      [[ $backup_activity_mode =~ ^[0-7]{3,4}$ && $((8#$backup_activity_mode & 0022)) == 0 ]] || { die '本机核对模块可被其他用户写入'; return 1; }
-    done
-    source "$backup_activity_module"
-  fi
   if [[ $action == disaster-* || $action == uninstall || $action == purge ]]; then
     local disaster_module
     disaster_module="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/disaster.sh"
@@ -706,10 +677,7 @@ manage_main() {
     status) assert_managed && compose_live ps ;;
     logs) assert_managed && compose_live logs --tail 200 server caddy database ;;
     admin-password) admin_password_site ;;
-    backup-reconcile) backup_activity_reconcile_site ;;
-    relay-recovery) relay_recovery_site ;;
     disaster-backup) disaster_backup ;;
-    disaster-backup-maintenance) disaster_backup_maintenance ;;
     disaster-config) disaster_configure ;;
     disaster-disable) assert_managed && disaster_timer off && note '整站自动备份已停用；配置和已保存的本机/远程备份未删除。' ;;
     disaster-restore) disaster_restore ;;

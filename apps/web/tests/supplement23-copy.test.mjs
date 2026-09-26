@@ -4,8 +4,8 @@ import { chromium, expect } from "@playwright/test";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
 
-// Compile the actual application, then intercept every browser request. These
-// copy checks never log in, invoke SSH/DD/cleanup, redeem an entitlement or contact a VPS.
+// Compile the actual application and intercept every browser request. SSH
+// identity changes are simulated here; no test contacts a VPS.
 const base = "http://127.0.0.1:19874";
 const availability =
   "本站捐赠权益提供的中转服务不承诺 100% 可用性。如您对稳定性要求较高，建议使用本站免费工具搭配自备服务器部署中转，或选择专业游戏加速器。";
@@ -13,7 +13,7 @@ const purchaseTerms =
   "再次兑换条件：剩余时间少于30天，或剩余流量少于10GB。新权益覆盖旧的剩余时间与流量，不叠加。";
 
 test(
-  "supplement 2.4 approved copy in the actual application",
+  "approved copy in the actual application",
   { timeout: 60000 },
   async (t) => {
     const compiled = await build({
@@ -40,6 +40,7 @@ test(
       view = "tutorials",
       unreadCount = 0,
       tickets = [],
+      fingerprintChange = false,
     } = {}) {
       const page = await browser.newPage({
         viewport: { width: 1440, height: 1000 },
@@ -69,6 +70,17 @@ test(
           ticketUnread = 0;
           return route.fulfill({ json: { ok: true, unreadCount: 0 } });
         }
+        if (
+          fingerprintChange &&
+          request.method() === "POST" &&
+          url.pathname === "/api/fingerprints"
+        )
+          return route.fulfill({
+            json: {
+              fingerprint: "SHA256:new-test-fingerprint",
+              rememberedFingerprint: "SHA256:old-test-fingerprint",
+            },
+          });
         if (request.method() !== "GET") {
           errors.push(`Unexpected write ${url.pathname}`);
           return route.abort();
@@ -243,6 +255,9 @@ test(
               page.getByText("仅支持 Debian 系统部署（Debian 11 或以上版本）。", { exact: true }),
             ).toBeVisible();
             await expect(
+              page.getByRole("button", { name: "开始配置", exact: true }),
+            ).toBeVisible();
+            await expect(
               page.locator('[data-testid="cleanup-panel"] > summary'),
             ).toHaveText("清理中转服务器配置");
             await navigate(page, "deploy");
@@ -253,7 +268,15 @@ test(
               "在你的VPS上部署游戏节点，并下载MSBOOST配置文件。",
             );
             await expect(page.getByText("安全升级 / 修复", { exact: true })).toHaveCount(0);
-            await expect(page.getByText(/每次均全新部署受管 MSBOOST 组件/)).toBeVisible();
+            await expect(
+              page.getByText(
+                "每次均全新部署受管 MSBOOST 组件，重新生成认证和端口；不会重装操作系统。原配置部署成功后将失效。",
+                { exact: true },
+              ),
+            ).toBeVisible();
+            await expect(
+              page.getByText("请先备份旧配置", { exact: false }),
+            ).toHaveCount(0);
             await expect(
               page.getByText("仅支持 Debian 系统部署（Debian 11 或以上版本）。", { exact: true }),
             ).toBeVisible();
@@ -280,9 +303,13 @@ test(
               page.getByRole("combobox", { name: "重装密码策略", exact: true }),
             ).toHaveValue("keep");
             await expect(
-              page.getByText("DD 会清除服务器原有系统和数据。", {
-                exact: true,
-              }),
+              page.getByText(
+                "DD系统会清除服务器原有系统和数据，操作前请先备份或确保无重要数据。操作提交后请等待15分钟以上，再执行部署 MSBOOST。",
+                { exact: true },
+              ),
+            ).toBeVisible();
+            await expect(
+              page.getByRole("button", { name: "开始DD", exact: true }),
             ).toBeVisible();
             await expect(
               page.getByRole("checkbox", {
@@ -294,6 +321,66 @@ test(
               await noOverflow(page);
             }
             assert.ok(requests.every((request) => request.method === "GET"));
+            assert.deepEqual(errors, []);
+          } finally {
+            await page.close();
+          }
+        },
+      );
+      await t.test(
+        "changed SSH identity keeps detailed guidance below the identity warning",
+        async () => {
+          const { page, requests, errors } = await fixture({
+            signedIn: true,
+            view: "deploy",
+            fingerprintChange: true,
+          });
+          try {
+            const form = page.locator(".tool-layout > div > .card form").first();
+            await form
+              .getByLabel("服务器 IP 地址", { exact: true })
+              .fill("198.51.100.10");
+            await form.getByLabel(/SSH 密码/).fill("synthetic-password");
+            await form.getByRole("button", { name: "开始部署" }).click();
+            await expect(
+              page.getByText("服务器身份已变化，请在高级设置中核对。", {
+                exact: true,
+              }),
+            ).toBeVisible();
+            const warning = page.getByText(
+              "服务器身份已变化。若没有重装或更换服务器，请停止操作。",
+              { exact: true },
+            );
+            const guidance = page.getByText(
+              "这台服务器的身份与上次不同，操作已暂停。若刚重装过服务器，请到服务商控制台核对，再在高级设置中确认；没有重装过请先联系服务商。",
+              { exact: true },
+            );
+            await expect(warning).toBeVisible();
+            await expect(guidance).toBeVisible();
+            assert.equal(
+              await guidance.evaluate((node) =>
+                node.previousElementSibling?.textContent?.trim(),
+              ),
+              "服务器身份已变化。若没有重装或更换服务器，请停止操作。",
+            );
+            assert.equal(await guidance.evaluate((node) => node.closest(".notice")), null);
+            assert.deepEqual(
+              requests
+                .filter((request) => request.method === "POST")
+                .map((request) => request.path),
+              ["/api/fingerprints"],
+            );
+            for (const width of [1440, 375]) {
+              await page.setViewportSize({ width, height: 1000 });
+              await noOverflow(page);
+            }
+            await page.setViewportSize({ width: 320, height: 1000 });
+            assert.equal(
+              await guidance.evaluate(
+                (node) => node.getBoundingClientRect().right > innerWidth,
+              ),
+              false,
+            );
             assert.deepEqual(errors, []);
           } finally {
             await page.close();
@@ -321,6 +408,9 @@ test(
             tickets: [ticket],
           });
           try {
+            await expect(page.locator(".page-heading p")).toHaveText(
+              "请说明问题和贴出任务记录",
+            );
             const bell = page.getByRole("button", {
               name: "工单消息，2条未读",
               exact: true,

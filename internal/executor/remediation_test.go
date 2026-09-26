@@ -139,15 +139,35 @@ func TestCleanupPythonIsolatedInventoryAndMutation(t *testing.T) {
 			}
 			conf := "etc/msboost-free/task1"
 			unit := "etc/systemd/system/msboost-free-task1.service"
-			write(conf+"/config.json", `{"services":[{"name":"msboost-free","addr":":30001"}]}`)
+			write(conf+"/config.json", `{"services":[{"name":"msboost-free","addr":"127.0.0.1:30002","admission":"guard"}],"admissions":[{"name":"guard","whitelist":true,"matchers":["127.0.0.1"]}]}`)
+			write(conf+"/guard.json", `{"publicPort":30001,"backendPort":30002}`)
+			write(conf+"/guard.py", freeRelayGuardPython)
 			write(conf+"/ufw-owned", "30001\n")
 			unitText := cleanupUnitFixture(t, root, "relay")
-			if scenario == "old-v030-cleanup" {
-				unitText = strings.Replace(unitText, "-C ${CREDENTIALS_DIRECTORY}/config.json", "-C %d/config.json", 1)
-			}
-			if scenario == "legacy-cleanup" {
-				unitText = strings.Replace(unitText, "LoadCredential=config.json:", "LoadCredential=config:", 1)
-				unitText = strings.Replace(unitText, "-C ${CREDENTIALS_DIRECTORY}/config.json", "-C %d/config", 1)
+			if scenario == "old-v030-cleanup" || scenario == "legacy-cleanup" {
+				oldExec := "ExecStart=" + root + "/usr/local/libexec/msboost-free/gost-" + strings.Repeat("a", 64) + " -C ${CREDENTIALS_DIRECTORY}/config.json"
+				if scenario == "old-v030-cleanup" {
+					oldExec = strings.Replace(oldExec, "${CREDENTIALS_DIRECTORY}/config.json", "%d/config.json", 1)
+				} else {
+					oldExec = strings.Replace(oldExec, "${CREDENTIALS_DIRECTORY}/config.json", "%d/config", 1)
+					unitText = strings.Replace(unitText, "LoadCredential=config.json:", "LoadCredential=config:", 1)
+				}
+				for _, line := range strings.Split(unitText, "\n") {
+					if strings.HasPrefix(line, "ExecStart=") {
+						unitText = strings.Replace(unitText, line, oldExec, 1)
+						break
+					}
+				}
+				unitText = strings.Replace(unitText, "LoadCredential=guard.json:"+root+"/etc/msboost-free/task1/guard.json\n", "", 1)
+				unitText = strings.Replace(unitText, "LoadCredential=guard.py:"+root+"/etc/msboost-free/task1/guard.py\n", "", 1)
+				unitText = strings.Replace(unitText, "KillMode=control-group\n", "", 1)
+				write(conf+"/config.json", `{"services":[{"name":"msboost-free","addr":":30001"}]}`)
+				if err := os.Remove(filepath.Join(root, conf, "guard.json")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(filepath.Join(root, conf, "guard.py")); err != nil {
+					t.Fatal(err)
+				}
 			}
 			write(unit, unitText)
 			write("usr/local/libexec/msboost-free/gost-"+strings.Repeat("a", 64), "fixture binary")
@@ -197,15 +217,15 @@ subprocess.run=fake_run
 				case "credential-mismatch-load":
 					text = strings.Replace(text, "LoadCredential=config.json:", "LoadCredential=config:", 1)
 				case "credential-mismatch-exec":
-					text = strings.Replace(text, "-C ${CREDENTIALS_DIRECTORY}/config.json", "-C ${CREDENTIALS_DIRECTORY}/config", 1)
+					text = strings.Replace(text, "${CREDENTIALS_DIRECTORY}/guard.json", "${CREDENTIALS_DIRECTORY}/other.json", 1)
 				case "credential-other-name":
 					text = strings.Replace(text, "LoadCredential=config.json:", "LoadCredential=other.json:", 1)
-					text = strings.Replace(text, "-C ${CREDENTIALS_DIRECTORY}/config.json", "-C ${CREDENTIALS_DIRECTORY}/other.json", 1)
+					text = strings.Replace(text, "${CREDENTIALS_DIRECTORY}/config.json", "${CREDENTIALS_DIRECTORY}/other.json", 1)
 				}
 				write(unit, text)
 			case "changed":
-				write(conf+"/config.json", `{"services":[{"name":"msboost-free","addr":":30002"}]}`)
-				write(conf+"/ufw-owned", "30002\n")
+				write(conf+"/guard.json", `{"publicPort":30003,"backendPort":30002}`)
+				write(conf+"/ufw-owned", "30003\n")
 			case "unknown":
 				write(conf+"/other-app-secret", "do not delete")
 			case "symlink":

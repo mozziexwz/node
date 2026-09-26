@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ type process struct {
 	epoch           string
 	cmd             *exec.Cmd
 	cancel          context.CancelFunc
+	guard           *socksGuard
 	ack             Ack
 	traffic         Traffic
 	expires         time.Time
@@ -113,6 +115,9 @@ func GostConfig(rule Rule, observerURL string) ([]byte, error) {
 	return gostConfig(rule, observerURL, gostTLSFiles{})
 }
 func gostConfig(rule Rule, observerURL string, tlsFiles gostTLSFiles) ([]byte, error) {
+	return gostConfigAt(rule, observerURL, tlsFiles, fmt.Sprintf(":%d", rule.ListenPort))
+}
+func gostConfigAt(rule Rule, observerURL string, tlsFiles gostTLSFiles, listenAddress string) ([]byte, error) {
 	if (rule.Protocol != "tcp" && rule.Protocol != "tls") || rule.ListenPort < 1 || rule.ListenPort > 65535 || rule.RateMbps < 1 || rule.RateMbps > 100000 || len(rule.Targets) < 1 || len(rule.Targets) > 8 {
 		return nil, errors.New("invalid fixed forwarding rule")
 	}
@@ -142,7 +147,7 @@ func gostConfig(rule Rule, observerURL string, tlsFiles gostTLSFiles) ([]byte, e
 		}
 		nodes = append(nodes, node)
 	}
-	service := map[string]any{"name": rule.ID, "addr": fmt.Sprintf(":%d", rule.ListenPort), "handler": map[string]any{"type": "tcp"}, "listener": map[string]any{"type": "tcp"}, "forwarder": map[string]any{"nodes": nodes, "selector": map[string]any{"strategy": rule.Strategy, "maxFails": 1, "failTimeout": "10s"}}, "limiter": "rate", "observer": "observer", "metadata": map[string]any{"enableStats": true, "observer.period": "1s", "observer.resetTraffic": false}}
+	service := map[string]any{"name": rule.ID, "addr": listenAddress, "handler": map[string]any{"type": "tcp"}, "listener": map[string]any{"type": "tcp"}, "forwarder": map[string]any{"nodes": nodes, "selector": map[string]any{"strategy": rule.Strategy, "maxFails": 1, "failTimeout": "10s"}}, "limiter": "rate", "observer": "observer", "metadata": map[string]any{"enableStats": true, "observer.period": "1s", "observer.resetTraffic": false}}
 	bytesPerSecond := rule.RateMbps * 1000000 / 8
 	config := map[string]any{"services": []any{service}, "limiters": []any{map[string]any{"name": "rate", "limits": []string{fmt.Sprintf("$ %dB %dB", bytesPerSecond, bytesPerSecond)}}}, "observers": []any{map[string]any{"name": "observer", "plugin": map[string]any{"type": "http", "addr": observerURL, "timeout": "3s"}}}}
 	if len(rule.TargetTLS) > 0 {
@@ -260,6 +265,9 @@ func (s *runtimeState) stopLocked(id string) {
 	default:
 	}
 	p.cancel()
+	if p.guard != nil {
+		p.guard.close()
+	}
 	p.stopping = true
 	p.ack.State = "stopping"
 	p.ack.Message = "rule removed or lease expired"
@@ -275,36 +283,78 @@ func (s *runtimeState) startLocked(ctx context.Context, rule Rule) error {
 type preparedProcess struct {
 	epoch, path string
 	cleanupTLS  func()
+	backend     net.Listener
+	backendAddr string
 }
 
-func (p *preparedProcess) cleanup() { p.cleanupTLS(); _ = os.Remove(p.path) }
+func (p *preparedProcess) cleanup() {
+	if p.backend != nil {
+		_ = p.backend.Close()
+	}
+	p.cleanupTLS()
+	_ = os.Remove(p.path)
+}
 
 func (s *runtimeState) prepareProcess(rule Rule) (*preparedProcess, error) {
 	epoch := randomID()
-	raw, cleanupTLS, err := prepareGostConfig(rule, s.observerURL+"&epoch="+epoch, s.cfg.StateDir)
+	if _, err := parseGuardSources(rule.AllowedSources); err != nil {
+		return nil, err
+	}
+	backend, err := reserveGuardBackend(rule.ListenPort)
 	if err != nil {
+		return nil, err
+	}
+	backendAddr := backend.Addr().String()
+	backendRule := rule
+	backendRule.ListenPort = backend.Addr().(*net.TCPAddr).Port
+	if rule.Protocol == "tls" {
+		// Terminate inter-node TLS in the Agent guard, then screen the cleartext
+		// before passing it to loopback-only GOST. The externally pinned node
+		// identity remains unchanged.
+		if _, err := tls.X509KeyPair([]byte(rule.TLSCertificate), []byte(rule.TLSPrivateKey)); err != nil {
+			_ = backend.Close()
+			return nil, errors.New("invalid TLS node identity")
+		}
+		backendRule.Protocol = "tcp"
+		backendRule.TLSCertificate, backendRule.TLSPrivateKey = "", ""
+	}
+	// The public guard enforces the original source ACL. GOST must be reachable
+	// only from that local guard, never directly from the network.
+	backendRule.AllowedSources = []string{"127.0.0.1"}
+	raw, cleanupTLS, err := prepareGostConfig(backendRule, s.observerURL+"&epoch="+epoch, s.cfg.StateDir, backendAddr)
+	if err != nil {
+		_ = backend.Close()
 		cleanupTLS()
 		return nil, err
 	}
 	path := filepath.Join(s.cfg.StateDir, "rule-"+epoch+".json")
 	if err = os.WriteFile(path, raw, 0600); err != nil {
+		_ = backend.Close()
 		cleanupTLS()
 		return nil, err
 	}
-	return &preparedProcess{epoch: epoch, path: path, cleanupTLS: cleanupTLS}, nil
+	return &preparedProcess{epoch: epoch, path: path, cleanupTLS: cleanupTLS, backend: backend, backendAddr: backendAddr}, nil
 }
 
 func (s *runtimeState) startPreparedLocked(ctx context.Context, rule Rule, prepared *preparedProcess) error {
 	epoch, path, cleanupTLS := prepared.epoch, prepared.path, prepared.cleanupTLS
+	guard, err := newSocksGuard(rule, prepared.backendAddr)
+	if err != nil {
+		prepared.cleanup()
+		return err
+	}
+	_ = prepared.backend.Close()
+	prepared.backend = nil
 	child, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(child, s.cfg.GostBinary, "-C", path)
 	protectChild(cmd)
-	p := &process{rule: rule, epoch: epoch, cmd: cmd, cancel: cancel, ack: Ack{ID: rule.ID, Version: rule.Version, State: "pending"}, traffic: Traffic{ID: rule.ID, Version: rule.Version, Epoch: epoch, EntitlementVersion: rule.EntitlementVersion}, expires: time.Now().Add(30 * time.Second), done: make(chan struct{}), startedAt: time.Now().UnixMilli()}
+	p := &process{rule: rule, epoch: epoch, cmd: cmd, cancel: cancel, guard: guard, ack: Ack{ID: rule.ID, Version: rule.Version, State: "pending"}, traffic: Traffic{ID: rule.ID, Version: rule.Version, Epoch: epoch, EntitlementVersion: rule.EntitlementVersion}, expires: time.Now().Add(30 * time.Second), done: make(chan struct{}), startedAt: time.Now().UnixMilli()}
 	s.processes[rule.ID] = p
 	// Logging is not forwarded to the control plane; target details are private.
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
+		guard.close()
 		cleanupTLS()
 		cancel()
 		os.Remove(path)
@@ -313,8 +363,11 @@ func (s *runtimeState) startPreparedLocked(ctx context.Context, rule Rule, prepa
 		close(p.done)
 		return err
 	}
+	guard.serve(child)
 	go func() {
 		err := cmd.Wait()
+		guard.close()
+		guard.wait()
 		cleanupTLS()
 		os.Remove(path)
 		s.mu.Lock()

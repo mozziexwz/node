@@ -701,7 +701,7 @@ export function Tickets({ admin = false }: { admin?: boolean }) {
     <>
       <Header
         title="工单"
-        sub="请说明问题和任务编号，不要填写 SSH 密码或配置认证信息。"
+        sub="请说明问题和贴出任务记录"
       >
         {!admin && (
           <Button primary onClick={() => setCreating(true)}>

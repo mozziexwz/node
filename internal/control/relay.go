@@ -548,6 +548,7 @@ func (a *App) RegisterRelay(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/admin/relay-agents/{id}", a.relaySaveAgent)
 	mux.HandleFunc("DELETE /api/admin/relay-agents/{id}", a.relayDeleteAgent)
 	mux.HandleFunc("POST /api/admin/relay-agents/{id}/enrollment", a.relayRenewEnrollment)
+	mux.HandleFunc("POST /api/admin/relay-agents/{id}/fresh-reset", a.relayFreshResetAgent)
 	mux.HandleFunc("GET /api/admin/routes", a.relayRoutes)
 	mux.HandleFunc("POST /api/admin/routes", a.relaySaveRoute)
 	mux.HandleFunc("PUT /api/admin/routes/{id}", a.relaySaveRoute)

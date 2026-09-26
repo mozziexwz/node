@@ -92,7 +92,7 @@ jobs:
           printf '%s\n' '676fb7f78d267b6ae73df719c0c7f2b565dde7147da935cfafbc1e1da558b6d5  .runtime/gost/archive.tar.gz' | sha256sum --check --strict
           tar -xzf .runtime/gost/archive.tar.gz -C .runtime/gost gost
           GOST_TEST_BINARY="$PWD/.runtime/gost/gost" go test -race ./internal/relayruntime -run TestRealGost -count=1 -v
-          GOST_TEST_BINARY="$PWD/.runtime/gost/gost" go test -race ./internal/executor -run TestRealGostCredentialConfigFileName -count=1 -v
+          GOST_TEST_BINARY="$PWD/.runtime/gost/gost" go test -race ./internal/executor -run 'TestReal(GostCredentialConfigFileName|FreeRelayGuard)$' -count=1 -v
       - name: Verify lease expiry and protected recovery with existing GOST connections
         shell: bash
         env:
@@ -132,10 +132,12 @@ jobs:
           bash deploy/backup_activity_recovery_test.sh
           bash deploy/relay_recovery_test.sh
           bash deploy/agent_migration_test.sh
+          bash deploy/uninstall_agent_test.sh
           bash deploy/disaster_test.sh
           bash deploy/disaster_joint_validation_test.sh
           bash deploy/relay_dynamic_user_validation_test.sh
           bash deploy/agent_bootstrap_test.sh
+          python3 -m unittest discover -s internal/executor -p free_relay_guard_test.py -v
           go test -race -tags msboost_joint_test ./internal/control -run '^TestDisasterJointSFTPObservation$' -count=1
       - run: go build ./cmd/server && go build ./cmd/agent && go build ./cmd/restore
   relay-endurance:

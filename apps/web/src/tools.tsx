@@ -62,9 +62,7 @@ export async function prepareSSH(
       replaceFingerprint: "",
       _rememberedFingerprint: previous,
     });
-    throw new Error(
-      "这台服务器的身份与上次不同，操作已暂停。若刚重装过服务器，请到服务商控制台核对，再在高级设置中确认；没有重装过请先联系服务商。",
-    );
+    throw new Error("服务器身份已变化，请在高级设置中核对。");
   }
   return {
     ...input,
@@ -234,6 +232,9 @@ export function SSHFields({
               <Notice tone="red">
                 服务器身份已变化。若没有重装或更换服务器，请停止操作。
               </Notice>
+              <p className="muted mt8">
+                这台服务器的身份与上次不同，操作已暂停。若刚重装过服务器，请到服务商控制台核对，再在高级设置中确认；没有重装过请先联系服务商。
+              </p>
               <p className="mono">原指纹：{value._rememberedFingerprint}</p>
               <p className="mono">新指纹：{value.fingerprint || observed}</p>
               <Check
@@ -676,7 +677,7 @@ export function ToolPage({
                 {kind === "deploy" && (
                   <>
                     <Notice tone="orange">
-                      每次均全新部署受管 MSBOOST 组件，重新生成认证和端口；不会重装操作系统。请先备份旧配置，原配置部署成功后将失效。
+                      每次均全新部署受管 MSBOOST 组件，重新生成认证和端口；不会重装操作系统。原配置部署成功后将失效。
                     </Notice>
                     <Notice tone="orange">
                       本功能仅限游戏用途，禁止用于翻墙、公共代理、违法活动或其他与游戏无关的用途。(MSBOOST
@@ -777,8 +778,7 @@ export function ToolPage({
                       </div>
                     </fieldset>
                     <Notice tone="red">
-                      <strong>DD 会清除服务器原有系统和数据。</strong>
-                      请先备份。操作提交后请等待15分钟以上，再执行部署 MSBOOST。
+                      DD系统会清除服务器原有系统和数据，操作前请先备份或确保无重要数据。操作提交后请等待15分钟以上，再执行部署 MSBOOST。
                     </Notice>
                     <Check
                       checked={erase}
@@ -799,8 +799,8 @@ export function ToolPage({
                       : kind === "deploy"
                         ? "开始部署"
                         : kind === "relay"
-                          ? "配置转发"
-                          : "执行 DD"}
+                          ? "开始配置"
+                          : "开始DD"}
                     <ArrowRight size={15} />
                   </Button>
                 </div>

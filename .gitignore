@@ -3,6 +3,8 @@
 .runtime/
 node_modules/
 *.tsbuildinfo
+__pycache__/
+*.pyc
 apps/web/dist/
 dist/
 data/

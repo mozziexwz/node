@@ -1,6 +1,6 @@
 # 商务与中转 API 契约
 
-实现位于 `internal/control/commerce*.go`、`payments*.go`、`relay*.go` 与 `internal/relayruntime`。本文描述 v0.3.0 候选源码；候选范围见[补充说明 2.4 整改状态](supplement-2.4-status.md)，Relay v2 既有证据见[补充 2.3 整改状态](supplement-2.3-status.md)。JSON 字段为 camelCase，金额为整数分，时间戳为毫秒，流量为字节。v0.3.0 候选只接受整枫叶金额，即 cents 必须为 100 的整数倍；用户界面不显示人民币符号或小数。所有用户请求以会话决定身份，写请求带 `X-CSRF-Token`，不能传入 userId 代替授权。错误为非 2xx `{"error":"说明"}`，界面直接显示真实错误。
+实现位于 `internal/control/commerce*.go`、`payments*.go`、`relay*.go` 与 `internal/relayruntime`。本文描述接口契约；对应版本是否已经发布和通过现场验收，应另行核对 Release、CI 与部署记录。JSON 字段为 camelCase，金额为整数分，时间戳为毫秒，流量为字节。用户操作只接受整枫叶金额，即 cents 必须为 100 的整数倍；用户界面不显示人民币符号或小数。所有用户请求以会话决定身份，写请求带 `X-CSRF-Token`，不能传入 userId 代替授权。错误为非 2xx `{"error":"说明"}`，界面直接显示真实错误。
 
 ## 权益和枫叶
 
@@ -63,7 +63,7 @@
 
 ## Agent运行契约和运维边界
 
-`App.RegisterCommerce(mux)`、`App.RegisterRelay(mux)` 注册端点；启动 `StartCommerce(ctx)`、`StartRelay(ctx)` 处理兑换记录过期和失效规则。`SetFrontProvisioner(tasks.ProvisionFront)` 接入执行器。Relay Agent 在 Linux 运行并需要独立 GOST v3 二进制。v0.3.0 全新 Relay 默认 keep_last，注册后使用 `/api/relay-agent/v2/sync`；显式 `--offline-policy lease` 才使用 `/api/relay-agent/sync` 的 5 秒短租约协议。协议结构位于 `internal/relayruntime/protocol.go`，既有节点不自动迁移。
+`App.RegisterCommerce(mux)`、`App.RegisterRelay(mux)` 注册端点；启动 `StartCommerce(ctx)`、`StartRelay(ctx)` 处理兑换记录过期和失效规则。`SetFrontProvisioner(tasks.ProvisionFront)` 接入执行器。Relay Agent 在 Linux 运行并需要独立 GOST v3 二进制。全新 Relay 默认 keep_last，注册后使用 `/api/relay-agent/v2/sync`；显式 `--offline-policy lease` 才使用 `/api/relay-agent/sync` 的 5 秒短租约协议。协议结构位于 `internal/relayruntime/protocol.go`，既有节点不自动迁移。
 
 GOST每条规则独立子进程，固定配置与源IP白名单；多跳内部节点只允许上一跳候选源IP，前置模式入口仅允许前置源IP。部署网络必须确保节点出站源IP与登记address一致。域名目标首次创建时解析并检查所有地址为公网，然后固定IP，DNS变更需重配。控制流不承载游戏字节。已用官方GOST v3.3.0（官方checksum核验）通过本机回环真实双跳TCP、运行ACK、累计Observer和撤销关闭端口的集成测试；这不替代客户VPS公网路径验收。
 

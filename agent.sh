@@ -4,11 +4,11 @@ set +xv
 set -Eeuo pipefail
 umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-version=v0.3.3
+version=v1.0.0
 capability=''; server=''; token_file=''; offline_policy=''; offline_policy_set=0; acknowledge_restart=0; fresh_reset=0
 usage() {
   printf '%s\n' 'MSBOOST 执行机 / 中转节点安装入口（Debian 11/12/13，amd64/arm64）' \
-    '用法：bash agent.sh --capability executor|relay --server https://panel.example.com [--version v0.3.3] [--token-file /root/private-token]' \
+    '用法：bash agent.sh --capability executor|relay --server https://panel.example.com [--version v1.0.0] [--token-file /root/private-token]' \
     'executor 为控制执行机，relay 为中转节点；请使用对应的注册令牌。' \
     '未指定 --token-file 时隐藏输入令牌；控制面地址必须为 HTTPS。' \
     '此新版入口仅允许 v0.2.4 或更新的稳定版本；旧安装器缺少 v2 状态与共享程序保护。' \

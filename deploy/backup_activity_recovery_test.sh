@@ -166,13 +166,13 @@ if grep -qx synthetic-interrupted-unknown "$OUTPUT"; then fail 'failed helper cl
 check_isolation
 MOCK_FAIL=
 : > "$TRACE"
-if manage_main backup-reconcile --fingerprint "$TEST_FINGERPRINT" > "$OUTPUT" 2>&1; then fail 'manager accepted proof argv'; fi
+if manage_main backup-reconcile > "$OUTPUT" 2>&1; then fail 'manager exposed removed reconciliation entrypoint'; fi
 check_isolation
 source "$TEST_REPO/install.sh"
-if bootstrap_main backup-reconcile --fingerprint "$TEST_FINGERPRINT" > "$OUTPUT" 2>&1; then fail 'bootstrap accepted proof argv'; fi
+if bootstrap_main backup-reconcile > "$OUTPUT" 2>&1; then fail 'bootstrap exposed removed reconciliation entrypoint'; fi
 check_isolation
 read_tty() { printf 13; }
-[[ $(menu) == backup-reconcile ]] || fail 'installed menu item missing'
-grep -q '13) printf backup-reconcile' "$TEST_REPO/install.sh" || fail 'bootstrap menu item missing'
-grep -q 'backup_activity_recovery.sh' "$TEST_REPO/deploy/manage.sh" || fail 'module copy/source integration missing'
+if menu > "$OUTPUT" 2>&1; then fail 'installed menu still accepts removed choice 13'; fi
+if grep -q '13) printf backup-reconcile' "$TEST_REPO/install.sh"; then fail 'bootstrap menu still exposes choice 13'; fi
+grep -q 'backup_activity_recovery.sh' "$TEST_REPO/deploy/manage.sh" || fail 'private recovery module copy integration missing'
 printf '%s\n' 'PASS: local root/TTY backup reconciliation, pinned server/database/volume identity, readonly original lock mount, strict inspection/stdin proof, no service lifecycle or secret leakage'

@@ -44,7 +44,7 @@ type gostTLSFiles struct {
 
 // Runtime-created paths only: caller-controlled configuration cannot name a
 // local certificate file. Cleanup also runs after a failed GOST start.
-func prepareGostConfig(rule Rule, observerURL, dir string) ([]byte, func(), error) {
+func prepareGostConfig(rule Rule, observerURL, dir, listenAddress string) ([]byte, func(), error) {
 	paths := []string{}
 	cleanup := func() {
 		for _, path := range paths {
@@ -92,6 +92,6 @@ func prepareGostConfig(rule Rule, observerURL, dir string) ([]byte, func(), erro
 		}
 		files.cas = append(files.cas, path)
 	}
-	raw, err := gostConfig(rule, observerURL, files)
+	raw, err := gostConfigAt(rule, observerURL, files, listenAddress)
 	return raw, cleanup, err
 }

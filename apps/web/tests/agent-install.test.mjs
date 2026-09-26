@@ -45,6 +45,15 @@ test("node reinstall makes fresh identity reset and connection interruption expl
       writes.push(url.pathname);
       return route.fulfill({ json: { enrollmentToken: "synthetic-private-token", expiresAt: Date.now() + 60000 } });
     }
+    if (url.pathname === "/api/admin/relay-agents/relay-2/fresh-reset" && request.method() === "POST") {
+      writes.push(url.pathname);
+      assert.equal(request.postDataJSON().confirm, "INTERRUPT_AND_REPLACE_RELAY");
+      return route.fulfill({ json: { oldAgentId: "relay-2", agent: { id: "new-relay-2" }, enrollmentToken: "new-private-token", expiresAt: Date.now() + 60000 } });
+    }
+    if (url.pathname === "/api/admin/relay-agents/relay-2" && request.method() === "DELETE") {
+      writes.push(url.pathname);
+      return route.fulfill({ json: { ok: true } });
+    }
     return route.fulfill({ status: 404, json: { error: "unexpected" } });
   });
   try {
@@ -54,8 +63,13 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     const row = page.getByRole("row").filter({ hasText: "未注册空节点" });
     const blocked = page.getByRole("row").filter({ hasText: "已有业务节点" });
     await expect(blocked.getByRole("button", { name: "部署 / 重装" })).toHaveCount(0);
-    await expect(blocked.getByRole("note")).toContainText("禁止普通部署/重装");
-    await expect(blocked.getByRole("link", { name: "查看受信恢复指引" })).toHaveAttribute("href", /\/v0\.3\.3\/docs\/relay-recovery\.md$/);
+    await expect(blocked).toContainText("重装受保护");
+    await expect(blocked).not.toContainText("禁止普通部署/重装");
+    await blocked.getByRole("button", { name: "查看限制 / 安全重装" }).click();
+    const safety = page.getByRole("dialog");
+    await expect(safety).toContainText("禁止普通部署/重装");
+    await expect(safety.getByRole("link", { name: "受信恢复指引" })).toHaveAttribute("href", /\/v1\.0\.0\/docs\/relay-recovery\.md$/);
+    await safety.getByRole("button", { name: "关闭窗口" }).click();
     page.once("dialog", (dialog) => void dialog.accept());
     await row.getByRole("button", { name: "部署 / 重装" }).click();
     const dialog = page.getByRole("dialog");
@@ -66,14 +80,32 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     await expect(commands).toHaveCount(3);
     const first = await commands.nth(0).textContent();
     const reset = await commands.nth(1).textContent();
-    assert.match(first, /\/v0\.3\.3\/agent\.sh/);
+    assert.match(first, /\/v1\.0\.0\/agent\.sh/);
     assert.match(first, /--capability relay .*--offline-policy keep_last/);
     assert.doesNotMatch(first, /--fresh-reset/);
-    assert.match(reset, /\/v0\.3\.3\/agent\.sh/);
+    assert.match(reset, /\/v1\.0\.0\/agent\.sh/);
     assert.match(reset, /--fresh-reset --acknowledge-relay-restart$/);
     await expect(dialog.getByRole("button", { name: "复制首次安装命令" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "复制全新重装命令" })).toBeVisible();
     assert.deepEqual(writes, ["/api/admin/relay-agents/relay-1/enrollment"]);
+    await dialog.getByRole("button", { name: "关闭窗口" }).click();
+    await blocked.getByRole("button", { name: "查看限制 / 安全重装" }).click();
+    page.once("dialog", (confirm) => void confirm.accept());
+    await page.getByRole("dialog").getByRole("button", { name: "申请安全全新重装" }).click();
+    const fresh = page.getByRole("dialog");
+    await expect(fresh).toContainText("旧节点 relay-2 已退役");
+    await expect(fresh.getByRole("button", { name: "复制首次安装命令" })).toHaveCount(0);
+    await expect(fresh.getByRole("button", { name: "复制全新重装命令" })).toBeVisible();
+    await fresh.getByRole("button", { name: "关闭窗口" }).click();
+    page.once("dialog", (confirm) => void confirm.accept());
+    await blocked.getByRole("button", { name: "删除" }).click();
+    const removed = page.getByRole("dialog");
+    await expect(removed).toContainText("节点已从控制面退役");
+    const cleanup = await removed.locator("pre.code-panel").textContent();
+    assert.match(cleanup, /\/v1\.0\.0\/deploy\/uninstall-agent\.sh/);
+    assert.match(cleanup, /--agent-id 'relay-2'.*--acknowledge-stop$/);
+    await expect(removed.getByRole("button", { name: "复制本机 Agent 清理命令" })).toBeVisible();
+    assert.deepEqual(writes, ["/api/admin/relay-agents/relay-1/enrollment", "/api/admin/relay-agents/relay-2/fresh-reset", "/api/admin/relay-agents/relay-2"]);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

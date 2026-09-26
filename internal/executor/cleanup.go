@@ -127,9 +127,11 @@ def check_unit(unit,path,required):
     lines=[line.strip() for line in text.splitlines()]
     if any(line.endswith('\\') for line in lines): reject()
     values=dict(line.split('=',1) for line in required)
+    credentials=[line.split('=',1)[1] for line in required if line.startswith('LoadCredential=')]
     expected={'Unit':{'Description':values['Description'],'After':'network-online.target','Wants':'network-online.target'},'Install':{'WantedBy':'multi-user.target'}}
     if scope=='relay':
-        expected['Service']={'Type':'simple','DynamicUser':'true','LoadCredential':values['LoadCredential'],'ExecStart':values['ExecStart'],'Restart':'on-failure','RestartSec':'3','NoNewPrivileges':'true','PrivateTmp':'true','ProtectSystem':'strict','ProtectHome':'true','RestrictAddressFamilies':'AF_INET AF_INET6 AF_UNIX'}
+        expected['Service']={'Type':'simple','DynamicUser':'true','LoadCredential':credentials,'ExecStart':values['ExecStart'],'Restart':'on-failure','RestartSec':'3','NoNewPrivileges':'true','PrivateTmp':'true','ProtectSystem':'strict','ProtectHome':'true','RestrictAddressFamilies':'AF_INET AF_INET6 AF_UNIX'}
+        if 'KillMode' in values: expected['Service']['KillMode']=values['KillMode']
     else:
         expected['Service']={'Type':'simple','User':'msboost','Group':'msboost','WorkingDirectory':'/var/lib/msboost','ExecStart':values['ExecStart'],'Environment':'SAFE_PATHS=/etc/msboost/ruleset','Restart':'on-failure','RestartSec':'3s','SyslogIdentifier':'msboost','UMask':'0027','LimitNOFILE':'1048576','NoNewPrivileges':'true','PrivateTmp':'true','ProtectHome':'true','ProtectSystem':'strict','ProtectKernelTunables':'true','ProtectKernelModules':'true','ProtectControlGroups':'true','RestrictSUIDSGID':'true','LockPersonality':'true','MemoryDenyWriteExecute':'true','RestrictAddressFamilies':'AF_INET AF_INET6 AF_UNIX AF_NETLINK','CapabilityBoundingSet':'CAP_NET_BIND_SERVICE','AmbientCapabilities':'CAP_NET_BIND_SERVICE','ReadWritePaths':'/var/lib/msboost'}
     # Compare the complete normalized template, not merely ExecStart. Added
@@ -144,8 +146,13 @@ def check_unit(unit,path,required):
         else:
             if section is None or '=' not in line: reject()
             key,value=(piece.strip() for piece in line.split('=',1))
-            if key in parsed[section] or key not in expected[section] or value!=expected[section][key]: reject()
-            parsed[section][key]=value
+            if key not in expected[section]: reject()
+            if scope=='relay' and section=='Service' and key=='LoadCredential':
+                parsed[section].setdefault(key,[]).append(value)
+                if len(parsed[section][key])>len(credentials): reject()
+            else:
+                if key in parsed[section] or value!=expected[section][key]: reject()
+                parsed[section][key]=value
     if parsed!=expected: reject()
     fragment=subprocess.check_output(['systemctl','show',unit,'-p','FragmentPath','--value'],text=True,stderr=subprocess.DEVNULL,timeout=15).strip()
     if fragment!=path: reject()
@@ -197,21 +204,39 @@ try:
             if not os.path.isdir(conf): reject()
             # Older releases have no marker; the complete unit and config layout
             # below must still prove this project's installation convention.
-            allowed={'config.json','managed-by','ufw-owned','firewalld-runtime-owned','firewalld-permanent-owned'}
+            allowed={'config.json','guard.json','guard.py','managed-by','ufw-owned','firewalld-runtime-owned','firewalld-permanent-owned'}
             if not set(os.listdir(conf)).issubset(allowed) or not os.path.isfile(conf+'/config.json'): reject()
             if os.path.exists(conf+'/managed-by') and read(conf+'/managed-by').strip()!='msboost-free-v1': reject()
             validate(unitpath)
-            match=re.search(r'^ExecStart=/usr/local/libexec/msboost-free/gost-([a-f0-9]{64}) -C (?:%d|\$\{CREDENTIALS_DIRECTORY\})/(config(?:\.json)?)$',read(unitpath),re.M)
-            if not match: reject()
-            # Accept only the exact legacy pair or exact fixed JSON pair. The
-            # credential ID must equal the filename used by ExecStart.
-            check_unit(unit,unitpath,['Description=MSBOOST customer TCP forwarding','DynamicUser=true','LoadCredential='+match.group(2)+':'+conf+'/config.json',match.group(0)])
+            unit_text=read(unitpath)
+            legacy=re.search(r'^ExecStart=/usr/local/libexec/msboost-free/gost-([a-f0-9]{64}) -C (?:%d|\$\{CREDENTIALS_DIRECTORY\})/(config(?:\.json)?)$',unit_text,re.M)
+            guarded=re.search(r'^ExecStart=/usr/bin/python3 \$\{CREDENTIALS_DIRECTORY\}/guard\.py /usr/local/libexec/msboost-free/gost-([a-f0-9]{64}) \$\{CREDENTIALS_DIRECTORY\}/config\.json \$\{CREDENTIALS_DIRECTORY\}/guard\.json$',unit_text,re.M)
+            if guarded:
+                if not os.path.isfile(conf+'/guard.json') or not os.path.isfile(conf+'/guard.py'): reject()
+                required=['Description=MSBOOST customer TCP forwarding','DynamicUser=true','LoadCredential=config.json:'+conf+'/config.json','LoadCredential=guard.json:'+conf+'/guard.json','LoadCredential=guard.py:'+conf+'/guard.py',guarded.group(0),'KillMode=control-group']
+                match=guarded
+            elif legacy:
+                if os.path.exists(conf+'/guard.json') or os.path.exists(conf+'/guard.py'): reject()
+                required=['Description=MSBOOST customer TCP forwarding','DynamicUser=true','LoadCredential='+legacy.group(2)+':'+conf+'/config.json',legacy.group(0)]
+                match=legacy
+            else: reject()
+            check_unit(unit,unitpath,required)
             binary='/usr/local/libexec/msboost-free/gost-'+match.group(1)
             validate(binary)
             if not os.path.isfile(binary): reject()
             document=json.loads(read(conf+'/config.json'))
             if len(document.get('services',[]))!=1 or document['services'][0].get('name')!='msboost-free': reject()
-            port=str(document['services'][0].get('addr','')).lstrip(':')
+            if guarded:
+                guard_config=json.loads(read(conf+'/guard.json'))
+                if set(guard_config)!={'publicPort','backendPort'}: reject()
+                port=guard_config['publicPort'];backend_port=guard_config['backendPort']
+                if type(port) is not int or type(backend_port) is not int or not 1<=port<=65535 or not 1<=backend_port<=65535 or port==backend_port: reject()
+                service=document['services'][0]
+                if service.get('addr')!='127.0.0.1:'+str(backend_port) or service.get('admission')!='guard': reject()
+                if document.get('admissions')!=[{'name':'guard','whitelist':True,'matchers':['127.0.0.1']}]: reject()
+                port=str(port)
+            else:
+                port=str(document['services'][0].get('addr','')).lstrip(':')
             for mode in ['ufw','firewalld-runtime','firewalld-permanent']:
                 path=conf+'/'+mode+'-owned'
                 if os.path.exists(path):
