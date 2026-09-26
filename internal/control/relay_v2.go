@@ -389,13 +389,14 @@ func (a *App) relaySyncAgentV2(w http.ResponseWriter, r *http.Request) {
 		commerceError(w, 400, err)
 		return
 	}
-	if in.ProtocolVersion != relayruntime.ProtocolV2 || !relayV2Identifier(in.AgentID) || !relayV2Identifier(in.AgentInstanceID) || !relayV2Identifier(in.RequestID) || in.Sequence <= 0 || in.AppliedRevision < 0 || len(in.Acks) > 4096 || len(in.Traffic) > relayruntime.MaxV2Traffic || !relayV2Capabilities(in.Capabilities) {
+	if in.ProtocolVersion != relayruntime.ProtocolV2 || !relayV2Identifier(in.AgentID) || !relayV2Identifier(in.AgentInstanceID) || !relayV2Identifier(in.RequestID) || in.Sequence <= 0 || in.AppliedRevision < 0 || len(in.Acks) > 4096 || len(in.Traffic) > relayruntime.MaxV2Traffic || len(in.TargetProbeResults) > relayruntime.MaxTargetProbes || !relayV2Capabilities(in.Capabilities) {
 		commerceError(w, 400, errors.New("invalid v2 sync envelope"))
 		return
 	}
 	now := time.Now().UnixMilli()
 	out := relayruntime.V2SyncResponse{ProtocolVersion: relayruntime.ProtocolV2, AgentID: in.AgentID, RequestID: in.RequestID, PreviousRevision: in.AppliedRevision, OfflinePolicy: relayruntime.KeepLast, Status: "ready", Commands: []relayruntime.V2Command{}, TrafficAcks: []relayruntime.V2TrafficAck{}}
 	authFailure := false
+	probeAllowed := false
 	err := a.Store.Update(func(s *State) error {
 		agent, err := a.relayAgentIdentity(s, r)
 		if err != nil || agent.ID != in.AgentID {
@@ -557,6 +558,16 @@ func (a *App) relaySyncAgentV2(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		out.Revision = catalog.Revision
+		probeAllowed = out.Status == "ready" && agent.ReconcileState != "recovery_required"
+		if probeAllowed {
+			probeAllowed = false
+			for _, capability := range in.Capabilities {
+				if capability == relayruntime.TargetProbeCapability {
+					probeAllowed = true
+					break
+				}
+			}
+		}
 		if err := SaveDoc(s, "relay_v2_catalogs", agent.ID, catalog); err != nil {
 			return err
 		}
@@ -569,6 +580,9 @@ func (a *App) relaySyncAgentV2(w http.ResponseWriter, r *http.Request) {
 			commerceError(w, 503, errors.New("控制面同步未提交，保留最后配置并重试"))
 		}
 		return
+	}
+	if probeAllowed {
+		a.relayDiagnostics.exchange(in.AgentID, in.TargetProbeResults, &out)
 	}
 	WriteJSON(w, 200, out)
 }

@@ -41,7 +41,7 @@ type App struct {
 	mailSender       func(context.Context, SMTPConfig, string, string, EmailMessage) error
 	trustedProxies   []*net.IPNet
 	passwordRecovery *passwordRecovery
-	relayProbe       relayDiagnosticProbeFunc
+	relayDiagnostics relayDiagnosticBroker
 }
 
 func New(c Config) (*App, error) {

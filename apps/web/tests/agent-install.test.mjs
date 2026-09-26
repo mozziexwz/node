@@ -68,7 +68,7 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     await blocked.getByRole("button", { name: "查看限制 / 安全重装" }).click();
     const safety = page.getByRole("dialog");
     await expect(safety).toContainText("禁止普通部署/重装");
-    await expect(safety.getByRole("link", { name: "受信恢复指引" })).toHaveAttribute("href", /\/v1\.0\.0\/docs\/relay-recovery\.md$/);
+    await expect(safety.getByRole("link", { name: "受信恢复指引" })).toHaveAttribute("href", /\/v1\.0\.1\/docs\/relay-recovery\.md$/);
     await safety.getByRole("button", { name: "关闭窗口" }).click();
     page.once("dialog", (dialog) => void dialog.accept());
     await row.getByRole("button", { name: "部署 / 重装" }).click();
@@ -80,10 +80,10 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     await expect(commands).toHaveCount(3);
     const first = await commands.nth(0).textContent();
     const reset = await commands.nth(1).textContent();
-    assert.match(first, /\/v1\.0\.0\/agent\.sh/);
+    assert.match(first, /\/v1\.0\.1\/agent\.sh/);
     assert.match(first, /--capability relay .*--offline-policy keep_last/);
     assert.doesNotMatch(first, /--fresh-reset/);
-    assert.match(reset, /\/v1\.0\.0\/agent\.sh/);
+    assert.match(reset, /\/v1\.0\.1\/agent\.sh/);
     assert.match(reset, /--fresh-reset --acknowledge-relay-restart$/);
     await expect(dialog.getByRole("button", { name: "复制首次安装命令" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "复制全新重装命令" })).toBeVisible();
@@ -102,7 +102,7 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     const removed = page.getByRole("dialog");
     await expect(removed).toContainText("节点已从控制面退役");
     const cleanup = await removed.locator("pre.code-panel").textContent();
-    assert.match(cleanup, /\/v1\.0\.0\/deploy\/uninstall-agent\.sh/);
+    assert.match(cleanup, /\/v1\.0\.1\/deploy\/uninstall-agent\.sh/);
     assert.match(cleanup, /--agent-id 'relay-2'.*--acknowledge-stop$/);
     await expect(removed.getByRole("button", { name: "复制本机 Agent 清理命令" })).toBeVisible();
     assert.deepEqual(writes, ["/api/admin/relay-agents/relay-1/enrollment", "/api/admin/relay-agents/relay-2/fresh-reset", "/api/admin/relay-agents/relay-2"]);

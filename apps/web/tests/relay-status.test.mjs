@@ -301,7 +301,7 @@ test(
               routeName: "完整保留线路",
               status: "success",
               latencyMs: 33,
-              message: "入口与目标分别完成了一次网络连接检查；未验证整条中转链或游戏实际连接。",
+              message: "由出口节点连接该客户 MSBOOST 的 TCP 端口并计时；不包含入口及中间节点，也不代表游戏实际延迟。",
             },
           });
         if (request.method() !== "GET") {
@@ -405,12 +405,12 @@ test(
             await keep.getByRole("button", { name: "诊断", exact: true }).click();
             const diagnosis = page.getByRole("dialog");
             await expect(diagnosis).toContainText(
-              "入口(完整保留线路)->目标(MSBOOST)",
+              "出口节点(完整保留线路)->客户 MSBOOST",
             );
             await expect(diagnosis).toContainText("初检通过");
             await expect(diagnosis).not.toContainText("丢包率");
             await expect(diagnosis).toContainText("33");
-            await expect(diagnosis).toContainText("未验证整条中转链或游戏实际连接");
+            await expect(diagnosis).toContainText("不包含入口及中间节点");
             await diagnosis
               .getByRole("button", { name: "关闭", exact: true })
               .click();
@@ -596,7 +596,7 @@ test(
               page.getByRole("dialog").getByRole("link", { name: "受信恢复指引" }),
             ).toHaveAttribute(
               "href",
-              /\/v1\.0\.0\/docs\/relay-recovery\.md$/,
+              /\/v1\.0\.1\/docs\/relay-recovery\.md$/,
             );
             await page.getByRole("dialog").getByRole("button", { name: "关闭窗口" }).click();
             let warning = "";

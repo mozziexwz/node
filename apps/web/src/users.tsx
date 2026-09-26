@@ -143,6 +143,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
                 <th>邮箱验证</th>
                 {sorting("balanceCents", "枫叶")}
                 {sorting("days", "剩余天数")}
+                <th>权益等级</th>
                 {sorting("trafficTotal", "总流量（GB）")}
                 {sorting("trafficUsed", "已用流量（GB）")}
                 {sorting("rateMbps", "规则速率（Mbps）")}
@@ -174,6 +175,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
                   >
                     {remainingDays(u, now).toFixed(2)} 天
                   </td>
+                  <td>{`L${Math.min(3, Math.max(1, Number(u.level) || 1))}`}</td>
                   <td>{gb(u.trafficTotal)} GB</td>
                   <td>{gb(u.trafficUsed)} GB</td>
                   <td>{u.rateMbps || 1} Mbps</td>
@@ -235,7 +237,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
               ))}
               {!users.length && (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <div className="empty">没有符合条件的用户</div>
                   </td>
                 </tr>
@@ -320,6 +322,15 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
               </div>
             )}
             <div className="form-grid mt16">
+              <Select
+                label="权益等级"
+                value={editing.draft.level}
+                onChange={(e) => change("level", e.target.value)}
+              >
+                <option value="1">L1</option>
+                <option value="2">L2</option>
+                <option value="3">L3</option>
+              </Select>
               <Field
                 label="枫叶"
                 type="number"

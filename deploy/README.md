@@ -2,15 +2,15 @@
 
 入口为仓库根 `install.sh`，部署包由 GitHub Release 提供：
 
-- 仓库：`mozziexwz/node`，当前入口默认版本 `v1.0.0`；执行前核对该标签的正式资产是否齐全。
-- 文件：`msboost-deploy-v1.0.0.tar.gz`、`SHA256SUMS`。部署包顶层直接包含 `install.sh`、`deploy/`；显式源码构建还需完整应用源码与 Dockerfile。
-- 普通安装优先拉取 `ghcr.io/mozziexwz/node:v1.0.0`，拉取成功后把实际镜像摘要记入 `.env`。GHCR 无权读取或暂时不可用时，明确提示并从同版本 GitHub Release 下载 `msboost-image-linux-amd64.tar.gz` 或 `msboost-image-linux-arm64.tar.gz` 与校验清单，载入 CI 预构建镜像；两个预构建来源都失败才停止，绝不自动源码编译。PostgreSQL / Caddy 拉取失败直接停止，不触发应用镜像回退。
+- 仓库：`mozziexwz/node`，当前入口默认版本 `v1.0.1`；执行前核对该标签的正式资产是否齐全。
+- 文件：`msboost-deploy-v1.0.1.tar.gz`、`SHA256SUMS`。部署包顶层直接包含 `install.sh`、`deploy/`；显式源码构建还需完整应用源码与 Dockerfile。
+- 普通安装优先拉取 `ghcr.io/mozziexwz/node:v1.0.1`，拉取成功后把实际镜像摘要记入 `.env`。GHCR 无权读取或暂时不可用时，明确提示并从同版本 GitHub Release 下载 `msboost-image-linux-amd64.tar.gz` 或 `msboost-image-linux-arm64.tar.gz` 与校验清单，载入 CI 预构建镜像；两个预构建来源都失败才停止，绝不自动源码编译。PostgreSQL / Caddy 拉取失败直接停止，不触发应用镜像回退。
 - SHA256 清单与部署包来自同一 HTTPS Release，提供完整性检查，不是独立发布签名。运行 root 脚本前应审核来源。
 
 在目标 Debian 12/13（amd64 或 arm64）服务器运行，不需要自己的电脑拥有公网 IP。域名模式要求域名 DNS 指向目标 VPS，且公网 TCP 80/443 可达；脚本不会停止其他占用端口的服务。
 
 ```sh
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.0.0/install.sh -o /tmp/msboost-install.sh
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.0.1/install.sh -o /tmp/msboost-install.sh
 # 审核下载的脚本后执行；无参数显示菜单。
 sudo bash /tmp/msboost-install.sh install --domain panel.example.com --email 12345678@qq.com
 ```
@@ -26,7 +26,7 @@ sudo bash /tmp/msboost-install.sh install --domain panel.example.com --email 123
 ```sh
 sudo msboost status
 sudo msboost logs
-sudo msboost upgrade --version v1.0.0
+sudo msboost upgrade --version v1.0.1
 sudo msboost upgrade             # 解析 GitHub 最新正式 Release 的具体 tag
 sudo msboost repair
 sudo msboost uninstall          # 保留数据、配置、密钥、证书与备份
@@ -47,7 +47,7 @@ sudo msboost purge              # 单独操作，必须在终端进行两次确�
 
 ```sh
 sudo bash /tmp/msboost-install.sh install --domain panel.example.com --email 12345678@qq.com --build
-sudo msboost upgrade --version v1.0.0 --build
+sudo msboost upgrade --version v1.0.1 --build
 ```
 
 这仍需要 Release 部署包包含完整源码。安装器使用唯一的本地镜像标签，避免覆盖供回退使用的旧镜像。普通 `compose.yml` 没有 build 字段；手工源码构建必须额外指定 `compose.build.yml`。

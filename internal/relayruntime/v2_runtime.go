@@ -30,6 +30,8 @@ type v2RuntimeState struct {
 	token                string
 	wake                 chan struct{}
 	credentialGeneration int64
+	targetProbeResults   map[string]targetProbeRecord
+	targetProbeRunning   map[string]bool
 }
 
 func v2RunningAction(action string) bool { return action == "upsert" || action == "resume" }
@@ -123,7 +125,7 @@ func (s *runtimeState) validateV2EnvelopeLocked(request V2SyncRequest, response 
 	if state.RecoveryRequired && !trustedRecoveryReady {
 		return errors.New("relay v2 recovery_required; explicit trusted takeover needed")
 	}
-	if response.Status != "ready" || response.PreviousRevision != request.AppliedRevision || request.AppliedRevision != state.Revision || request.ControlEpoch != state.ControlEpoch || response.Revision < response.PreviousRevision || response.Commands == nil || len(response.Commands) > MaxV2Commands || len(response.TrafficAcks) > MaxV2Traffic {
+	if response.Status != "ready" || response.PreviousRevision != request.AppliedRevision || request.AppliedRevision != state.Revision || request.ControlEpoch != state.ControlEpoch || response.Revision < response.PreviousRevision || response.Commands == nil || len(response.Commands) > MaxV2Commands || len(response.TrafficAcks) > MaxV2Traffic || len(response.TargetProbes) > MaxTargetProbes || len(response.TargetProbeAcks) > MaxTargetProbes {
 		return errors.New("incomplete or inconsistent v2 response")
 	}
 	return nil
@@ -381,7 +383,8 @@ func (s *runtimeState) v2Request(instanceID string) V2SyncRequest {
 
 func (s *runtimeState) v2RequestLocked(instanceID string) V2SyncRequest {
 	s.v2.sequence++
-	request := V2SyncRequest{ProtocolVersion: ProtocolV2, AgentID: s.v2.disk.AgentID, AgentInstanceID: instanceID, Sequence: s.v2.sequence, RequestID: randomID(), ControlEpoch: s.v2.disk.ControlEpoch, AppliedRevision: s.v2.disk.Revision, Capabilities: append(append([]string(nil), V2Capabilities...), SocksGuardCapability), Acks: []V2Ack{}, Traffic: s.v2TrafficBatchLocked(), AccountingDegraded: s.v2AccountingDegradedLocked()}
+	request := V2SyncRequest{ProtocolVersion: ProtocolV2, AgentID: s.v2.disk.AgentID, AgentInstanceID: instanceID, Sequence: s.v2.sequence, RequestID: randomID(), ControlEpoch: s.v2.disk.ControlEpoch, AppliedRevision: s.v2.disk.Revision, Capabilities: append(append([]string(nil), V2Capabilities...), SocksGuardCapability, TargetProbeCapability), Acks: []V2Ack{}, Traffic: s.v2TrafficBatchLocked(), AccountingDegraded: s.v2AccountingDegradedLocked()}
+	request.TargetProbeResults = s.targetProbeBatchLocked()
 	request.localCredentialGeneration = s.v2.credentialGeneration
 	for _, record := range s.v2.disk.Records {
 		command := record.Command
@@ -522,6 +525,9 @@ func runV2(ctx context.Context, cfg Config, agentID, token string) error {
 		response, callErr := callV2(ctx, exchangeCfg, exchangeToken, request)
 		if callErr == nil {
 			callErr = s.applyV2Response(ctx, request, response)
+		}
+		if callErr == nil {
+			s.acceptTargetProbeResponse(ctx, request.TargetProbeResults, response)
 		}
 		status := "online"
 		if callErr != nil {

@@ -139,8 +139,6 @@ type TrafficCursor struct {
 	Remainder   int64 `json:"remainder,omitempty"`
 }
 
-type relayDiagnosticProbeFunc func(context.Context, string, string) (int64, error)
-
 // Rates are per forwarding rule and per direction, never a shared account pool.
 func relayRate(user *User, route Route) int64 {
 	if user == nil {
@@ -1455,7 +1453,9 @@ func (a *App) relayDiagnose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var rule UserRule
-	runtimeReady := false
+	runtimeReady, agentCapable := false, false
+	exitAgentID := ""
+	now := time.Now().UnixMilli()
 	err = a.Store.View(func(s *State) error {
 		var ok bool
 		rule, ok = LoadDoc[UserRule](s, "user_rules", u.ID+":"+r.PathValue("route"))
@@ -1466,45 +1466,74 @@ func (a *App) relayDiagnose(w http.ResponseWriter, r *http.Request) {
 		if !ok || !route.Enabled || !relayEntitled(s.Users[u.ID], time.Now().UnixMilli()) || !userCanUseRoute(s.Users[u.ID], route) {
 			return errors.New("当前中转配置不可用")
 		}
-		view := relayRuleView(s, rule, false, time.Now().UnixMilli())
+		view := relayRuleView(s, rule, false, now)
 		runtimeReady = view.SyncState == "active" && view.TotalSegments > 0 && view.ReadySegments == view.TotalSegments
+		if len(rule.Segments) > 0 {
+			exitAgentID = rule.Segments[len(rule.Segments)-1].AgentID
+			agent, ok := LoadDoc[RelayAgent](s, "relay_agents", exitAgentID)
+			agentCapable = ok && relayTargetProbeCapable(agent, now)
+		}
 		return nil
 	})
 	if err != nil {
 		commerceError(w, 409, err)
 		return
 	}
-	path := fmt.Sprintf("入口(%s)->目标(MSBOOST)", rule.RouteName)
-	failure := func(latency int64, message string) {
-		WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "failed", "latencyMs": latency, "scope": "tcp_path", "error": message})
+	path := fmt.Sprintf("出口节点(%s)->客户 MSBOOST", rule.RouteName)
+	failure := func(message string) {
+		WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "failed", "latencyMs": nil, "scope": "exit_target_tcp", "error": message})
 	}
 	if !runtimeReady {
-		failure(0, "线路节点尚未全部确认在线，无法证明到达目标 MSBOOST")
+		failure("线路节点尚未全部确认在线，无法诊断出口到客户 MSBOOST")
+		return
+	}
+	if !agentCapable {
+		failure("出口节点管理连接离线或 Agent 尚未升级，无法从节点发起诊断")
 		return
 	}
 	target, targetErr := relayDiagnosticTarget(rule)
 	if targetErr != nil {
-		failure(0, "缺少已验证的目标 MSBOOST 探测地址")
+		failure("缺少已验证的客户 MSBOOST 探测地址")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-	entries, entryErr := resolveRelayTarget(ctx, rule.EntryAddress, rule.EntryPort)
-	if entryErr != nil || len(entries) == 0 {
-		failure(0, "入口地址不可用，请稍后重试")
+	job, err := a.relayDiagnostics.begin(u.ID, rule.ID, exitAgentID, target)
+	if err != nil {
+		failure(err.Error())
 		return
 	}
-	sort.Strings(entries)
-	probe := a.relayProbe
-	if probe == nil {
-		probe = relayCompositeDiagnosticProbe
-	}
-	latency, probeErr := probe(ctx, entries[0], target)
-	if probeErr != nil {
-		failure(latency, probeErr.Error())
+	defer a.relayDiagnostics.end(job.id)
+	timer := time.NewTimer(time.Until(job.expires))
+	defer timer.Stop()
+	var report relayruntime.TargetProbeResult
+	select {
+	case report = <-job.result:
+	case <-timer.C:
+		failure("出口节点未在时限内返回诊断结果，请确认 Agent 管理连接后重试")
+		return
+	case <-r.Context().Done():
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "success", "latencyMs": latency, "scope": "tcp_path", "latencyScope": "entry_connect", "message": "入口与目标分别完成了一次网络连接检查；未验证整条中转链或游戏实际连接。", "error": ""})
+	if report.Status != "success" {
+		if report.Status == "unavailable" {
+			failure("出口节点未确认该中转规则正在运行，请稍后重试")
+		} else {
+			failure("出口节点无法连接客户 MSBOOST，请检查目标服务和网络")
+		}
+		return
+	}
+	valid := false
+	_ = a.Store.View(func(s *State) error {
+		current, ok := LoadDoc[UserRule](s, "user_rules", u.ID+":"+rule.RouteID)
+		route, routeOK := LoadDoc[Route](s, "routes", rule.RouteID)
+		currentTarget, targetErr := relayDiagnosticTarget(current)
+		valid = ok && routeOK && route.Enabled && current.ID == rule.ID && current.State == "active" && currentTarget == target && targetErr == nil && relayEntitled(s.Users[u.ID], time.Now().UnixMilli()) && userCanUseRoute(s.Users[u.ID], route)
+		return nil
+	})
+	if !valid {
+		failure("诊断期间线路配置发生变化，请重新诊断")
+		return
+	}
+	WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "success", "latencyMs": report.LatencyMS, "scope": "exit_target_tcp", "latencyScope": "exit_target_connect", "message": "由出口节点连接该客户 MSBOOST 的 TCP 端口并计时；不包含入口及中间节点，也不代表游戏实际延迟。", "error": ""})
 }
 
 // relayDiagnosticTarget returns only an immutable, provision-time resolved
@@ -1529,41 +1558,6 @@ func relayDiagnosticTarget(rule UserRule) (string, error) {
 	return "", errors.New("missing validated public target")
 }
 
-// relayCompositeDiagnosticProbe combines three bounded control-plane samples:
-// current rule ACK state (checked by the caller), direct target TCP
-// reachability, and an entry TCP connection that does not immediately close.
-// It intentionally does not claim a per-hop or Mieru protocol probe.
-func relayCompositeDiagnosticProbe(ctx context.Context, entry, target string) (int64, error) {
-	dialer := &net.Dialer{}
-	targetConn, err := dialer.DialContext(ctx, "tcp", target)
-	if err != nil {
-		return 0, errors.New("目标 MSBOOST 连接失败，请检查目标服务")
-	}
-	_ = targetConn.Close()
-	started := time.Now()
-	entryConn, err := dialer.DialContext(ctx, "tcp", entry)
-	latency := time.Since(started).Milliseconds()
-	if err != nil {
-		return latency, errors.New("入口连接失败，请稍后重试")
-	}
-	defer entryConn.Close()
-	deadline := time.Now().Add(250 * time.Millisecond)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		deadline = contextDeadline
-	}
-	if err = entryConn.SetReadDeadline(deadline); err != nil {
-		return latency, errors.New("入口连接状态无法确认")
-	}
-	var one [1]byte
-	_, err = entryConn.Read(one[:])
-	if err == nil {
-		return latency, nil
-	}
-	if networkError, ok := err.(net.Error); ok && networkError.Timeout() && ctx.Err() == nil {
-		return latency, nil
-	}
-	return latency, errors.New("入口 TCP 连接未能保持，请检查中转节点和目标 MSBOOST")
-}
 func (a *App) relayResetTarget(w http.ResponseWriter, r *http.Request) {
 	u, err := a.User(r)
 	if err != nil {

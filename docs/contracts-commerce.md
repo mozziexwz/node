@@ -57,7 +57,7 @@
 - `PATCH /api/user/routes/{route}/rules` 输入 `{paused:true|false}`。
 - `DELETE /api/user/routes/{route}/rules` → 202。纯 v1 返回 `{state:"revoking",maximumLeaseSeconds:45}`；涉及 v2 返回 `{state:"revoking",stopStatus:"pending",message}`，不返回虚假的租约截止。立即撤销服务器下载密文，v2 资源需等待明确停止确认。
 - `GET /api/user/routes/{route}/config` → 登录鉴权下载JSON，固定socks5Port10086；已有文件流量耗尽但未到期可下载，到期不可下载。不存在任何公共配置文件URL。
-- `POST /api/user/routes/{route}/diagnose` 对本人当前有效、active 且等级允许的配置执行一次入口 TCP 探测。成功或失败均返回 HTTP 200 诊断对象 `{routeName,path,status:"success"|"failed",latencyMs,packetLossPercent,error}`；用户界面把 `path` 规范化为 `入口(线路名)->目标(MSBOOST)`。失败样本不能伪装成功；接口有用户级限流，单次结果不代表持续 SLA。
+- `POST /api/user/routes/{route}/diagnose` 对本人当前有效、active 且等级允许的配置创建一次限时诊断。受管出口节点仅对本地运行规则已有、控制面预先验证的目标 IP:端口发起 TCP 连接并回报建连耗时；面板不再直连入口或目标冒充节点测量。成功或失败均返回 HTTP 200 诊断对象 `{routeName,path,status:"success"|"failed",latencyMs,scope:"exit_target_tcp",error}`，失败时 `latencyMs` 为 `null`。界面显示 `出口节点(线路名)->客户 MSBOOST`；结果仅代表出口到目标的一次 TCP 建连，不包含入口、中间节点或游戏协议延迟。诊断需要新版在线出口 Agent；旧版或离线时明确失败，不返回假延迟。接口有用户级限流和并发上限，单次结果不代表持续 SLA。
 - `POST /api/user/target/reset` 输入 `{confirm:true}`，撤销所有旧线路。纯 v1 返回 `{state:"revoking",retryAfter:时间戳毫秒}`；涉及 v2 返回 `{state:"revoking",stopStatus:"pending",message}`，全体旧实例确认撤销前不允许配置新目标。
 - `GET /api/user/traffic` → `{trafficUsed,trafficTotal,months:{"2026-09":字节},accounting}`。入口按规则保存的流量方向及倍率计费，多跳只计一次，各线路共用账户额度。整数千分倍率的小数字节余数随cursor持久化，同一epoch分批上报不会截断丢失；去重、溢出和旧权益保护继续有效。月历史不随买套餐清空。
 

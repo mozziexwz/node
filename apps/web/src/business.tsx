@@ -711,7 +711,7 @@ export function Routes({ user }: { user: RecordData }) {
           <div className="diagnosis-path">
             {String(
               diagnosis.result.path ||
-                `入口(${diagnosis.result.routeName || diagnosis.route.name})->目标(MSBOOST)`,
+                `出口节点(${diagnosis.result.routeName || diagnosis.route.name})->客户 MSBOOST`,
             ).replace(/\s*->\s*/g, "->")}
           </div>
           <div className="mini-grid mt24">
@@ -726,7 +726,7 @@ export function Routes({ user }: { user: RecordData }) {
               </div>
             </div>
             <div className="card stat">
-              <div className="stat-top">入口连接延迟(ms)</div>
+              <div className="stat-top">出口节点→客户 MSBOOST TCP 连接延迟(ms)</div>
               <div className="stat-value">
                 {diagnosis.result.latencyMs ?? "—"}
               </div>

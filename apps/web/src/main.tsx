@@ -514,7 +514,7 @@ function BadgeLabel({ user }: { user: RecordData }) {
       {user.role === "admin"
         ? "管理员"
         : user.expiresAt > Date.now()
-          ? "捐赠权益有效"
+          ? `捐赠权益有效 · L${Math.min(3, Math.max(1, Number(user.level) || 1))}`
           : "免费工具"}
     </span>
   );

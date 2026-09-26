@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	ProtocolV2    = 2
-	KeepLast      = "keep_last"
-	MaxV2Commands = 32
-	MaxV2Traffic  = 128
+	ProtocolV2      = 2
+	KeepLast        = "keep_last"
+	MaxV2Commands   = 32
+	MaxV2Traffic    = 128
+	MaxTargetProbes = 4
 )
 
 // Capabilities are acknowledged by actual v2 exchanges, not a binary version.
@@ -23,6 +24,24 @@ const (
 var V2Capabilities = []string{"keep_last", "explicit_stop", "persistent_config", "traffic_ack"}
 
 const SocksGuardCapability = "socks_guard"
+const TargetProbeCapability = "target_probe_v1"
+
+// Target probes are ephemeral, optional observations. A relay may probe only
+// an endpoint already present in its own running rule; this is not a generic
+// network-scanning or arbitrary-command channel.
+type TargetProbeRequest struct {
+	ID        string `json:"id"`
+	RuleID    string `json:"ruleId"`
+	Target    string `json:"target"`
+	ExpiresAt int64  `json:"expiresAt"`
+}
+
+type TargetProbeResult struct {
+	ID        string `json:"id"`
+	RuleID    string `json:"ruleId"`
+	Status    string `json:"status"` // success, failed, unavailable
+	LatencyMS int64  `json:"latencyMs"`
+}
 
 // V2 commands are explicit, idempotent intents for globally unique rule IDs.
 // Generation is independent of billing or runtime Version. REVOKE is terminal
@@ -64,31 +83,34 @@ type V2TrafficAck struct {
 }
 
 type V2SyncRequest struct {
-	ProtocolVersion           int         `json:"protocolVersion"`
-	AgentID                   string      `json:"agentId"`
-	AgentInstanceID           string      `json:"agentInstanceId"`
-	Sequence                  int64       `json:"sequence"`
-	RequestID                 string      `json:"requestId"`
-	ControlEpoch              string      `json:"controlEpoch"`
-	AppliedRevision           int64       `json:"appliedRevision"`
-	Capabilities              []string    `json:"capabilities"`
-	Acks                      []V2Ack     `json:"acks"`
-	Traffic                   []V2Traffic `json:"traffic"`
-	AccountingDegraded        bool        `json:"accountingDegraded,omitempty"`
+	ProtocolVersion           int                 `json:"protocolVersion"`
+	AgentID                   string              `json:"agentId"`
+	AgentInstanceID           string              `json:"agentInstanceId"`
+	Sequence                  int64               `json:"sequence"`
+	RequestID                 string              `json:"requestId"`
+	ControlEpoch              string              `json:"controlEpoch"`
+	AppliedRevision           int64               `json:"appliedRevision"`
+	Capabilities              []string            `json:"capabilities"`
+	Acks                      []V2Ack             `json:"acks"`
+	Traffic                   []V2Traffic         `json:"traffic"`
+	TargetProbeResults        []TargetProbeResult `json:"targetProbeResults,omitempty"`
+	AccountingDegraded        bool                `json:"accountingDegraded,omitempty"`
 	localCredentialGeneration int64
 }
 
 type V2SyncResponse struct {
-	ProtocolVersion  int            `json:"protocolVersion"`
-	AgentID          string         `json:"agentId"`
-	RequestID        string         `json:"requestId"`
-	ControlEpoch     string         `json:"controlEpoch"`
-	PreviousRevision int64          `json:"previousRevision"`
-	Revision         int64          `json:"revision"`
-	Status           string         `json:"status"` // ready or recovery_required; never implicit clear
-	OfflinePolicy    string         `json:"offlinePolicy"`
-	Commands         []V2Command    `json:"commands"`
-	TrafficAcks      []V2TrafficAck `json:"trafficAcks"`
+	ProtocolVersion  int                  `json:"protocolVersion"`
+	AgentID          string               `json:"agentId"`
+	RequestID        string               `json:"requestId"`
+	ControlEpoch     string               `json:"controlEpoch"`
+	PreviousRevision int64                `json:"previousRevision"`
+	Revision         int64                `json:"revision"`
+	Status           string               `json:"status"` // ready or recovery_required; never implicit clear
+	OfflinePolicy    string               `json:"offlinePolicy"`
+	Commands         []V2Command          `json:"commands"`
+	TrafficAcks      []V2TrafficAck       `json:"trafficAcks"`
+	TargetProbes     []TargetProbeRequest `json:"targetProbes,omitempty"`
+	TargetProbeAcks  []string             `json:"targetProbeAcks,omitempty"`
 }
 
 // Revision is a monotonic catalogue watermark, not an ACK of all commands.

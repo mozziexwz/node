@@ -2,13 +2,10 @@ package control
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"io"
-	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -233,7 +230,7 @@ func TestSupplement24CurrentHolderPolicyRecheckedAtPaymentCallback(t *testing.T)
 	now := time.Now().UnixMilli()
 	plan := Plan{ID: "callback-holder-plan", Name: "旧用户续兑", PriceCents: 100, Days: 1, TrafficBytes: commerceGB, RateMbps: 5, Enabled: true, Level: 2, CurrentHoldersOnly: true}
 	order := Order{ID: "callback-holder-order", UserID: user.ID, Plan: plan, AmountCents: 100, Currency: "CNY", ChannelID: "callback-holder-channel", State: "pending", CreatedAt: now, ExpiresAt: now + 60000, EntitlementVersion: 0}
-	if err = a.Store.Update(func(s *State) error {
+	if err := a.Store.Update(func(s *State) error {
 		s.Users[user.ID].ExpiresAt = now + commerceDay
 		s.Users[user.ID].TrafficTotal = commerceGB
 		s.Users[user.ID].PlanID = "another-plan"
@@ -272,7 +269,7 @@ func TestSupplement24RouteLevelPurgeAndDiagnose(t *testing.T) {
 	a, mux, user := commerceTestApp(t)
 	admin := &User{ID: "route-admin", Role: "admin", Status: "active"}
 	now := time.Now().UnixMilli()
-	agent := RelayAgent{ID: "route-agent", Name: "节点", Address: "8.8.8.8", Addresses: []string{"8.8.8.8"}, Capability: "relay", Enabled: true, LastSeen: now, PortRanges: []PortRange{{Start: 24000, End: 24010}}}
+	agent := RelayAgent{ID: "route-agent", Name: "节点", Address: "8.8.8.8", Addresses: []string{"8.8.8.8"}, Capability: "relay", Enabled: true, LastSeen: now, ProtocolVersion: relayruntime.ProtocolV2, Capabilities: []string{relayruntime.TargetProbeCapability}, PortRanges: []PortRange{{Start: 24000, End: 24010}}}
 	route1 := Route{ID: "route-l1", Name: "L1线路", EntryAgentID: agent.ID, EntryAddress: agent.Address, EntryAddresses: []string{agent.Address}, Type: "port_forward", Enabled: true, RateMbps: 5, Level: 1}
 	route2 := Route{ID: "route-l2", Name: "L2线路", EntryAgentID: agent.ID, EntryAddress: agent.Address, EntryAddresses: []string{agent.Address}, Type: "port_forward", Enabled: true, RateMbps: 5, Level: 2}
 	if err := a.Store.Update(func(s *State) error {
@@ -334,46 +331,9 @@ func TestSupplement24RouteLevelPurgeAndDiagnose(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	targetListener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer targetListener.Close()
-	entryListener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer entryListener.Close()
-	go func() {
-		for {
-			connection, acceptErr := targetListener.Accept()
-			if acceptErr != nil {
-				return
-			}
-			go func() { _, _ = io.Copy(io.Discard, connection); _ = connection.Close() }()
-		}
-	}()
-	go func() {
-		for {
-			upstream, acceptErr := entryListener.Accept()
-			if acceptErr != nil {
-				return
-			}
-			downstream, dialErr := net.Dial("tcp", targetListener.Addr().String())
-			if dialErr != nil {
-				_ = upstream.Close()
-				continue
-			}
-			go func() { _, _ = io.Copy(downstream, upstream); _ = downstream.Close() }()
-			go func() { _, _ = io.Copy(upstream, downstream); _ = upstream.Close() }()
-		}
-	}()
-	a.relayProbe = func(ctx context.Context, _, _ string) (int64, error) {
-		return relayCompositeDiagnosticProbe(ctx, entryListener.Addr().String(), targetListener.Addr().String())
-	}
 	diagnosticRoute := Route{ID: "diagnostic", Name: "诊断线路", EntryAgentID: agent.ID, EntryAddress: agent.Address, Enabled: true, RateMbps: 5, Level: 1}
-	diagnosticRule := UserRule{ID: "diagnostic-rule", UserID: user.ID, RouteID: diagnosticRoute.ID, RouteName: diagnosticRoute.Name, Version: 1, State: "active", EntryAddress: "8.8.8.8", EntryPort: 24009, TargetHost: "1.1.1.1", TargetPort: targetListener.Addr().(*net.TCPAddr).Port, Segments: []RelaySegment{{AgentID: agent.ID, AckState: "ready", LastLease: now + relayLeaseMS, Runtime: relayruntime.Rule{ID: "diagnostic-rule", Version: 1, ListenPort: 24009, Targets: []string{net.JoinHostPort("1.1.1.1", strconv.Itoa(targetListener.Addr().(*net.TCPAddr).Port))}, Protocol: "tcp", Strategy: "round", RateMbps: 5, Billing: true}}}}
-	if err = a.Store.Update(func(s *State) error {
+	diagnosticRule := UserRule{ID: "diagnostic-rule", UserID: user.ID, RouteID: diagnosticRoute.ID, RouteName: diagnosticRoute.Name, Version: 1, State: "active", EntryAddress: "8.8.8.8", EntryPort: 24009, TargetHost: "1.1.1.1", TargetPort: 443, Segments: []RelaySegment{{AgentID: agent.ID, AckState: "ready", ProtocolVersion: relayruntime.ProtocolV2, ConfigGeneration: 1, AppliedGeneration: 1, LastCommandAction: "upsert", IssuedRateMbps: 5, Runtime: relayruntime.Rule{ID: "diagnostic-rule", Version: 1, ListenPort: 24009, Targets: []string{"1.1.1.1:443"}, Protocol: "tcp", Strategy: "round", RateMbps: 5, Billing: true}}}}
+	if err := a.Store.Update(func(s *State) error {
 		if err := SaveDoc(s, "routes", diagnosticRoute.ID, diagnosticRoute); err != nil {
 			return err
 		}
@@ -381,18 +341,59 @@ func TestSupplement24RouteLevelPurgeAndDiagnose(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	response = commerceTestRequest(mux, user, http.MethodPost, "/api/user/routes/"+diagnosticRoute.ID+"/diagnose", nil)
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		result <- commerceTestRequest(mux, user, http.MethodPost, "/api/user/routes/"+diagnosticRoute.ID+"/diagnose", nil)
+	}()
+	var challenge relayruntime.TargetProbeRequest
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		out := relayruntime.V2SyncResponse{Status: "ready"}
+		a.relayDiagnostics.exchange(agent.ID, nil, &out)
+		if len(out.TargetProbes) == 1 {
+			challenge = out.TargetProbes[0]
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if challenge.ID == "" || challenge.RuleID != diagnosticRule.ID || challenge.Target != "1.1.1.1:443" {
+		t.Fatalf("node did not receive pinned target probe: %+v", challenge)
+	}
+	out := relayruntime.V2SyncResponse{Status: "ready"}
+	a.relayDiagnostics.exchange(agent.ID, []relayruntime.TargetProbeResult{{ID: challenge.ID, RuleID: challenge.RuleID, Status: "success", LatencyMS: 2}}, &out)
+	if len(out.TargetProbeAcks) != 1 || out.TargetProbeAcks[0] != challenge.ID {
+		t.Fatalf("node result not acknowledged: %+v", out)
+	}
+	response = <-result
 	var diagnosis struct {
 		Path   string `json:"path"`
 		Status string `json:"status"`
 		Scope  string `json:"scope"`
 	}
-	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &diagnosis) != nil || diagnosis.Status != "success" || diagnosis.Path != "入口(诊断线路)->目标(MSBOOST)" || diagnosis.Scope != "tcp_path" || strings.Contains(response.Body.String(), "packetLossPercent") {
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &diagnosis) != nil || diagnosis.Status != "success" || diagnosis.Path != "出口节点(诊断线路)->客户 MSBOOST" || diagnosis.Scope != "exit_target_tcp" || !strings.Contains(response.Body.String(), `"latencyMs":2`) || strings.Contains(response.Body.String(), "packetLossPercent") {
 		t.Fatalf("successful fixed-endpoint diagnosis failed: %d %s", response.Code, response.Body.String())
 	}
-	_ = targetListener.Close()
-	response = commerceTestRequest(mux, user, http.MethodPost, "/api/user/routes/"+diagnosticRoute.ID+"/diagnose", nil)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"failed"`) || strings.Contains(response.Body.String(), "packetLossPercent") || !strings.Contains(response.Body.String(), "目标 MSBOOST 连接失败") {
+	go func() {
+		result <- commerceTestRequest(mux, user, http.MethodPost, "/api/user/routes/"+diagnosticRoute.ID+"/diagnose", nil)
+	}()
+	challenge = relayruntime.TargetProbeRequest{}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		out := relayruntime.V2SyncResponse{Status: "ready"}
+		a.relayDiagnostics.exchange(agent.ID, nil, &out)
+		if len(out.TargetProbes) == 1 {
+			challenge = out.TargetProbes[0]
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if challenge.ID == "" {
+		t.Fatal("second target probe missing")
+	}
+	out = relayruntime.V2SyncResponse{Status: "ready"}
+	a.relayDiagnostics.exchange(agent.ID, []relayruntime.TargetProbeResult{{ID: challenge.ID, RuleID: challenge.RuleID, Status: "failed"}}, &out)
+	response = <-result
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"failed"`) || strings.Contains(response.Body.String(), "packetLossPercent") || !strings.Contains(response.Body.String(), "出口节点无法连接客户 MSBOOST") {
 		t.Fatalf("downstream target failure was misreported: %d %s", response.Code, response.Body.String())
 	}
 }

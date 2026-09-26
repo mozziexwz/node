@@ -23,6 +23,60 @@ type relayV2Fixture struct {
 	ruleID   string
 }
 
+func TestRelayV2DiagnoseUsesAuthenticatedExitAgent(t *testing.T) {
+	f := newRelayV2Fixture(t)
+	f.requests[1].Capabilities = append(f.requests[1].Capabilities, relayruntime.TargetProbeCapability)
+	f.ready(t)
+	if err := f.app.Store.Update(func(s *State) error {
+		rule, ok := LoadDoc[UserRule](s, "user_rules", f.user.ID+":route")
+		if !ok {
+			return fmt.Errorf("ready rule missing")
+		}
+		rule.RouteName, rule.EntryAddress, rule.EntryPort = "测试线路", f.agents[0].Address, rule.Segments[0].Runtime.ListenPort
+		rule.TargetHost, rule.TargetPort = "1.1.1.1", 443
+		return SaveDoc(s, "user_rules", f.user.ID+":route", rule)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		result <- commerceTestRequest(f.mux, f.user, http.MethodPost, "/api/user/routes/route/diagnose", nil)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f.app.relayDiagnostics.mu.Lock()
+		count := len(f.app.relayDiagnostics.jobs)
+		f.app.relayDiagnostics.mu.Unlock()
+		if count > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("diagnosis did not queue a probe")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if out := f.sync(t, 0); len(out.TargetProbes) != 0 {
+		t.Fatal("entry agent received exit-only probe")
+	}
+	challenge := f.sync(t, 1)
+	if len(challenge.TargetProbes) != 1 || challenge.TargetProbes[0].RuleID != f.ruleID || challenge.TargetProbes[0].Target != "1.1.1.1:443" {
+		t.Fatalf("exit agent did not receive pinned target: %+v", challenge)
+	}
+	f.requests[1].TargetProbeResults = []relayruntime.TargetProbeResult{{ID: challenge.TargetProbes[0].ID, RuleID: f.ruleID, Status: "success", LatencyMS: 7}}
+	reported := f.sync(t, 1)
+	if len(reported.TargetProbeAcks) != 1 || reported.TargetProbeAcks[0] != challenge.TargetProbes[0].ID {
+		t.Fatalf("exit report was not acknowledged: %+v", reported)
+	}
+	select {
+	case response := <-result:
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"latencyMs":7`) || !strings.Contains(response.Body.String(), `"scope":"exit_target_tcp"`) {
+			t.Fatalf("diagnosis did not use exit report: %d %s", response.Code, response.Body.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("diagnosis did not complete after exit report")
+	}
+}
+
 func TestLegacyV2AgentKeepsExistingRuleWithoutOptionalSocksGuard(t *testing.T) {
 	f := newRelayV2Fixture(t)
 	commands := f.ready(t)

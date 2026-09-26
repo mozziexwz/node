@@ -172,8 +172,8 @@ func v2TestResponse(s *runtimeState, commands []V2Command) (V2SyncRequest, V2Syn
 func TestV2RequestAdvertisesGuardWithoutChangingRequiredBaseline(t *testing.T) {
 	s, _, _ := v2TestFixture(t)
 	request := s.v2Request("test-instance")
-	if len(request.Capabilities) != len(V2Capabilities)+1 || request.Capabilities[len(request.Capabilities)-1] != SocksGuardCapability {
-		t.Fatalf("new agent did not advertise optional guard: %v", request.Capabilities)
+	if len(request.Capabilities) != len(V2Capabilities)+2 || request.Capabilities[len(V2Capabilities)] != SocksGuardCapability || request.Capabilities[len(V2Capabilities)+1] != TargetProbeCapability {
+		t.Fatalf("new agent did not advertise optional guard and target probe: %v", request.Capabilities)
 	}
 	for i, required := range V2Capabilities {
 		if request.Capabilities[i] != required {

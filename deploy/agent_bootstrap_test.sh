@@ -81,7 +81,7 @@ done
 unset AGENT_TEST_EARLY_TRACE
 # All supported branches, including components too large for machine integer
 # arithmetic, use only synthetic assets. No version is queried over a network.
-for supported in v0.2.4 v0.2.5 v0.3.0 v1.0.0 v9.8.7 v0.2.999999999999999999999999999999999999999999 v0.999999999999999999999999999999999999999999.0 v999999999999999999999999999999999999999999.0.0; do
+for supported in v0.2.4 v0.2.5 v0.3.0 v1.0.0 v1.0.1 v9.8.7 v0.2.999999999999999999999999999999999999999999 v0.999999999999999999999999999999999999999999.0 v999999999999999999999999999999999999999999.0.0; do
   AGENT_TEST_RELEASE="$supported" bash "$TEST_REPO/agent.sh" --capability relay --server https://panel.example.com --version "$supported" --token-file "$TEST_WORK/token" > "$TEST_WORK/supported-version.log" 2>&1 || fail 'supported version comparison failed or overflowed'
   [[ -f $AGENT_TEST_TRACE ]] || fail 'supported version never reached the synthetic installer'
   rm -- "$AGENT_TEST_TRACE"

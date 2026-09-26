@@ -189,7 +189,7 @@ uninstall_site
 ! grep -Eq '(^| )(rm|prune|--volumes|-v)( |$)' "$TRACE" || fail 'uninstall deletes data'
 repair_site
 
-VERSION=v1.0.0
+VERSION=v1.0.1
 MOCK_PULL_FAIL=1
 expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/original.env" || fail 'failed pull modified config'
@@ -200,7 +200,7 @@ expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/original.env" || fail 'failed upgrade did not restore prior environment'
 [[ -s $SNAPSHOT/database.dump ]] || fail 'upgrade skipped backup'
 upgrade_site
-[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == v1.0.0 ]] || fail 'successful upgrade wrong version'
+[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == v1.0.1 ]] || fail 'successful upgrade wrong version'
 [[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) == "$(env_get "$TEST_WORK/original.env" MASTER_KEY)" ]] || fail 'upgrade changed master key'
 
 expect_failure purge_site

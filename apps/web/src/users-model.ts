@@ -13,6 +13,7 @@ export type UserDraft = {
   total: string;
   used: string;
   rate: string;
+  level: string;
   reason: string;
 };
 
@@ -65,6 +66,7 @@ export function userDraft(
     total: integerUnit(Number(user?.trafficTotal || 0), 9),
     used: integerUnit(Number(user?.trafficUsed || 0), 9),
     rate: String(user?.rateMbps || 1),
+    level: String(user?.level || 1),
     reason: "管理员调整",
   };
 }
@@ -94,6 +96,11 @@ export function userPatch(
   ] as const) {
     if (!original || draft[field] !== baseline[field])
       patch[key] = unitInteger(draft[field], decimals, label);
+  }
+  if (!original || draft.level !== baseline.level) {
+    const level = unitInteger(draft.level, 0, "权益等级");
+    if (level < 1 || level > 3) throw new Error("权益等级须为 L1、L2 或 L3");
+    patch.level = level;
   }
   // Crucially, do not send a recalculated deadline when only identity or other
   // fields changed. The displayed rounded day count is not the stored deadline.

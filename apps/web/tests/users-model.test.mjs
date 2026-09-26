@@ -40,6 +40,7 @@ test("editing email never recomputes rounded entitlement deadline or traffic", (
       trafficTotal: 12000000001,
       trafficUsed: 1,
       rateMbps: 2,
+      level: 2,
     };
   const baseline = userDraft(user, now);
   const patch = userPatch(
@@ -55,12 +56,34 @@ test("editing email never recomputes rounded entitlement deadline or traffic", (
     "trafficTotal",
     "trafficUsed",
     "rateMbps",
+    "level",
   ])
     assert.equal(
       Object.hasOwn(patch, key),
       false,
       key + " changed unexpectedly",
     );
+});
+
+test("admin can change entitlement level without changing the grant deadline", () => {
+  const now = 1700000000000;
+  const user = {
+    email: "12345678@qq.com",
+    role: "member",
+    status: "active",
+    balanceCents: 0,
+    expiresAt: now + DAY_MS,
+    trafficTotal: 1000000000,
+    trafficUsed: 0,
+    rateMbps: 2,
+    level: 1,
+  };
+  const baseline = userDraft(user, now);
+  assert.equal(baseline.level, "1");
+  const patch = userPatch(user, baseline, { ...baseline, level: "3" }, now + 1000);
+  assert.equal(patch.level, 3);
+  assert.equal(Object.hasOwn(patch, "expiresAt"), false);
+  assert.throws(() => userPatch(user, baseline, { ...baseline, level: "4" }, now));
 });
 
 test("editing days explicitly sets a deadline from save time and preserves exact funds", () => {

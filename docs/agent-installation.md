@@ -4,7 +4,7 @@
 
 Agent 目标为 Debian 11/12/13 amd64/arm64，要求 Linux、root 和 systemd 247+；其中 Debian 11 已结束官方 LTS，公开生产节点建议 Debian 12/13。控制面安装本身只支持 Debian 12/13，详见[平台支持范围](platform-support.md)。控制面必须是可正常验证证书的 HTTPS 源站。临时 IP HTTP 网站仅适合界面调试，不能用于正式 Agent 注册和业务凭据传输。
 
-以下示例以固定 `v1.0.0` 为目标。执行前必须先在 GitHub Release 核对该标签及所需资产已经公开，校验 `SHA256SUMS`；源码版本号、分支提交或本文出现的命令都不能代替发布确认。网站升级不会自动升级、重启或改变任何独立 Agent；执行机行为修复必须升级执行机 Agent 才能生效。
+以下示例以固定 `v1.0.1` 为目标。执行前必须先在 GitHub Release 核对该标签及所需资产已经公开，校验 `SHA256SUMS`；源码版本号、分支提交或本文出现的命令都不能代替发布确认。网站升级不会自动升级、重启或改变任何独立 Agent；执行机行为修复必须升级执行机 Agent 才能生效。
 
 ## 1. 固定版本一键入口
 
@@ -14,12 +14,12 @@ Agent 目标为 Debian 11/12/13 amd64/arm64，要求 Linux、root 和 systemd 24
 apt-get update
 apt-get install -y ca-certificates curl tar
 curl --fail --location --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/mozziexwz/node/v1.0.0/agent.sh \
+  https://raw.githubusercontent.com/mozziexwz/node/v1.0.1/agent.sh \
   -o /root/msboost-agent.sh
 bash /root/msboost-agent.sh \
   --capability executor \
   --server https://panel.example.com \
-  --version v1.0.0
+  --version v1.0.1
 ```
 
 节点将能力改为 `--capability relay`。控制面地址必须是完整 HTTPS 源站，不含路径、查询或用户名密码。始终显式传入已核验的固定 `vX.Y.Z` 版本；不要从开发分支或 `latest` 取得运行程序。若对应 Release、资产或摘要尚未公开，停止安装。
@@ -77,7 +77,7 @@ bash /root/msboost-agent.sh \
 
 ```sh
 bash /root/msboost-agent.sh --capability relay \
-  --server https://panel.example.com --version v1.0.0 \
+  --server https://panel.example.com --version v1.0.1 \
   --upgrade-in-place --acknowledge-relay-restart
 ```
 
@@ -87,7 +87,7 @@ bash /root/msboost-agent.sh --capability relay \
 
 旧 Relay 节点的 `/var/lib/msboost-relay` 私有状态包含原控制面管理身份。即使本机 `msboost-relay.service` 显示 `active`，在新控制面粘贴新注册令牌并普通重跑安装器也不会自动替换该身份；应先检查后台是否存在对应节点、`journalctl -u msboost-relay` 的脱敏报错和控制面 HTTPS 连通性。不要把 systemd 的 `active` 当作注册成功，也不要公开令牌或直接删除私有状态。
 
-v1.0.0 的受控流程如下，使用前仍须核对相应 Release 资产：后台节点列表对已确认 v2 身份显示“重装受保护”和“查看限制 / 安全重装”。管理员在维护窗口打开说明，确认旧身份与旧转发可以舍弃后，选择“申请安全全新重装”。服务端先用与删除相同级别的终态证明核对原节点：仍关联线路或用户规则、停止 ACK 不全、恢复证据不足时返回冲突，不能靠换令牌绕过。通过后才退役旧 ID，创建同地址的新 ID 和 15 分钟一次性令牌，并只为该次申请显示原 VPS 的固定版本安装命令；普通节点注册令牌轮换仍不等于安全重装。
+v1.0.1 的受控流程如下，使用前仍须核对相应 Release 资产：后台节点列表对已确认 v2 身份显示“重装受保护”和“查看限制 / 安全重装”。管理员在维护窗口打开说明，确认旧身份与旧转发可以舍弃后，选择“申请安全全新重装”。服务端先用与删除相同级别的终态证明核对原节点：仍关联线路或用户规则、停止 ACK 不全、恢复证据不足时返回冲突，不能靠换令牌绕过。通过后才退役旧 ID，创建同地址的新 ID 和 15 分钟一次性令牌，并只为该次申请显示原 VPS 的固定版本安装命令；普通节点注册令牌轮换仍不等于安全重装。
 
 在原 VPS root 终端核对命令指向已验证的正式版本，再以隐藏输入或 root 私有 `0600` 文件提供新令牌，执行带 `--fresh-reset --acknowledge-relay-restart` 的 Relay 安装。必须保持 `--offline-policy keep_last`；已是默认值，也可明确写出。安装器核验旧 Agent 所有权、受管单元与状态目录，将旧状态归档到私有安装前备份，失败时尝试回滚；不接受外来文件、任意符号链接或未受管安装。执行会停止旧转发并中断旧 TCP 连接。成功后核对后台新节点在线、规则重新下发和实际转发；不要把这个流程称为无感升级。若旧节点处于 `recovery_required`，应先按[受信中转恢复](relay-recovery.md)核对，不得通过全新重装解除冻结。
 
