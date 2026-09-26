@@ -381,7 +381,7 @@ func (s *runtimeState) v2Request(instanceID string) V2SyncRequest {
 
 func (s *runtimeState) v2RequestLocked(instanceID string) V2SyncRequest {
 	s.v2.sequence++
-	request := V2SyncRequest{ProtocolVersion: ProtocolV2, AgentID: s.v2.disk.AgentID, AgentInstanceID: instanceID, Sequence: s.v2.sequence, RequestID: randomID(), ControlEpoch: s.v2.disk.ControlEpoch, AppliedRevision: s.v2.disk.Revision, Capabilities: append([]string(nil), V2Capabilities...), Acks: []V2Ack{}, Traffic: s.v2TrafficBatchLocked(), AccountingDegraded: s.v2AccountingDegradedLocked()}
+	request := V2SyncRequest{ProtocolVersion: ProtocolV2, AgentID: s.v2.disk.AgentID, AgentInstanceID: instanceID, Sequence: s.v2.sequence, RequestID: randomID(), ControlEpoch: s.v2.disk.ControlEpoch, AppliedRevision: s.v2.disk.Revision, Capabilities: append(append([]string(nil), V2Capabilities...), SocksGuardCapability), Acks: []V2Ack{}, Traffic: s.v2TrafficBatchLocked(), AccountingDegraded: s.v2AccountingDegradedLocked()}
 	request.localCredentialGeneration = s.v2.credentialGeneration
 	for _, record := range s.v2.disk.Records {
 		command := record.Command

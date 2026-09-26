@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+// Sent on every authenticated poll/heartbeat, not inferred from a release
+// number. A v0.3.x executor must never receive a new relay/front task after
+// the control plane starts requiring the mandatory SOCKS guard.
+const FreeRelayGuardCapability = "free_relay_socks_guard"
+const executorCapabilitiesHeader = "X-MSBOOST-Executor-Capabilities"
+
 // Run polls authenticated envelopes. It never persists SSH credentials or logs
 // task bodies. A lost completion ACK is safe to retry; a job is never re-executed.
 func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
@@ -41,6 +47,7 @@ func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
 			request, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/executor/heartbeat", bytes.NewBufferString("{}"))
 			request.Header.Set("Authorization", "Bearer "+token)
 			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
 			response, err := client.Do(request)
 			if err == nil {
 				response.Body.Close()
@@ -50,6 +57,7 @@ func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
 	for ctx.Err() == nil {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/executor/next", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
 		resp, err := client.Do(req)
 		if err != nil {
 			if !waitContext(ctx, 3*time.Second) {

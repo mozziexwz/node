@@ -316,9 +316,17 @@ func (a *App) relaySyncAgent(w http.ResponseWriter, r *http.Request) {
 		commerceError(w, 400, err)
 		return
 	}
-	if len(in.BootID) < 16 || len(in.BootID) > 100 || in.Sequence < 1 || len(in.Acks) > 10000 || len(in.Traffic) > 10000 || len(in.Version) > 100 {
+	if len(in.BootID) < 16 || len(in.BootID) > 100 || in.Sequence < 1 || len(in.Acks) > 10000 || len(in.Traffic) > 10000 || len(in.Version) > 100 || len(in.Capabilities) > 16 {
 		commerceError(w, 400, errors.New("无效同步数据"))
 		return
+	}
+	seenCapabilities := map[string]bool{}
+	for _, capability := range in.Capabilities {
+		if capability == "" || len(capability) > 64 || seenCapabilities[capability] {
+			commerceError(w, 400, errors.New("无效同步能力"))
+			return
+		}
+		seenCapabilities[capability] = true
 	}
 	now := time.Now().UnixMilli()
 	out := relayruntime.SyncResponse{ServerTime: now, LeaseSeconds: relayLeaseMS / 1000, Rules: []relayruntime.Rule{}}
@@ -359,6 +367,7 @@ func (a *App) relaySyncAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		agent.LastSeen = now
 		agent.Version = in.Version
+		agent.Capabilities = append([]string(nil), in.Capabilities...)
 		if err := SaveDoc(s, "relay_agents", agent.ID, agent); err != nil {
 			return err
 		}

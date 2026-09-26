@@ -133,6 +133,73 @@ func TestRelayForceFrontOnlyUsesRoute(t *testing.T) {
 	}
 }
 
+func TestNewRelayRuleRequiresGuardOnEveryHopWithoutStoppingLegacySync(t *testing.T) {
+	a, mux, user := commerceTestApp(t)
+	now := time.Now().UnixMilli()
+	if err := a.Store.Update(func(s *State) error {
+		s.Users[user.ID].ExpiresAt = now + commerceDay
+		s.Users[user.ID].TrafficTotal = commerceGB
+		for _, agent := range []RelayAgent{
+			{ID: "entry", Address: "8.8.8.8", Enabled: true, Capability: "relay", LastSeen: now, PortRanges: []PortRange{{Start: 22000, End: 22010}}, Capabilities: []string{relayruntime.SocksGuardCapability}},
+			{ID: "exit", Address: "8.8.4.4", Enabled: true, Capability: "relay", LastSeen: now, PortRanges: []PortRange{{Start: 23000, End: 23010}}, Capabilities: append([]string(nil), relayruntime.V2Capabilities...)},
+		} {
+			if err := SaveDoc(s, "relay_agents", agent.ID, agent); err != nil {
+				return err
+			}
+		}
+		return SaveDoc(s, "routes", "route", Route{ID: "route", Name: "two hops", Type: "tunnel", EntryAgentID: "entry", EntryAddress: "8.8.8.8", Exit: RouteStage{AgentIDs: []string{"exit"}, Protocol: "tcp", Strategy: "round"}, Enabled: true, RateMbps: 5, Level: 1})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := map[string]any{"config": json.RawMessage(relayTestConfig), "requestId": "guarded-route-001"}
+	w := commerceTestRequest(mux, user, "POST", "/api/user/routes/route/rules", request)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "SOCKS") {
+		t.Fatalf("legacy exit accepted new rule: %d %s", w.Code, w.Body.String())
+	}
+	if err := a.Store.Update(func(s *State) error {
+		if len(ListDocs[UserRule](s, "user_rules")) != 0 {
+			t.Fatal("rejected rule was persisted")
+		}
+		old, _ := LoadDoc[RelayAgent](s, "relay_agents", "exit")
+		old.Capabilities = append(old.Capabilities, relayruntime.SocksGuardCapability)
+		return SaveDoc(s, "relay_agents", old.ID, old)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w = commerceTestRequest(mux, user, "POST", "/api/user/routes/route/rules", request)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("guard-capable chain rejected: %d %s", w.Code, w.Body.String())
+	}
+	if !relayV2Capabilities(relayruntime.V2Capabilities) {
+		t.Fatal("old v2 capability baseline was accidentally invalidated")
+	}
+}
+
+func TestLegacyV1SyncDoesNotRetainStaleSocksGuardClaim(t *testing.T) {
+	a, mux, _ := commerceTestApp(t)
+	token := commerceID() + commerceID()
+	if err := a.Store.Update(func(s *State) error {
+		return SaveDoc(s, "relay_agents", "legacy", RelayAgent{ID: "legacy", Enabled: true, Capability: "relay", TokenHash: commerceHash(token)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := relayruntime.SyncRequest{BootID: "legacy-boot-id-001", Sequence: 1, Version: "new-agent", Capabilities: []string{relayruntime.SocksGuardCapability}}
+	relayTestSync(t, mux, token, request)
+	request.Sequence++
+	request.Version = "old-agent"
+	request.Capabilities = nil
+	relayTestSync(t, mux, token, request)
+	if err := a.Store.View(func(s *State) error {
+		agent, _ := LoadDoc[RelayAgent](s, "relay_agents", "legacy")
+		if len(agent.Capabilities) != 0 {
+			t.Fatal("old agent retained a newer binary's guard capability")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLateArchivedTrafficKeepsAuditWithoutChargingNewPackage(t *testing.T) {
 	s := newState()
 	s.Users["user"] = &User{ID: "user", Status: "active", TrafficTotal: 1000}

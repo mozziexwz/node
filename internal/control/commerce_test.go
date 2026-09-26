@@ -316,7 +316,7 @@ func TestRelayTargetAuthIdentityAndExpiryDownload(t *testing.T) {
 	err := a.Store.Update(func(s *State) error {
 		s.Users[u.ID].ExpiresAt = now + commerceDay
 		s.Users[u.ID].TrafficTotal = commerceGB
-		agent := RelayAgent{ID: "agent", Address: "8.8.8.8", Enabled: true, Capability: "relay", PortRanges: []PortRange{{20000, 20010}}, LastSeen: now}
+		agent := RelayAgent{ID: "agent", Address: "8.8.8.8", Enabled: true, Capability: "relay", PortRanges: []PortRange{{20000, 20010}}, LastSeen: now, Capabilities: []string{relayruntime.SocksGuardCapability}}
 		if err := SaveDoc(s, "relay_agents", agent.ID, agent); err != nil {
 			return err
 		}

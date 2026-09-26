@@ -347,6 +347,28 @@ func relayEffective(s *State, route Route) (bool, bool) {
 	}
 	return required, online
 }
+
+// Only newly issued rules require the new feature. Existing rules on older
+// Agents continue to sync unchanged until an explicitly scheduled upgrade.
+func relayRouteSocksGuardReady(s *State, route Route) bool {
+	for _, id := range relayRouteAgents(route) {
+		agent, ok := LoadDoc[RelayAgent](s, "relay_agents", id)
+		if !ok {
+			return false
+		}
+		found := false
+		for _, capability := range agent.Capabilities {
+			if capability == relayruntime.SocksGuardCapability {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
 func relayValidateRoute(s *State, route Route) error {
 	if route.Name == "" || len(route.Name) > 100 || route.EntryAgentID == "" || len(route.Hops) > 8 || route.RateMbps < 1 || route.RateMbps > 100000 || route.Level < 1 || route.Level > 3 {
 		return errors.New("线路名称、入口、速率、等级或跳数无效")
@@ -1115,6 +1137,9 @@ func (a *App) relayCreateRule(w http.ResponseWriter, r *http.Request) {
 		}
 		if !online {
 			return errors.New("线路有离线Agent，请稍后再试")
+		}
+		if !relayRouteSocksGuardReady(s, route) {
+			return errors.New("线路含旧版节点，尚未确认默认 SOCKS 屏蔽；请联系管理员升级相关 Agent 后再配置")
 		}
 		for _, agent := range ListDocs[RelayAgent](s, "relay_agents") {
 			for _, targetAddress := range targetAddresses {

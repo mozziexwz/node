@@ -53,14 +53,15 @@ type taskIdempotency struct {
 	Digest string `json:"digest"`
 }
 type ExecutorRecord struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	TokenHash  string `json:"tokenHash,omitempty"`
-	CreatedAt  int64  `json:"createdAt"`
-	LastSeenAt int64  `json:"lastSeenAt"`
-	IP         string `json:"ip"`
-	Online     bool   `json:"online"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Status       string   `json:"status"`
+	TokenHash    string   `json:"tokenHash,omitempty"`
+	CreatedAt    int64    `json:"createdAt"`
+	LastSeenAt   int64    `json:"lastSeenAt"`
+	IP           string   `json:"ip"`
+	Online       bool     `json:"online"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 type taskEnvelope struct {
 	Job       executor.Job
@@ -300,6 +301,31 @@ func (t *TaskService) hasExecutor(s *State) bool {
 	}
 	return false
 }
+
+func executorHasFreeRelayGuard(record ExecutorRecord) bool {
+	for _, capability := range record.Capabilities {
+		if capability == executor.FreeRelayGuardCapability {
+			return true
+		}
+	}
+	return false
+}
+
+func executorCapabilitiesFromRequest(r *http.Request) []string {
+	if r.Header.Get("X-MSBOOST-Executor-Capabilities") == executor.FreeRelayGuardCapability {
+		return []string{executor.FreeRelayGuardCapability}
+	}
+	return nil
+}
+
+func (t *TaskService) hasExecutorFor(s *State, kind string) bool {
+	for _, record := range ListDocs[ExecutorRecord](s, "executors") {
+		if record.Status == "active" && record.LastSeenAt > time.Now().Add(-90*time.Second).UnixMilli() && (kind != "relay" && kind != "front" || executorHasFreeRelayGuard(record)) {
+			return true
+		}
+	}
+	return false
+}
 func taskPublicMessage(state string) string {
 	switch state {
 	case "succeeded":
@@ -420,7 +446,10 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		if t.targetBusy(request.SSH.Host) || (request.Front != nil && t.targetBusy(request.Front.Host)) {
 			return errors.New("该服务器已有未结束任务，请先核实其结果")
 		}
-		if !t.hasExecutor(s) {
+		if !t.hasExecutorFor(s, request.Kind) {
+			if request.Kind == "relay" {
+				return errors.New("没有已确认默认 SOCKS 屏蔽的在线执行机；请联系管理员升级 Executor Agent")
+			}
 			return errors.New("当前没有在线的 executor 执行机，请联系管理员")
 		}
 		if !(fresh.Role == "admin" && request.Kind == "deploy") && toolLimit(s, request.Kind, u.ID, now.UnixMilli()).Remaining == 0 {
@@ -679,6 +708,7 @@ func (t *TaskService) heartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 		current.LastSeenAt = time.Now().UnixMilli()
 		current.IP = t.app.clientIP(r)
+		current.Capabilities = executorCapabilitiesFromRequest(r)
 		return SaveDoc(s, "executors", a.ID, current)
 	})
 	if err != nil {
@@ -698,6 +728,7 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 		if ok {
 			current.LastSeenAt = time.Now().UnixMilli()
 			current.IP = t.app.clientIP(r)
+			current.Capabilities = executorCapabilitiesFromRequest(r)
 			return SaveDoc(s, "executors", a.ID, current)
 		}
 		return nil
@@ -710,7 +741,7 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 		t.mu.Lock()
 		var next *taskEnvelope
 		for _, e := range t.envelopes {
-			if e.AgentID == "" && time.Now().UnixMilli() < e.Job.Deadline && (next == nil || e.QueuedAt.Before(next.QueuedAt)) {
+			if e.AgentID == "" && time.Now().UnixMilli() < e.Job.Deadline && ((e.Job.Request.Kind != "relay" && e.Job.Request.Kind != "front") || r.Header.Get("X-MSBOOST-Executor-Capabilities") == executor.FreeRelayGuardCapability) && (next == nil || e.QueuedAt.Before(next.QueuedAt)) {
 				next = e
 			}
 		}

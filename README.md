@@ -4,6 +4,8 @@ MSBOOST 是自托管控制面板。会员在网页上将游戏节点部署到自
 
 当前版本：**v1.0.0**。控制面支持 Debian 12/13；客户 VPS 免费部署工具支持 Debian 11/12/13；网站 DD 功能重装为 Debian 12。部署前请阅读[平台支持范围](docs/platform-support.md)和[安全边界](docs/security-and-limits.md)。
 
+新版免费中转和捐赠权益转发默认筛查并拒绝常见明文 SOCKS4/5 握手，无需会员另行设置。升级网站不会自动更新其他 VPS 上的旧执行机、节点 Agent 或已有中转；新转发须由具备防护能力的新版 Agent 执行，存量服务应按[Agent 安装与升级](docs/agent-installation.md)安排维护。加密或伪装的代理流量不能仅凭入口特征完全识别。
+
 ## 一键安装
 
 在全新 Debian 12/13 VPS 上，先将域名解析到服务器、开放 TCP 80/443，再以 root 在私有终端执行固定版本入口：

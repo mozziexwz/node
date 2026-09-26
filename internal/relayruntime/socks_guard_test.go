@@ -20,6 +20,7 @@ func TestScreenSOCKSFragmentedHandshakesAndGameTraffic(t *testing.T) {
 	}{
 		{"socks5 no authentication", [][]byte{{0x05}, {0x01}, {0x00}}, true},
 		{"socks5 password", [][]byte{{0x05, 0x02}, {0x00}, {0x02}}, true},
+		{"socks5 gssapi", [][]byte{{0x05}, {0x01}, {0x01}}, true},
 		{"socks5 split methods", [][]byte{{0x05, 0x04, 0x31}, {0x37, 0x00, 0x02}}, true},
 		{"socks4 connect", [][]byte{{0x04}, {0x01, 0x00, 0x50}, {127, 0, 0, 1}, {0x00}}, true},
 		{"socks4 bind", [][]byte{{0x04, 0x02, 0x01, 0xbb, 127, 0, 0, 1, 'u'}, {0x00}}, true},
@@ -128,6 +129,106 @@ func TestSocksGuardBlocksBeforeLoopbackTarget(t *testing.T) {
 func TestSocksGuardRejectsInvalidSourceACL(t *testing.T) {
 	if _, err := parseGuardSources([]string{"not-an-ip"}); err == nil {
 		t.Fatal("invalid ACL accepted")
+	}
+}
+
+func TestSocksGuardBoundsPendingConnections(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	_ = probe.Close()
+	g, err := newSocksGuard(Rule{ListenPort: port}, "127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A one-slot fixture exercises the production semaphore without opening
+	// thousands of sockets in the test process.
+	g.permits = make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g.serve(ctx)
+	defer g.wait()
+	defer g.close()
+	first, err := net.DialTimeout("tcp", g.listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	deadline := time.Now().Add(time.Second)
+	for len(g.permits) != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(g.permits) != 1 {
+		t.Fatal("first connection did not reserve guard capacity")
+	}
+	second, err := net.DialTimeout("tcp", g.listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	_ = second.SetReadDeadline(time.Now().Add(time.Second))
+	if n, err := second.Read(make([]byte, 1)); n != 0 || err == nil {
+		t.Fatalf("over-capacity connection was not closed: n=%d err=%v", n, err)
+	}
+	_ = first.Close()
+	deadline = time.Now().Add(time.Second)
+	for len(g.permits) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(g.permits) != 0 {
+		t.Fatal("closed connection retained a guard permit")
+	}
+}
+
+func TestSocksGuardReleasesPermitWhenBackendClosesFirst(t *testing.T) {
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	go func() {
+		conn, err := backend.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.ReadFull(conn, make([]byte, 1))
+	}()
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	_ = probe.Close()
+	g, err := newSocksGuard(Rule{ListenPort: port}, backend.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g.serve(ctx)
+	defer g.wait()
+	defer g.close()
+	client, err := net.DialTimeout("tcp", g.listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(time.Second))
+	if _, err := client.Write([]byte{'x'}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := client.Read(make([]byte, 1)); n != 0 || err == nil {
+		t.Fatalf("backend close was not relayed: n=%d err=%v", n, err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(g.permits) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(g.permits) != 0 {
+		t.Fatal("backend EOF retained a guard permit")
 	}
 }
 

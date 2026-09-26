@@ -265,6 +265,93 @@ func TestTaskIdempotencyAndNoPersistedCredentials(t *testing.T) {
 		return nil
 	})
 }
+
+func TestOldExecutorCannotCreateOrClaimNewRelayTask(t *testing.T) {
+	a, service, user := taskFixture(t)
+	token := strings.Repeat("g", 48)
+	sum := sha256.Sum256([]byte(token))
+	if err := a.Store.Update(func(s *State) error {
+		record, _ := LoadDoc[ExecutorRecord](s, "executors", "executor-test")
+		record.TokenHash = hex.EncodeToString(sum[:])
+		return SaveDoc(s, "executors", record.ID, record)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := executor.Request{Kind: "relay", SSH: taskSSHFixture(), ClientConfig: json.RawMessage(relayTestConfig)}
+	w := httptest.NewRecorder()
+	service.create(w, taskRequest(t, user, "POST", "/api/tasks", "relay-guard-key", request))
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "SOCKS") {
+		t.Fatalf("old executor allowed relay creation: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := service.ProvisionFront(context.Background(), user.ID, taskSSHFixture(), "1.1.1.1", 12345); err == nil || !strings.Contains(err.Error(), "SOCKS") {
+		t.Fatalf("old executor allowed paid front creation: %v", err)
+	}
+	if err := a.Store.Update(func(s *State) error {
+		record, _ := LoadDoc[ExecutorRecord](s, "executors", "executor-test")
+		record.Capabilities = []string{executor.FreeRelayGuardCapability}
+		return SaveDoc(s, "executors", record.ID, record)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	service.create(w, taskRequest(t, user, "POST", "/api/tasks", "relay-guard-key", request))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("guard-capable executor rejected relay: %d %s", w.Code, w.Body.String())
+	}
+	var created Task
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	oldPollContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	oldPoll := httptest.NewRequest(http.MethodGet, "/api/executor/next", nil).WithContext(oldPollContext)
+	oldPoll.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	service.next(w, oldPoll)
+	service.mu.Lock()
+	claimedByOld := service.envelopes[created.ID].AgentID != ""
+	service.mu.Unlock()
+	if claimedByOld || strings.Contains(w.Body.String(), created.ID) {
+		t.Fatal("legacy executor claimed a guarded relay task")
+	}
+	newPoll := httptest.NewRequest(http.MethodGet, "/api/executor/next", nil)
+	newPoll.Header.Set("Authorization", "Bearer "+token)
+	newPoll.Header.Set("X-MSBOOST-Executor-Capabilities", executor.FreeRelayGuardCapability)
+	w = httptest.NewRecorder()
+	service.next(w, newPoll)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), created.ID) {
+		t.Fatalf("guard-capable executor could not claim relay: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLegacyExecutorStillClaimsNonRelayJobs(t *testing.T) {
+	for _, kind := range []string{"deploy", "dd"} {
+		t.Run(kind, func(t *testing.T) {
+			a, service, user := taskFixture(t)
+			token := strings.Repeat("l", 48)
+			sum := sha256.Sum256([]byte(token))
+			job := Task{ID: ID(), UserID: user.ID, Kind: kind, State: "queued", CreatedAt: time.Now().UnixMilli()}
+			if err := a.Store.Update(func(s *State) error {
+				record, _ := LoadDoc[ExecutorRecord](s, "executors", "executor-test")
+				record.TokenHash = hex.EncodeToString(sum[:])
+				if err := SaveDoc(s, "executors", record.ID, record); err != nil {
+					return err
+				}
+				return SaveDoc(s, "tasks", job.ID, job)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			service.envelopes[job.ID] = &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: executor.Request{Kind: kind, SSH: taskSSHFixture()}, Deadline: time.Now().Add(time.Minute).UnixMilli()}, UserID: user.ID, QueuedAt: time.Now()}
+			poll := httptest.NewRequest(http.MethodGet, "/api/executor/next", nil)
+			poll.Header.Set("Authorization", "Bearer "+token)
+			w := httptest.NewRecorder()
+			service.next(w, poll)
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), job.ID) {
+				t.Fatalf("legacy executor lost %s: %d %s", kind, w.Code, w.Body.String())
+			}
+		})
+	}
+}
 func TestExecutorClaimIsSingleDeliveryAndLeaseBound(t *testing.T) {
 	a, s, u := taskFixture(t)
 	token := strings.Repeat("t", 48)

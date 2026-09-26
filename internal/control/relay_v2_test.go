@@ -23,6 +23,29 @@ type relayV2Fixture struct {
 	ruleID   string
 }
 
+func TestLegacyV2AgentKeepsExistingRuleWithoutOptionalSocksGuard(t *testing.T) {
+	f := newRelayV2Fixture(t)
+	commands := f.ready(t)
+	if len(commands) != 2 {
+		t.Fatal("legacy v2 chain did not receive its existing rules")
+	}
+	if err := f.app.Store.View(func(s *State) error {
+		rule, ok := LoadDoc[UserRule](s, "user_rules", f.user.ID+":route")
+		if !ok || rule.ID != f.ruleID || rule.State != "active" {
+			t.Fatal("legacy v2 sync disrupted an existing ready rule")
+		}
+		for _, node := range f.agents {
+			agent, _ := LoadDoc[RelayAgent](s, "relay_agents", node.ID)
+			if !relayV2Capabilities(agent.Capabilities) || len(agent.Capabilities) != len(relayruntime.V2Capabilities) {
+				t.Fatal("old v2 baseline was rejected or falsely credited with SOCKS guard")
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRelayV2ObservationSequenceAndProcessReplacement(t *testing.T) {
 	f := newRelayV2Fixture(t)
 	commands := f.ready(t)

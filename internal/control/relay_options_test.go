@@ -44,6 +44,7 @@ func TestRelayPortForwardTLSAndPrivateUserResponses(t *testing.T) {
 		s.Users[user.ID].ExpiresAt = now + commerceDay
 		s.Users[user.ID].TrafficTotal = commerceGB
 		for _, node := range []RelayAgent{{ID: "entry", Name: "入口", Address: "8.8.8.8", Addresses: []string{"2001:4860:4860::8888"}, Capability: "relay", Enabled: true, RequireFront: true, LastSeen: now, PortRanges: []PortRange{{22000, 22010}}}, {ID: "exit", Name: "出口", Address: "8.8.4.4", Addresses: []string{"2001:4860:4860::8844"}, Capability: "relay", Enabled: true, LastSeen: now, PortRanges: []PortRange{{23000, 23010}}}} {
+			node.Capabilities = []string{relayruntime.SocksGuardCapability}
 			if err := SaveDoc(s, "relay_agents", node.ID, node); err != nil {
 				return err
 			}

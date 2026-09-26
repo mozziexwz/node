@@ -18,6 +18,7 @@ type socksGuard struct {
 	listener net.Listener
 	backend  string
 	allowed  []net.IP
+	permits  chan struct{}
 	mu       sync.Mutex
 	active   map[net.Conn]struct{}
 	closed   chan struct{}
@@ -74,7 +75,7 @@ func newSocksGuard(rule Rule, backend string) (*socksGuard, error) {
 	if tlsConfig != nil {
 		listener = tls.NewListener(listener, tlsConfig)
 	}
-	return &socksGuard{listener: listener, backend: backend, allowed: allowed, active: make(map[net.Conn]struct{}), closed: make(chan struct{}), done: make(chan struct{})}, nil
+	return &socksGuard{listener: listener, backend: backend, allowed: allowed, permits: make(chan struct{}, 4096), active: make(map[net.Conn]struct{}), closed: make(chan struct{}), done: make(chan struct{})}, nil
 }
 
 func (g *socksGuard) close() {
@@ -143,13 +144,24 @@ func (g *socksGuard) serve(ctx context.Context) {
 			if err != nil {
 				break
 			}
-			if !g.admitted(client) || !g.track(client) {
+			if !g.admitted(client) {
 				_ = client.Close()
+				continue
+			}
+			select {
+			case g.permits <- struct{}{}:
+			default:
+				_ = client.Close()
+				continue
+			}
+			if !g.track(client) {
+				<-g.permits
 				continue
 			}
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
+				defer func() { <-g.permits }()
 				defer g.untrack(client)
 				g.forward(client)
 			}()
@@ -201,9 +213,9 @@ func (g *socksGuard) forward(client net.Conn) {
 		}
 	}()
 	_, _ = io.Copy(client, backend)
-	if half, ok := client.(interface{ CloseWrite() error }); ok {
-		_ = half.CloseWrite()
-	}
+	// Once the backend is done sending, an idle or malicious client must not
+	// keep the upload goroutine (and its connection permit) alive forever.
+	_ = client.Close()
 	copyDone.Wait()
 }
 
@@ -252,7 +264,7 @@ func screenSOCKS(conn net.Conn) ([]byte, bool, error) {
 			return nil, false, err
 		}
 		for _, method := range prefix[2:] {
-			if method == 0x00 || method == 0x02 {
+			if method == 0x00 || method == 0x01 || method == 0x02 {
 				return prefix, true, nil
 			}
 		}

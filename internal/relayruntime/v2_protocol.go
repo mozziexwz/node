@@ -18,7 +18,11 @@ const (
 )
 
 // Capabilities are acknowledged by actual v2 exchanges, not a binary version.
+// Keep the v2 protocol baseline separate from optional features: older agents
+// must continue syncing their existing rules when a new feature is released.
 var V2Capabilities = []string{"keep_last", "explicit_stop", "persistent_config", "traffic_ack"}
+
+const SocksGuardCapability = "socks_guard"
 
 // V2 commands are explicit, idempotent intents for globally unique rule IDs.
 // Generation is independent of billing or runtime Version. REVOKE is terminal

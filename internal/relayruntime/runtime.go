@@ -580,7 +580,7 @@ func Run(ctx context.Context, cfg Config) error {
 	defer ticker.Stop()
 	for {
 		sequence++
-		in := SyncRequest{BootID: boot, Sequence: sequence, Version: "msboost-relay/1"}
+		in := SyncRequest{BootID: boot, Sequence: sequence, Version: "msboost-relay/1", Capabilities: []string{SocksGuardCapability}}
 		s.mu.Lock()
 		for _, p := range s.processes {
 			in.Acks = append(in.Acks, p.ack)

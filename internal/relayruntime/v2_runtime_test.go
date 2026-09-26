@@ -169,6 +169,19 @@ func v2TestResponse(s *runtimeState, commands []V2Command) (V2SyncRequest, V2Syn
 	return request, V2SyncResponse{ProtocolVersion: ProtocolV2, AgentID: request.AgentID, RequestID: request.RequestID, ControlEpoch: "control-epoch-v2", PreviousRevision: request.AppliedRevision, Revision: request.AppliedRevision + 1, Status: "ready", OfflinePolicy: KeepLast, Commands: commands, TrafficAcks: []V2TrafficAck{}}
 }
 
+func TestV2RequestAdvertisesGuardWithoutChangingRequiredBaseline(t *testing.T) {
+	s, _, _ := v2TestFixture(t)
+	request := s.v2Request("test-instance")
+	if len(request.Capabilities) != len(V2Capabilities)+1 || request.Capabilities[len(request.Capabilities)-1] != SocksGuardCapability {
+		t.Fatalf("new agent did not advertise optional guard: %v", request.Capabilities)
+	}
+	for i, required := range V2Capabilities {
+		if request.Capabilities[i] != required {
+			t.Fatalf("required v2 capability %s was displaced", required)
+		}
+	}
+}
+
 func v2WaitState(t *testing.T, s *runtimeState, ctx context.Context, id, state string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

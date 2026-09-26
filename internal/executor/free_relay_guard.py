@@ -51,7 +51,7 @@ def screen_socks(conn):
                 return bytes(prefix), False
             _read_exact(conn, count, prefix)
             methods = prefix[2:]
-            return bytes(prefix), 0 in methods or 2 in methods
+            return bytes(prefix), any(method in methods for method in (0, 1, 2))
         return bytes(prefix), False
     finally:
         conn.settimeout(None)
@@ -83,6 +83,10 @@ def _serve_connection(client, backend_port, active, active_lock, permits):
                             destination.shutdown(socket.SHUT_WR)
                         except OSError:
                             pass
+                        if source is upstream:
+                            # No response remains to relay. Do not let a
+                            # client holding its socket open pin a worker.
+                            return
     except (OSError, ValueError, ConnectionError):
         pass
     finally:

@@ -40,11 +40,12 @@ type Traffic struct {
 	EntitlementVersion int64  `json:"entitlementVersion"`
 }
 type SyncRequest struct {
-	BootID   string    `json:"bootId"`
-	Sequence int64     `json:"sequence"`
-	Version  string    `json:"version"`
-	Acks     []Ack     `json:"acks"`
-	Traffic  []Traffic `json:"traffic"`
+	BootID       string    `json:"bootId"`
+	Sequence     int64     `json:"sequence"`
+	Version      string    `json:"version"`
+	Capabilities []string  `json:"capabilities,omitempty"`
+	Acks         []Ack     `json:"acks"`
+	Traffic      []Traffic `json:"traffic"`
 }
 type SyncResponse struct {
 	ServerTime   int64  `json:"serverTime"`

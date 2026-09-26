@@ -585,15 +585,20 @@ test(
                 exact: true,
               }),
             ).toHaveCount(0);
-            await expect(protectedNode.getByRole("note")).toContainText(
-              "禁止普通部署/重装",
-            );
+            await expect(protectedNode.getByText("重装受保护")).toBeVisible();
+            await protectedNode
+              .getByRole("button", { name: "查看限制 / 安全重装" })
+              .click();
             await expect(
-              protectedNode.getByRole("link", { name: "查看受信恢复指引" }),
+              page.getByRole("dialog"),
+            ).toContainText("禁止普通部署/重装");
+            await expect(
+              page.getByRole("dialog").getByRole("link", { name: "受信恢复指引" }),
             ).toHaveAttribute(
               "href",
-              /\/v0\.3\.3\/docs\/relay-recovery\.md$/,
+              /\/v1\.0\.0\/docs\/relay-recovery\.md$/,
             );
+            await page.getByRole("dialog").getByRole("button", { name: "关闭窗口" }).click();
             let warning = "";
             page.once("dialog", async (dialog) => {
               warning = dialog.message();

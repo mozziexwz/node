@@ -153,7 +153,7 @@ bash /root/msboost-agent.sh \
   --version v1.0.0
 ```
 
-节点改为 `--capability relay`，使用独立节点注册令牌。全新 Relay 安装默认 `keep_last`；如确需兼容旧短租约，须显式传 `--offline-policy lease`。未持有 v2 私有身份的活动 lease 服务切换为 keep_last 会重启 Agent/GOST，必须在维护窗口追加 `--acknowledge-relay-restart`；已有 v2 身份普通重跑会在变更前拒绝，只有确认旧转发可断开且旧状态可丢弃时才能走[显式全新重置](agent-installation.md#控制面全新安装后节点仍显示离线)。默认隐藏终端输入令牌，不把秘密放进 URL 或命令参数。脚本从同版本 Release 下载 Agent、安装脚本与 SHA256 清单，校验后安装 systemd 服务；全新 keep_last 节点还须取得持久身份、首个受认证控制同步及有效控制 epoch 后才报告完成。网站升级不会自动更新或切换这些独立 Agent。
+节点改为 `--capability relay`，使用独立节点注册令牌。全新 Relay 安装默认 `keep_last`；如确需兼容旧短租约，须显式传 `--offline-policy lease`。未持有 v2 私有身份的活动 lease 服务切换为 keep_last 会重启 Agent/GOST，必须在维护窗口追加 `--acknowledge-relay-restart`；已有 v2 身份普通重跑会在变更前拒绝，可在维护窗口走[保留身份的显式原地升级](agent-installation.md#升级既有-agent)（不传注册令牌，重启会断线），只有旧状态可丢弃时才走[显式全新重置](agent-installation.md#控制面全新安装后节点仍显示离线)。默认隐藏终端输入令牌，不把秘密放进 URL 或命令参数。脚本从同版本 Release 下载 Agent、安装脚本与 SHA256 清单，校验后安装 systemd 服务；全新 keep_last 节点还须取得持久身份、首个受认证控制同步及有效控制 epoch 后才报告完成。网站升级不会自动更新或切换这些独立 Agent。
 
 建议 Executor、节点分机部署。客户 VPS 是任务目标，不需安装整套网站。节点上线后先设置地址/端口范围，再建立隧道；心跳或监听 ACK 不等同于客户端到端连通。
 

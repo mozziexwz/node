@@ -37,13 +37,15 @@ install_agent_parse_args --capability relay --offline-policy keep_last --acknowl
 [[ $offline_policy == keep_last && $acknowledge_restart == 1 && $agent_file == /fixture/agent && $gost_version == 3.3.0 ]] || test_fail 'explicit migration flags lost'
 install_agent_parse_args --capability relay --fresh-reset --acknowledge-relay-restart
 [[ $fresh_reset == 1 && $acknowledge_restart == 1 && $offline_policy == keep_last ]] || test_fail 'fresh reset confirmation was lost'
+install_agent_parse_args --capability relay --upgrade-in-place --acknowledge-relay-restart
+[[ $upgrade_in_place == 1 && $acknowledge_restart == 1 && $offline_policy == keep_last && -z $token_file ]] || test_fail 'explicit identity-preserving upgrade flags lost'
 install_agent_parse_args --capability executor
-[[ $offline_policy == lease && $acknowledge_restart == 0 && $fresh_reset == 0 ]] || test_fail 'parser retained previous role values'
+[[ $offline_policy == lease && $acknowledge_restart == 0 && $fresh_reset == 0 && $upgrade_in_place == 0 ]] || test_fail 'parser retained previous role values'
 [[ $(relay_service_state_dir relay keep_last) == /var/lib/private/msboost-relay ]] || test_fail 'keep_last unit would follow the DynamicUser public symlink'
 [[ $(relay_service_state_dir relay lease) == /var/lib/msboost-relay && $(relay_service_state_dir executor lease) == /var/lib/msboost-relay ]] || test_fail 'legacy service state path changed'
 reject relay_service_state_dir executor keep_last
 reject relay_service_state_dir relay unknown
-for args in '--capability relay --offline-policy' '--capability relay --offline-policy keep-last' '--capability relay --offline-policy auto' '--capability executor --offline-policy keep_last' '--capability executor --acknowledge-relay-restart' '--capability executor --fresh-reset' '--capability relay --fresh-reset' '--capability relay --fresh-reset --offline-policy lease --acknowledge-relay-restart' '--capability invalid' '--capability relay --force'; do
+for args in '--capability relay --offline-policy' '--capability relay --offline-policy keep-last' '--capability relay --offline-policy auto' '--capability executor --offline-policy keep_last' '--capability executor --acknowledge-relay-restart' '--capability executor --fresh-reset' '--capability executor --upgrade-in-place --acknowledge-relay-restart' '--capability relay --fresh-reset' '--capability relay --fresh-reset --offline-policy lease --acknowledge-relay-restart' '--capability relay --upgrade-in-place' '--capability relay --upgrade-in-place --acknowledge-relay-restart --token-file /fixture/new-token' '--capability relay --upgrade-in-place --fresh-reset --acknowledge-relay-restart' '--capability relay --upgrade-in-place --offline-policy lease --acknowledge-relay-restart' '--capability invalid' '--capability relay --force'; do
   read -r -a words <<< "$args"; reject install_agent_parse_args "${words[@]}"
 done
 relay_binary_supports_v2 "$TEST_WORK/v2" || test_fail 'Go-style feature flag rejected'
@@ -89,6 +91,8 @@ chmod 700 "$fresh_fixture/private"
 stat() {
   if [[ ${1:-} == -c && ${2:-} == %a && ${4:-} == "$fresh_fixture/private" ]]; then printf '700\n'
   elif [[ ${1:-} == -c && ${2:-} == %u && ( ${4:-} == "$fresh_fixture/managed/managed-v1" || ${4:-} == "$fresh_fixture/unit" ) ]]; then printf '0\n'
+  elif [[ ${1:-} == -c && ${2:-} == %u:%h && ( ${4:-} == "$fresh_fixture/managed/managed-v1" || ${4:-} == "$fresh_fixture/unit" ) ]]; then printf '0:1\n'
+  elif [[ ${1:-} == -c && ${2:-} == %u:%a:%h && ${4:-} == "$fresh_fixture/environment" ]]; then printf '0:600:1\n'
   else command stat "$@"; fi
 }
 printf '%s\n' MSBOOST_AGENT_MANAGED_V1 > "$fresh_fixture/managed/managed-v1"
@@ -137,6 +141,26 @@ if [[ $(uname -s) == Linux ]] && ln -s "$fresh_fixture/managed" "$fresh_fixture/
   reject relay_state_location_at "$fresh_fixture/public" "$fresh_fixture/private"
   command rm -- "$fresh_fixture/public"
 fi
+# A deliberate in-place upgrade must reuse the existing, authenticated v2
+# identity and origin without receiving any new one-time enrollment secret.
+printf '{"agentId":"old-id","serverUrl":"https://panel.example.test","controlEpoch":"old-epoch","recoveryRequired":false}' > "$fresh_fixture/private/relay-v2-state.json"
+printf 'MSBOOST_SERVER_URL=https://panel.example.test\n' > "$fresh_fixture/environment"
+chmod 600 "$fresh_fixture/environment"
+(
+  relay_unit_state_path() { printf '%s\n' "$fresh_fixture/private"; }
+  relay_in_place_upgrade_preflight_at "$fresh_fixture/public" "$fresh_fixture/private" "$fresh_fixture/unit" "$fresh_fixture/managed/managed-v1" "$fresh_fixture/environment" https://panel.example.test
+  [[ $relay_upgrade_state == "$fresh_fixture/private" && $relay_upgrade_identity == '"agentId":"old-id"' ]] || test_fail 'in-place upgrade lost the original identity'
+  reject relay_in_place_upgrade_preflight_at "$fresh_fixture/public" "$fresh_fixture/private" "$fresh_fixture/unit" "$fresh_fixture/managed/managed-v1" "$fresh_fixture/environment" https://other.example.test
+  printf 'MSBOOST_SERVER_URL=https://panel.example.test\nMSBOOST_SERVER_URL=https://panel.example.test\n' > "$fresh_fixture/environment"
+  reject relay_in_place_upgrade_preflight_at "$fresh_fixture/public" "$fresh_fixture/private" "$fresh_fixture/unit" "$fresh_fixture/managed/managed-v1" "$fresh_fixture/environment" https://panel.example.test
+  printf 'MSBOOST_SERVER_URL=https://panel.example.test\n' > "$fresh_fixture/environment"
+  printf '{"agentId":"different-id","serverUrl":"https://panel.example.test","controlEpoch":"old-epoch","recoveryRequired":false}' > "$fresh_fixture/private/relay-v2-state.json"
+  reject relay_in_place_upgrade_preflight_at "$fresh_fixture/public" "$fresh_fixture/private" "$fresh_fixture/unit" "$fresh_fixture/managed/managed-v1" "$fresh_fixture/environment" https://panel.example.test
+  printf '{"agentId":"old-id","serverUrl":"https://other.example.test","controlEpoch":"old-epoch","recoveryRequired":false}' > "$fresh_fixture/private/relay-v2-state.json"
+  reject relay_in_place_upgrade_preflight_at "$fresh_fixture/public" "$fresh_fixture/private" "$fresh_fixture/unit" "$fresh_fixture/managed/managed-v1" "$fresh_fixture/environment" https://panel.example.test
+  printf '{"agentId":"old-id","serverUrl":"https://panel.example.test","controlEpoch":"old-epoch","recoveryRequired":true}' > "$fresh_fixture/private/relay-v2-state.json"
+  reject relay_in_place_upgrade_preflight_at "$fresh_fixture/public" "$fresh_fixture/private" "$fresh_fixture/unit" "$fresh_fixture/managed/managed-v1" "$fresh_fixture/environment" https://panel.example.test
+) || test_fail 'in-place upgrade identity/origin preflight failed'
 unset -f stat
 
 # A process can be active after /register but before an authenticated v2 sync.
@@ -259,7 +283,7 @@ export bootstrap_version
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$BOOTSTRAP_ARGS"\n' > "$bootstrap_assets/install-agent.sh"
 printf synthetic-agent > "$bootstrap_assets/msboost-agent-linux-amd64"
 (cd "$bootstrap_assets"; sha256sum install-agent.sh msboost-agent-linux-amd64 | sed 's/ \*/  /' > SHA256SUMS)
-for mode in default-relay explicit-lease explicit-keep-last explicit-fresh-reset executor invalid-policy invalid-executor invalid-fresh-reset; do
+for mode in default-relay explicit-lease explicit-keep-last explicit-fresh-reset explicit-upgrade executor invalid-policy invalid-executor invalid-fresh-reset invalid-upgrade-token invalid-upgrade-ack invalid-upgrade-reset invalid-upgrade-executor invalid-upgrade-old-version; do
   (
     bootstrap_stage="$TEST_WORK/bootstrap-$mode"; BOOTSTRAP_ARGS="$TEST_WORK/bootstrap-args-$mode"
     export bootstrap_assets bootstrap_stage BOOTSTRAP_ARGS
@@ -278,10 +302,16 @@ for mode in default-relay explicit-lease explicit-keep-last explicit-fresh-reset
       explicit-lease) args+=(--offline-policy lease) ;;
       explicit-keep-last) args+=(--offline-policy keep_last --acknowledge-relay-restart) ;;
       explicit-fresh-reset) args+=(--fresh-reset --acknowledge-relay-restart) ;;
+      explicit-upgrade) args=(--capability relay --server https://panel.example.test --upgrade-in-place --acknowledge-relay-restart) ;;
       executor) args[1]=executor ;;
       invalid-policy) args+=(--offline-policy automatic) ;;
       invalid-executor) args[1]=executor; args+=(--offline-policy keep_last) ;;
       invalid-fresh-reset) args+=(--fresh-reset) ;;
+      invalid-upgrade-token) args+=(--upgrade-in-place --acknowledge-relay-restart) ;;
+      invalid-upgrade-ack) args=(--capability relay --server https://panel.example.test --upgrade-in-place) ;;
+      invalid-upgrade-reset) args+=(--upgrade-in-place --fresh-reset --acknowledge-relay-restart) ;;
+      invalid-upgrade-executor) args=(--capability executor --server https://panel.example.test --upgrade-in-place --acknowledge-relay-restart) ;;
+      invalid-upgrade-old-version) args=(--capability relay --server https://panel.example.test --version v0.3.3 --upgrade-in-place --acknowledge-relay-restart) ;;
     esac
     if [[ $mode == invalid-* ]]; then
       reject command bash "$TEST_REPO/agent.sh" "${args[@]}"
@@ -300,6 +330,9 @@ for mode in default-relay explicit-lease explicit-keep-last explicit-fresh-reset
           grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" && grep -Fxq keep_last "$BOOTSTRAP_ARGS" && grep -Fxq -- --acknowledge-relay-restart "$BOOTSTRAP_ARGS" || test_fail 'explicit migration flags lost by bootstrap' ;;
         explicit-fresh-reset)
           grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" && grep -Fxq keep_last "$BOOTSTRAP_ARGS" && grep -Fxq -- --fresh-reset "$BOOTSTRAP_ARGS" && grep -Fxq -- --acknowledge-relay-restart "$BOOTSTRAP_ARGS" || test_fail 'fresh reset confirmation not forwarded by bootstrap' ;;
+        explicit-upgrade)
+          grep -Fxq -- --upgrade-in-place "$BOOTSTRAP_ARGS" && grep -Fxq -- --acknowledge-relay-restart "$BOOTSTRAP_ARGS" || test_fail 'identity-preserving upgrade confirmation not forwarded'
+          ! grep -Fxq -- --token-file "$BOOTSTRAP_ARGS" || test_fail 'in-place upgrade forwarded enrollment token' ;;
         executor)
           ! grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" || test_fail 'executor received relay policy' ;;
       esac
@@ -319,7 +352,8 @@ first_probe_line=$(grep -n '^relay_migration_preflight "\$capability"' "$install
 ! grep -q '^relay_migration_preflight .*"\$agent_file"$' "$installer" || test_fail 'untrusted mutable source used for capability execution'
 grep -q '^trap install_agent_cleanup EXIT$' "$installer" || test_fail 'real EXIT not bound to tested rollback'
 grep -Fq 'relay_policy_arg=" --offline-policy $offline_policy"' "$installer" || test_fail 'relay unit did not pin its selected policy explicitly'
-[[ $(grep -c '^  relay_fresh_reset_preflight_at /var/lib/msboost-relay ' "$installer") == 2 ]] || test_fail 'fresh reset not rechecked immediately before mutation'
+[[ $(grep -c '^    relay_fresh_reset_preflight_at /var/lib/msboost-relay ' "$installer") == 2 ]] || test_fail 'fresh reset not rechecked immediately before mutation'
+[[ $(grep -c '^    relay_in_place_upgrade_preflight_at /var/lib/msboost-relay ' "$installer") == 2 ]] || test_fail 'identity-preserving upgrade not rechecked immediately before mutation'
 grep -Fq 'mv -T -- "$relay_reset_state" "$backup/relay-state"' "$installer" || test_fail 'old v2 state not privately archived'
 grep -Fq 'if relay_registration_ready_at "$relay_state_dir" "$offline_policy"; then registered=1; break; fi' "$installer" || test_fail 'installer can falsely claim online before fresh v2 sync'
 printf '%s\n' 'PASS: Agent migration parser/bootstrap, unsupported feature refusal, global v2 evidence, shared installation lock, strict unit rollback and no v1 resurrection'

@@ -19,6 +19,8 @@ usage() {
 只更新带 MSBOOST 所有权标记的安装；服务启动失败时尝试恢复原程序、服务与配置。
 新装 relay 默认启用 keep_last；可显式 --offline-policy lease 兼容旧链。
 已有 lease 服务切换 keep_last 还需 --acknowledge-relay-restart。
+已有 keep_last 身份可在维护窗口显式 --upgrade-in-place --acknowledge-relay-restart；
+此模式不接受 --token-file，保留原身份和规则，但重启会中断现有连接。
 已有 keep_last 状态会优先使用旧管理令牌，不能靠粘贴新注册令牌重新绑定控制面。
 仅在旧转发允许全部断开时，显式传 --fresh-reset --acknowledge-relay-restart；
 安装器只归档本项目受管的 Relay v2 状态，保留 root 私有备份后重新注册。
@@ -27,12 +29,13 @@ HELP
 fail() { printf '错误：%s\n' "$*" >&2; exit 1; }
 step() { printf '\n  → %s\n' "$*" >&2; }
 install_agent_parse_args() {
-capability=''; server=''; agent_file=''; agent_sha=''; token_file=''; gost_version=''; offline_policy=''; offline_policy_set=0; acknowledge_restart=0; fresh_reset=0
+capability=''; server=''; agent_file=''; agent_sha=''; token_file=''; gost_version=''; offline_policy=''; offline_policy_set=0; acknowledge_restart=0; fresh_reset=0; upgrade_in_place=0
 while (( $# )); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --acknowledge-relay-restart) acknowledge_restart=1; shift ;;
     --fresh-reset) fresh_reset=1; shift ;;
+    --upgrade-in-place) upgrade_in_place=1; shift ;;
     --capability|--server|--agent|--agent-sha256|--token-file|--gost-version|--offline-policy)
       (( $# >= 2 )) || fail "缺少 $1 参数"
       case "$1" in
@@ -52,8 +55,9 @@ done
 if [[ $capability == relay ]]; then
   [[ -n $offline_policy ]] || offline_policy=keep_last
   [[ $fresh_reset == 0 || ( $offline_policy == keep_last && $acknowledge_restart == 1 ) ]] || fail '全新重置中转节点需要 keep_last，并同时传 --acknowledge-relay-restart 明确确认旧连接将断开。'
+  [[ $upgrade_in_place == 0 || ( $fresh_reset == 0 && $offline_policy == keep_last && $acknowledge_restart == 1 && -z $token_file ) ]] || fail '原地升级仅用于已有 keep_last 中转节点：须传 --acknowledge-relay-restart，且不得传新注册令牌、--fresh-reset 或 lease。'
 else
-  [[ $offline_policy_set == 0 && $acknowledge_restart == 0 && $fresh_reset == 0 ]] || fail '中转离线策略、重启确认和全新重置只适用于 relay。'
+  [[ $offline_policy_set == 0 && $acknowledge_restart == 0 && $fresh_reset == 0 && $upgrade_in_place == 0 ]] || fail '中转离线策略、重启确认、原地升级和全新重置只适用于 relay。'
   offline_policy=lease
 fi
 [[ $offline_policy == lease || $offline_policy == keep_last ]] || fail 'offline-policy 仅允许 lease 或 keep_last。'
@@ -217,6 +221,40 @@ relay_registration_ready_at() {
   ! grep -Eq '"recoveryRequired":true' "$dir/relay-v2-state.json"
 }
 
+# In-place v2 upgrade never consumes a new enrollment token. The old managed
+# unit, private state, authenticated sync, and control origin must all agree
+# before the first service stop and again immediately before mutation.
+relay_in_place_upgrade_preflight_at() {
+  local public=$1 private=$2 old_unit=$3 marker=$4 old_env=$5 expected_server=$6
+  local state='' unit_state='' line count=0 origin_count=0 token_count=0 state_id='' token_id='' state_origin=''
+  relay_upgrade_state=''; relay_upgrade_identity=''
+  [[ -f $marker && ! -L $marker && $(< "$marker") == MSBOOST_AGENT_MANAGED_V1 && $(stat -c '%u:%h' -- "$marker") == 0:1 ]] || fail '旧 Agent 无可信受管标记，拒绝原地升级。'
+  [[ -f $old_unit && ! -L $old_unit && $(stat -c '%u:%h' -- "$old_unit") == 0:1 ]] || fail '旧 Relay 单元所有权不可信，拒绝原地升级。'
+  unit_state=$(relay_unit_state_path "$old_unit") || fail '旧 Relay 单元不是受管 keep_last 形态，拒绝原地升级。'
+  state=$(relay_state_location_at "$public" "$private") || fail '旧 Relay 状态路径不可信，拒绝原地升级。'
+  [[ $state == "$private" && $(readlink -f -- "$unit_state") == "$state" ]] || fail '旧 Relay 单元与私有状态目录不一致，拒绝原地升级。'
+  relay_fresh_state_manifest_at "$state" || fail '旧 Relay 状态含外来文件或不安全链接，拒绝原地升级。'
+  relay_registration_ready_at "$state" keep_last || fail '旧 Relay 尚未完成有效控制同步，或处于恢复核对；拒绝原地升级。'
+  [[ -f $old_env && ! -L $old_env && $(stat -c '%u:%a:%h' -- "$old_env") == 0:600:1 ]] || fail '旧 Relay 环境文件权限或所有权不可信，拒绝原地升级。'
+  while IFS= read -r line || [[ -n $line ]]; do
+    ((count+=1))
+    case "$line" in
+      "MSBOOST_SERVER_URL=$expected_server") ((origin_count+=1)) ;;
+      MSBOOST_RELAY_ENROLLMENT_TOKEN=*)
+        [[ $line =~ ^MSBOOST_RELAY_ENROLLMENT_TOKEN=[A-Za-z0-9_-]{32,256}$ ]] || fail '旧 Relay 环境文件格式异常，拒绝原地升级。'
+        ((token_count+=1)) ;;
+      *) fail '旧 Relay 环境文件或控制面地址与请求不一致，拒绝原地升级。' ;;
+    esac
+  done < "$old_env"
+  [[ $origin_count == 1 && $token_count -le 1 && $count -eq $((origin_count+token_count)) ]] || fail '旧 Relay 环境文件含重复或缺失字段，拒绝原地升级。'
+  state_id=$(grep -oE '"agentId":"[A-Za-z0-9_.:-]+"' "$state/relay-v2-state.json" | head -n 1) || true
+  token_id=$(grep -oE '"agentId":"[A-Za-z0-9_.:-]+"' "$state/relay-token.json" | head -n 1) || true
+  state_origin=$(grep -oE '"serverUrl":"https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?"' "$state/relay-v2-state.json" | head -n 1) || true
+  [[ -n $state_id && $state_id == "$token_id" && $state_origin == "\"serverUrl\":\"$expected_server\"" ]] || fail '旧 Relay 私有状态与注册身份或控制面地址不一致，拒绝原地升级。'
+  relay_upgrade_state=$state
+  relay_upgrade_identity=$state_id
+}
+
 relay_migration_preflight() {
   local role=$1 policy=$2 active=$3 acknowledged=$4 candidate=$5 evidence=0
   relay_v2_evidence && evidence=1 || true
@@ -323,7 +361,9 @@ step '检查参数、系统与私有令牌文件'
 [[ "$agent_sha" =~ ^[a-fA-F0-9]{64}$ ]] || fail '必须通过 --agent-sha256 指定校验值。'
 [[ "$gost_version" == 3.3.0 ]] || fail '必须指定 --gost-version 3.3.0；不使用 latest。'
 [[ -f "$agent_file" && ! -L "$agent_file" ]] || fail 'Agent 程序必须是普通文件，不能是符号链接。'
-[[ -f "$token_file" && ! -L "$token_file" ]] || fail '请提供私有的普通 --token-file 文件。'
+if (( ! upgrade_in_place )); then
+  [[ -f "$token_file" && ! -L "$token_file" ]] || fail '请提供私有的普通 --token-file 文件。'
+fi
 [[ "$(uname -s)" == Linux ]] || fail '该 systemd 安装器仅支持 Linux。'
 [[ "$(id -u)" == 0 ]] || fail '请以 root 运行。'
 agent_supported_debian || fail 'Agent 仅支持 Debian 11/12/13，不支持其他发行版或版本代号不一致的系统。'
@@ -331,11 +371,13 @@ command -v systemctl >/dev/null || fail '系统缺少 systemd。'
 [[ "$(systemctl --version | awk 'NR==1 {print $2}')" -ge 247 ]] || fail '需要 systemd 247 或更高版本。'
 command -v flock >/dev/null || fail '系统缺少 util-linux flock；拒绝无锁安装。'
 agent_install_lock_at /run/msboost-agent-install
-[[ "$(stat -c %u "$token_file")" == 0 ]] || fail '令牌文件必须归 root 所有。'
-token_mode=$(stat -c %a "$token_file")
-(( (8#$token_mode & 077) == 0 )) || fail '令牌文件不能允许用户组或其他用户访问，请设置 chmod 600。'
-token=$(< "$token_file")
-[[ "$token" =~ ^[A-Za-z0-9_-]{32,256}$ ]] || fail '令牌文件只能包含对应角色的注册令牌。'
+if (( ! upgrade_in_place )); then
+  [[ "$(stat -c %u "$token_file")" == 0 ]] || fail '令牌文件必须归 root 所有。'
+  token_mode=$(stat -c %a "$token_file")
+  (( (8#$token_mode & 077) == 0 )) || fail '令牌文件不能允许用户组或其他用户访问，请设置 chmod 600。'
+  token=$(< "$token_file")
+  [[ "$token" =~ ^[A-Za-z0-9_-]{32,256}$ ]] || fail '令牌文件只能包含对应角色的注册令牌。'
+fi
 agent_sha=${agent_sha,,}
 [[ "$(sha256sum "$agent_file" | cut -d' ' -f1)" == "$agent_sha" ]] || fail 'Agent SHA-256 校验失败。'
 
@@ -362,7 +404,11 @@ else
 fi
 relay_reset_state=''; relay_reset_moved=0
 if [[ $capability == relay ]]; then
-  relay_fresh_reset_preflight_at /var/lib/msboost-relay /var/lib/private/msboost-relay "$unitfile" "$managed/managed-v1" "$fresh_reset"
+  if (( upgrade_in_place )); then
+    relay_in_place_upgrade_preflight_at /var/lib/msboost-relay /var/lib/private/msboost-relay "$unitfile" "$managed/managed-v1" "$envfile" "$server"
+  else
+    relay_fresh_reset_preflight_at /var/lib/msboost-relay /var/lib/private/msboost-relay "$unitfile" "$managed/managed-v1" "$fresh_reset"
+  fi
 fi
 backup=''; mutation=0; committed=0; was_active=0
 systemctl is-active --quiet "$unit" && was_active=1 || true
@@ -399,7 +445,7 @@ GOST_ARM64_URL=https://github.com/go-gost/gost/releases/download/v3.3.0/gost_3.3
 GOST_ARM64_SHA256=d03699e3f385d4ff5dad68046712adfcc7515325a064d2ab046e0bece30f8f8f
 PINS
 else
-  printf 'MSBOOST_RELAY_ENROLLMENT_TOKEN=%s\n' "$token" >> "$stage/environment"
+  if (( ! upgrade_in_place )); then printf 'MSBOOST_RELAY_ENROLLMENT_TOKEN=%s\n' "$token" >> "$stage/environment"; fi
 fi
 unset token
 relay_policy_arg=''
@@ -454,7 +500,11 @@ backup=$(mktemp -d "/var/backups/msboost-agent/${capability}.XXXXXXXX")
 was_active=0; systemctl is-active --quiet "$unit" && was_active=1 || true
 relay_migration_preflight "$capability" "$offline_policy" "$was_active" "$acknowledge_restart" "$stage/msboost-agent"
 if [[ $capability == relay ]]; then
-  relay_fresh_reset_preflight_at /var/lib/msboost-relay /var/lib/private/msboost-relay "$unitfile" "$managed/managed-v1" "$fresh_reset"
+  if (( upgrade_in_place )); then
+    relay_in_place_upgrade_preflight_at /var/lib/msboost-relay /var/lib/private/msboost-relay "$unitfile" "$managed/managed-v1" "$envfile" "$server"
+  else
+    relay_fresh_reset_preflight_at /var/lib/msboost-relay /var/lib/private/msboost-relay "$unitfile" "$managed/managed-v1" "$fresh_reset"
+  fi
 fi
 if [[ -n $relay_reset_state ]]; then
   [[ $relay_reset_state == /var/lib/msboost-relay || $relay_reset_state == /var/lib/private/msboost-relay ]] || fail '拒绝移动非受管状态路径。'
@@ -495,6 +545,10 @@ if [[ $capability == relay ]]; then
     sleep 1
   done
   (( registered )) || fail '中转 Agent 未完成注册及真实 v2 控制同步：可能是令牌失效、WAF 阻断、网络故障或恢复核对。进程 active 不代表面板在线；已停止本次安装并尝试恢复旧状态，请检查服务日志。'
+  if (( upgrade_in_place )); then
+    upgraded_id=$(grep -oE '"agentId":"[A-Za-z0-9_.:-]+"' "$relay_upgrade_state/relay-v2-state.json" | head -n 1) || true
+    [[ -n $upgraded_id && $upgraded_id == "$relay_upgrade_identity" ]] || fail '原地升级后 Relay 身份发生变化；已停止新服务并尝试回滚，请检查私有备份和后台状态。'
+  fi
 fi
 committed=1
 printf '\n安装完成：%s\n程序和 GOST 已校验。请在控制面后台确认在线与注册状态。\n私有安装前备份：%s\n查看本机日志：journalctl -u %s -n 80 --no-pager\n请勿公开令牌或完整环境文件。\n' "$unit" "$backup" "$unit"

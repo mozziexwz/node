@@ -41,6 +41,9 @@ class FreeRelayGuardTest(unittest.TestCase):
     def test_fragmented_socks5(self):
         self.check([b"\x05", b"\x02", b"\x7f", b"\x00"], True)
 
+    def test_socks5_gssapi(self):
+        self.check([b"\x05", b"\x01", b"\x01"], True)
+
     def test_fragmented_socks4(self):
         self.check([b"\x04", b"\x01\x00\x50", b"\x7f\x00\x00\x01"], True)
 
@@ -52,6 +55,42 @@ class FreeRelayGuardTest(unittest.TestCase):
 
     def test_small_non_socks_methods(self):
         self.check([b"\x05\x02\x31\x42", b"more game traffic"], False)
+
+    def test_backend_eof_releases_worker_without_client_close(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as backend:
+            backend.bind(("127.0.0.1", 0))
+            backend.listen(1)
+
+            def close_backend():
+                conn, _ = backend.accept()
+                with conn:
+                    conn.recv(1)
+
+            backend_thread = threading.Thread(target=close_backend)
+            backend_thread.start()
+            client, guarded = socket.socketpair()
+            active = {guarded}
+            active_lock = threading.Lock()
+            permits = threading.BoundedSemaphore(1)
+            self.assertTrue(permits.acquire(blocking=False))
+            worker = threading.Thread(
+                target=free_relay_guard._serve_connection,
+                args=(guarded, backend.getsockname()[1], active,
+                      active_lock, permits),
+            )
+            worker.start()
+            try:
+                client.settimeout(2)
+                client.sendall(b"game traffic")
+                self.assertEqual(client.recv(1), b"")
+                worker.join(timeout=2)
+                self.assertFalse(worker.is_alive(), "backend EOF pinned a worker")
+                self.assertEqual(active, set())
+                self.assertTrue(permits.acquire(blocking=False))
+            finally:
+                client.close()
+                guarded.close()
+                backend_thread.join(timeout=2)
 
 
 if __name__ == "__main__":
