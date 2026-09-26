@@ -20,6 +20,29 @@ test('landing title: two intact lines, orange second line, responsive layout', {
   });
   try {
     await page.goto(base);
+    const agreementParagraphs = [
+      '网站工具提供用户自备VPS部署MSBOOST游戏节点、中转配置、系统重装。本站不提供任何服务器以及技术支持，用户需自行准备服务器及管理。',
+      'MSBOOST游戏节点只允许MapleStory及相关游戏用途。MSBOOST游戏节点已同步相关GFW规则实施访问限制，禁止通过技术手段修改MSBOOST游戏节点用于翻墙、公共代理、违法活动或其他与游戏无关的用途。',
+      '部署MSBOOST游戏节点、配置中转及系统重装可能导致服务器中断或数据丢失，执行前请自行备份重要数据。本站不为服务器数据丢失承担任何责任。',
+      '请妥善保管账号、SSH 密码、配置文件及其他凭据。因用户自行泄露、错误配置或第三方攻击造成的损失，由用户自行承担。',
+      'VPS、网络线路、云服务商、游戏服务器及其他第三方服务不由MSBOOST控制，本站不保证其质量及可用性。',
+      '不得攻击、扫描、转售、共享滥用本站资源，也不得尝试绕过限速、流量限制或用途限制。',
+      '为保障安全和稳定，MSBOOST有权对存在异常、滥用或违反规则的账号及服务进行限制、暂停或终止。',
+    ];
+    const agreementHeadings = [
+      '1. 服务性质', '2. 使用范围', '3. 服务器操作风险',
+      '4. 账号与服务器安全', '5. 第三方服务', '6. 禁止滥用', '7. 服务调整',
+    ];
+    await page.locator('.public-footer').getByRole('button',{name:'用户协议'}).click();
+    const agreement = page.locator('dialog.production-modal');
+    await expect(agreement.locator('h4')).toHaveText(agreementHeadings);
+    await expect(agreement.locator('p')).toHaveText(agreementParagraphs);
+    await agreement.getByRole('button',{name:'关闭窗口'}).click();
+    await page.getByRole('button',{name:'注册',exact:true}).click();
+    await page.getByRole('button',{name:'《用户协议》'}).click();
+    await expect(agreement.locator('p')).toHaveText(agreementParagraphs);
+    await agreement.getByRole('button',{name:'关闭窗口'}).click();
+    await page.getByRole('button',{name:'登录',exact:true}).first().click();
     const title=page.getByRole('heading',{level:1});
     await expect(title.locator(':scope > span')).toHaveText(['一键部署你的','独立IP游戏节点']);
     await page.evaluate(()=>document.fonts.ready);
