@@ -264,10 +264,10 @@ export function ResourcePage({ kind }: { kind: string }) {
     [token, setToken] = useState<RecordData | null>(null),
     [blockedAgent, setBlockedAgent] = useState<RecordData | null>(null),
     [deletedAgent, setDeletedAgent] = useState<RecordData | null>(null);
-  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.0.1/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
+  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.0.2/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
   const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;
   const relayUninstallCommand = (id: string) =>
-    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.0.1/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
+    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.0.2/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
   async function freshResetAgent(row: RecordData) {
     if (
       !confirm(
@@ -618,7 +618,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             <a className="btn" href="#rules">管理用户中转</a>
             <a
               className="btn"
-              href="https://github.com/mozziexwz/node/blob/v1.0.1/docs/relay-recovery.md"
+              href="https://github.com/mozziexwz/node/blob/v1.0.2/docs/relay-recovery.md"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -1131,21 +1131,21 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           </AsyncForm>
         ) : tab === "smtp" ? (
           <AsyncForm
+            label="发送测试邮件并保存"
             onSubmit={async (f) => {
               await post(
-                "/api/admin/settings",
+                "/api/admin/smtp/test",
                 {
-                  smtp: true,
                   smtpConfig: {
                     host: f.get("host"),
                     port: Number(f.get("port")),
+                    username: f.get("username"),
                     sender: f.get("sender"),
                     name: f.get("name"),
                     secret: f.get("secret"),
                     encryption: f.get("encryption"),
                   },
                 },
-                "PUT",
               );
               reload();
               onRefresh();
@@ -1166,10 +1166,21 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
                 required
               />
               <Field
-                label="发件邮箱"
+                label="SMTP 登录账号"
+                type="email"
+                name="username"
+                defaultValue={
+                  values.smtpConfig?.username || values.smtpConfig?.sender
+                }
+                hint="用于 SMTP 身份验证；旧配置默认沿用原发件邮箱。"
+                required
+              />
+              <Field
+                label="发件邮箱 From"
                 type="email"
                 name="sender"
                 defaultValue={values.smtpConfig?.sender}
+                hint="收件人看到的发件地址，可填写服务商允许的别名邮箱。"
                 required
               />
               <Field
@@ -1193,22 +1204,9 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
               </Select>
             </div>
             <Notice>
-              发信配置保存后，请发送测试邮件；测试通过后才能开启任一邮箱验证策略。
+              使用 Spaceship 别名邮箱作为 From 前，请先在 Spaceship
+              邮箱服务端配置并允许该别名发件。提交后将向当前管理员邮箱发送测试邮件；SMTP 服务器接受后才会保存配置。请再核对收件箱实际显示的 From。
             </Notice>
-            <Button
-              className="mt16"
-              onClick={async () => {
-                try {
-                  await post("/api/admin/smtp/test", {});
-                  alert("测试邮件已发送");
-                  reload();
-                } catch (e) {
-                  alert((e as Error).message);
-                }
-              }}
-            >
-              发送测试邮件
-            </Button>
           </AsyncForm>
         ) : tab === "limits" ? (
           <AsyncForm

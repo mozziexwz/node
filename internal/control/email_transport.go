@@ -27,6 +27,10 @@ func sendSMTP(ctx context.Context, config SMTPConfig, secret, recipient string, 
 	if config.Encryption != "tls" && config.Encryption != "starttls" {
 		return errors.New("SMTP requires TLS or STARTTLS")
 	}
+	username, err := smtpAuthUsername(config)
+	if err != nil {
+		return err
+	}
 	raw, err := BuildMIME(config.Name, config.Sender, recipient, message, time.Now())
 	if err != nil {
 		return err
@@ -66,10 +70,31 @@ func sendSMTP(ctx context.Context, config SMTPConfig, secret, recipient string, 
 			return err
 		}
 	}
-	if err = client.Auth(smtp.PlainAuth("", config.Sender, secret, config.Host)); err != nil {
+	if err = client.Auth(smtp.PlainAuth("", username, secret, config.Host)); err != nil {
 		return err
 	}
 	return submitSMTP(client, config.Sender, recipient, raw)
+}
+
+// Old SMTP configurations have no separate login; the sender was the login.
+func smtpAuthUsername(config SMTPConfig) (string, error) {
+	username := config.Username
+	if username == "" {
+		username = config.Sender
+	}
+	if len(username) > 254 || strings.ContainsAny(username, "\r\n") {
+		return "", errors.New("invalid SMTP login address")
+	}
+	address, err := mail.ParseAddress(username)
+	if err != nil || address.Address != username {
+		return "", errors.New("invalid SMTP login address")
+	}
+	for _, r := range username {
+		if r > 127 {
+			return "", errors.New("non-ASCII SMTP login address unsupported")
+		}
+	}
+	return username, nil
 }
 
 type smtpSubmissionClient interface {

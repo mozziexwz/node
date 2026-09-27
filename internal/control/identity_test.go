@@ -289,6 +289,110 @@ func TestIdentitySMTPSettingsTestAndSecretRedaction(t *testing.T) {
 	}
 }
 
+func TestIdentitySMTPAliasSwitchWithVerificationPolicy(t *testing.T) {
+	a, h := identityFixture(t, true)
+	cookie, csrf := identityLoginAdmin(t, h)
+	config := map[string]any{"host": "smtp.example.com", "port": 465, "sender": "mailbox@example.com", "name": "MSBOOST", "encryption": "tls", "secret": "mail-secret"}
+	identityResponse(t, identityRequest(h, "PUT", "/api/admin/settings", map[string]any{"smtp": true, "smtpConfig": config}, cookie, csrf), 200)
+	a.mailSender = func(_ context.Context, c SMTPConfig, secret, recipient string, _ EmailMessage) error {
+		if secret != "mail-secret" || recipient != "99999999@qq.com" {
+			return errors.New("incorrect SMTP credentials or test recipient")
+		}
+		username, err := smtpAuthUsername(c)
+		if err != nil || username != "mailbox@example.com" {
+			return errors.New("alias was used as SMTP login")
+		}
+		return nil
+	}
+	identityResponse(t, identityRequest(h, "POST", "/api/admin/smtp/test", map[string]any{}, cookie, csrf), 200)
+	identityResponse(t, identityRequest(h, "PUT", "/api/admin/settings", map[string]any{"registrationEmailVerificationRequired": true}, cookie, csrf), 200)
+
+	config["username"] = "mailbox@example.com"
+	config["sender"] = "alias@example.com"
+	config["secret"] = ""
+	identityResponse(t, identityRequest(h, "PUT", "/api/admin/settings", map[string]any{"smtpConfig": config}, cookie, csrf), 400)
+	identityResponse(t, identityRequest(h, "POST", "/api/admin/smtp/test", map[string]any{"smtpConfig": config}, cookie, csrf), 200)
+	if err := a.Store.View(func(s *State) error {
+		c, err := getSMTP(s)
+		if err != nil {
+			return err
+		}
+		if c.Username != "mailbox@example.com" || c.Sender != "alias@example.com" || c.TestedAt == 0 || !smtpReady(s) {
+			t.Fatalf("alias config not tested and saved: %+v", c)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIdentitySMTPFirstTestAtomicallyEnablesService(t *testing.T) {
+	a, h := identityFixture(t, true)
+	cookie, csrf := identityLoginAdmin(t, h)
+	config := map[string]any{"host": "smtp.example.com", "port": 465, "username": "mailbox@example.com", "sender": "alias@example.com", "name": "MSBOOST", "encryption": "tls", "secret": "mail-secret"}
+	identityResponse(t, identityRequest(h, "POST", "/api/admin/smtp/test", map[string]any{}, cookie, csrf), 400)
+	a.mailSender = func(_ context.Context, c SMTPConfig, secret, _ string, _ EmailMessage) error {
+		if c.Username != "mailbox@example.com" || c.Sender != "alias@example.com" || secret != "mail-secret" {
+			return errors.New("incorrect alias configuration")
+		}
+		return errors.New("provider rejected test message")
+	}
+	identityResponse(t, identityRequest(h, "POST", "/api/admin/smtp/test", map[string]any{"smtpConfig": config}, cookie, csrf), 502)
+	if err := a.Store.View(func(s *State) error {
+		if boolSetting(s, "smtp") || smtpReady(s) {
+			t.Fatal("failed test enabled SMTP")
+		}
+		c, err := getSMTP(s)
+		if err != nil {
+			return err
+		}
+		if c.Sender != "" || c.Secret != "" {
+			t.Fatal("failed test saved SMTP configuration")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.mailSender = func(_ context.Context, _ SMTPConfig, _, _ string, _ EmailMessage) error { return nil }
+	identityResponse(t, identityRequest(h, "POST", "/api/admin/smtp/test", map[string]any{"smtpConfig": config}, cookie, csrf), 200)
+	if err := a.Store.View(func(s *State) error {
+		c, err := getSMTP(s)
+		if err != nil {
+			return err
+		}
+		if !smtpReady(s) || c.Username != "mailbox@example.com" || c.Sender != "alias@example.com" {
+			t.Fatal("successful test did not enable and save SMTP")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIdentitySMTPLoginChangeRequiresRetest(t *testing.T) {
+	a, h := identityFixture(t, true)
+	cookie, csrf := identityLoginAdmin(t, h)
+	config := map[string]any{"host": "smtp.example.com", "port": 465, "sender": "alias@example.com", "name": "MSBOOST", "encryption": "tls", "secret": "mail-secret"}
+	identityResponse(t, identityRequest(h, "PUT", "/api/admin/settings", map[string]any{"smtp": true, "smtpConfig": config}, cookie, csrf), 200)
+	a.mailSender = func(_ context.Context, _ SMTPConfig, _, _ string, _ EmailMessage) error { return nil }
+	identityResponse(t, identityRequest(h, "POST", "/api/admin/smtp/test", map[string]any{}, cookie, csrf), 200)
+	config["username"] = "mailbox@example.com"
+	config["secret"] = ""
+	identityResponse(t, identityRequest(h, "PUT", "/api/admin/settings", map[string]any{"smtpConfig": config}, cookie, csrf), 200)
+	if err := a.Store.View(func(s *State) error {
+		c, err := getSMTP(s)
+		if err != nil {
+			return err
+		}
+		if c.TestedAt != 0 || smtpReady(s) {
+			t.Fatal("login change retained old test result")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIdentityAdminMutationRevokesSessionsAndAdjustsLedger(t *testing.T) {
 	a, h := identityFixture(t, true)
 	admin, csrf := identityLoginAdmin(t, h)

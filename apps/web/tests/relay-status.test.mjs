@@ -596,7 +596,7 @@ test(
               page.getByRole("dialog").getByRole("link", { name: "受信恢复指引" }),
             ).toHaveAttribute(
               "href",
-              /\/v1\.0\.1\/docs\/relay-recovery\.md$/,
+              /\/v1\.0\.2\/docs\/relay-recovery\.md$/,
             );
             await page.getByRole("dialog").getByRole("button", { name: "关闭窗口" }).click();
             let warning = "";

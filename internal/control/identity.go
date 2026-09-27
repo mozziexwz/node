@@ -51,6 +51,7 @@ type Session struct {
 type SMTPConfig struct {
 	Host                 string `json:"host"`
 	Port                 int    `json:"port"`
+	Username             string `json:"username,omitempty"`
 	Sender               string `json:"sender"`
 	Encryption           string `json:"encryption"`
 	Name                 string `json:"name"`
@@ -757,7 +758,7 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) {
 					if e != nil {
 						return e
 					}
-					if config.Host != old.Host || config.Port != old.Port || config.Sender != old.Sender || config.Encryption != old.Encryption || config.Name != old.Name || config.Secret != old.Secret {
+					if config.Host != old.Host || config.Port != old.Port || config.Username != old.Username || config.Sender != old.Sender || config.Encryption != old.Encryption || config.Name != old.Name || config.Secret != old.Secret {
 						config.TestedAt = 0
 					} else {
 						config.TestedAt = old.TestedAt
@@ -810,6 +811,7 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) prepareSMTP(in, old SMTPConfig) (SMTPConfig, error) {
 	in.Host = strings.TrimSpace(in.Host)
+	in.Username = strings.TrimSpace(in.Username)
 	in.Sender = strings.ToLower(strings.TrimSpace(in.Sender))
 	if in.Host == "" || strings.ContainsAny(in.Host, "\r\n /\\@:") || in.Port < 1 || in.Port > 65535 {
 		return in, errors.New("SMTP 主机或端口无效")
@@ -817,6 +819,9 @@ func (a *App) prepareSMTP(in, old SMTPConfig) (SMTPConfig, error) {
 	address, err := mail.ParseAddress(in.Sender)
 	if err != nil || address.Address != in.Sender {
 		return in, errors.New("发件邮箱无效")
+	}
+	if _, err = smtpAuthUsername(in); err != nil {
+		return in, errors.New("SMTP 登录邮箱无效")
 	}
 	if in.Encryption != "tls" && in.Encryption != "starttls" {
 		return in, errors.New("邮件发送必须使用 TLS 或 STARTTLS")
@@ -873,8 +878,10 @@ func (a *App) smtpTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var config SMTPConfig
+	var smtpWasEnabled bool
 	err = a.Store.View(func(s *State) error {
-		if !boolSetting(s, "smtp") {
+		smtpWasEnabled = boolSetting(s, "smtp")
+		if !smtpWasEnabled && in.SMTPConfig == nil {
 			return errors.New("请先开启 SMTP 邮件发送")
 		}
 		var e error
@@ -906,10 +913,13 @@ func (a *App) smtpTest(w http.ResponseWriter, r *http.Request) {
 		if current != original {
 			return errors.New("SMTP 配置已被其他管理员修改，请重新测试")
 		}
-		if !boolSetting(s, "smtp") {
-			return errors.New("SMTP 服务已被关闭")
+		if boolSetting(s, "smtp") != smtpWasEnabled {
+			return errors.New("SMTP 服务状态已被其他管理员修改，请重新测试")
 		}
 		config.TestedAt = time.Now().UnixMilli()
+		if in.SMTPConfig != nil {
+			s.Settings["smtp"] = true
+		}
 		s.Settings["smtpConfig"] = config
 		return identityAudit(s, actor.ID, "smtp.test", in.Recipient, "")
 	})

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"net/textproto"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 type emailDeliveryStub struct {
 	stage      string
+	mailFrom   string
 	quitErr    error
 	quitCalled bool
 	closed     bool
@@ -28,7 +30,7 @@ func (c *emailDeliveryStub) fail(stage string) error {
 	}
 	return nil
 }
-func (c *emailDeliveryStub) Mail(string) error             { return c.fail("mail") }
+func (c *emailDeliveryStub) Mail(from string) error        { c.mailFrom = from; return c.fail("mail") }
 func (c *emailDeliveryStub) Rcpt(string) error             { return c.fail("rcpt") }
 func (c *emailDeliveryStub) Data() (io.WriteCloser, error) { return c, c.fail("data") }
 func (c *emailDeliveryStub) Write(p []byte) (int, error) {
@@ -61,6 +63,38 @@ func TestEmailSMTPSubmissionAcceptanceBoundary(t *testing.T) {
 	}
 	if !client.closed || !client.quitCalled || client.data.String() != "message" {
 		t.Fatal("missing DATA acceptance or QUIT attempt")
+	}
+}
+
+func TestEmailSMTPAliasUsesMailboxLoginAndAliasEnvelope(t *testing.T) {
+	config := SMTPConfig{Username: "mailbox@example.com", Sender: "alias@example.com"}
+	username, err := smtpAuthUsername(config)
+	if err != nil || username != "mailbox@example.com" {
+		t.Fatalf("login = %q, %v", username, err)
+	}
+	legacy, err := smtpAuthUsername(SMTPConfig{Sender: "mailbox@example.com"})
+	if err != nil || legacy != "mailbox@example.com" {
+		t.Fatalf("legacy login = %q, %v", legacy, err)
+	}
+	message, err := RenderEmail("register", emailTestData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := BuildMIME("MSBOOST", config.Sender, "recipient@example.com", message, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &emailDeliveryStub{}
+	if err = submitSMTP(client, config.Sender, "recipient@example.com", raw); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := mail.ReadMessage(bytes.NewReader(client.data.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	from, err := parsed.Header.AddressList("From")
+	if err != nil || len(from) != 1 || from[0].Address != config.Sender || client.mailFrom != config.Sender {
+		t.Fatal("alias not used for both envelope and From header")
 	}
 }
 
@@ -186,5 +220,8 @@ func TestEmailSMTPRejectsUnsafeInputBeforeDial(t *testing.T) {
 	}
 	if err = sendSMTP(context.Background(), SMTPConfig{Encryption: "tls", Sender: "s@example.com\r\nBcc: bad@example.com"}, "secret", "12345678@qq.com", m); err == nil {
 		t.Fatal("unsafe sender accepted")
+	}
+	if err = sendSMTP(context.Background(), SMTPConfig{Encryption: "tls", Username: "s@example.com\r\nBcc: bad@example.com", Sender: "s@example.com"}, "secret", "12345678@qq.com", m); err == nil {
+		t.Fatal("unsafe login accepted")
 	}
 }
