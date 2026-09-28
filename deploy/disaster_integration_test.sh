@@ -216,7 +216,7 @@ check_frontend() {
   bound=$(compose_live port caddy 80)
   [[ $bound =~ ^127\.0\.0\.1:[0-9]+$ ]] || { die 'CI proxy must bind loopback only'; return 1; }
   curl --fail --silent --show-error --noproxy '*' --retry 10 --retry-delay 1 --retry-all-errors "http://$bound/api/health" > "$CI_ROOT/health.json" || return
-  jq -e '.status == "ok"' "$CI_ROOT/health.json" >/dev/null
+  jq -e --arg version "$VERSION" '.status == "ok" and .version == $version' "$CI_ROOT/health.json" >/dev/null
 }
 
 note 'Test: prepare exact source/release image and pin dependency images.'
@@ -224,7 +224,9 @@ if docker image inspect "$CI_BUILD_TAG" >/dev/null 2>&1; then die 'CI refuses to
 if [[ -n ${MSBOOST_DISASTER_PREBUILT_IMAGE:-} ]]; then
   [[ $MSBOOST_DISASTER_PREBUILT_IMAGE =~ ^ghcr.io/mozziexwz/node@sha256:[a-f0-9]{64}$ ]] || { die 'Only a pinned official image is accepted'; exit 1; }
   docker pull "$MSBOOST_DISASTER_PREBUILT_IMAGE"
-  [[ $(docker image inspect "$MSBOOST_DISASTER_PREBUILT_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}') == "$VERSION" ]] || { die 'Prebuilt image version differs from test scripts'; exit 1; }
+  # The production image records its source in OCI metadata, but its version
+  # lives in the executable. check_frontend verifies that exact version before
+  # this test seeds data or performs any backup/restore.
   server_identity "$MSBOOST_DISASTER_PREBUILT_IMAGE" >/dev/null
   docker tag "$MSBOOST_DISASTER_PREBUILT_IMAGE" "$CI_BUILD_TAG"
 else
