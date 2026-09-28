@@ -206,6 +206,7 @@ compose_live() {
         [[ -f $INSTALL_ROOT/.disaster-incomplete && -f $CASE_ROOT/volumes-imported ]] || fail 'state import ran out of order'
         [[ $MOCK_FAIL != state-import ]] || return 1
         : > "$CASE_ROOT/state-imported"
+        printf '{"ok":true}\n'
       fi ;;
     config) [[ $MOCK_FAIL != config ]] ;;
     pull) [[ $MOCK_FAIL != dependencies ]] ;;
@@ -466,6 +467,8 @@ for fault in none archive-verify unpack archive-member config dependencies volum
     [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME) == msboost_restore_* ]] || fail 'restore did not select new DB'
     [[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) == "$(env_get "$CASE_ROOT/recovery.env" MASTER_KEY)" ]] || fail 'restore regenerated master key'
     cmp "$INSTALL_ROOT/deploy/manage.sh" "$TEST_REPO/deploy/manage.sh" || fail 'restore used archived manager'
+    mapfile -t import_records < <(find "$INSTALL_ROOT/backups" -type f -name import-result.json)
+    [[ ${#import_records[@]} == 1 && $(<"${import_records[0]}") == '{"ok":true}' ]] || fail 'restore import result was lost during temporary cleanup'
     assert_has "$TRACE" 'compose up -d --no-build --pull never --wait --wait-timeout 180 database server'
   elif [[ -e $INSTALL_ROOT/.env ]]; then
     [[ -f $INSTALL_ROOT/.disaster-incomplete ]] || fail "failed $fault lost isolation marker"

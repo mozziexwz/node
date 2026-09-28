@@ -349,6 +349,9 @@ DISASTER_ARCHIVE=$CI_ARCHIVE
 DISASTER_WORK= DISASTER_RESUME=0 STAGE=
 disaster_restore
 ci_assert_backup_gate false
+mapfile -t CI_IMPORT_RECORDS < <(find "$INSTALL_ROOT/backups" -type f -name import-result.json)
+[[ ${#CI_IMPORT_RECORDS[@]} == 1 && ! -L ${CI_IMPORT_RECORDS[0]} && $(stat -c '%u:%a' "${CI_IMPORT_RECORDS[0]}") == 0:600 ]]
+jq -e 'type == "object"' "${CI_IMPORT_RECORDS[0]}" >/dev/null
 [[ ! -e $INSTALL_ROOT/.disaster-incomplete && ! -L $INSTALL_ROOT/.disaster-incomplete ]]
 [[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) == "$CI_KEY_BEFORE" ]]
 CI_DATABASE=$(env_get "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME)

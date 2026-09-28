@@ -453,10 +453,12 @@ disaster_restore() {
   rm -- "$INSTALL_ROOT/.disaster-incomplete" || return
   # Keep the raw dump/configuration on this host; never automatically replay it.
   install -d -m 700 "$INSTALL_ROOT/backups" || return
-  mv -- "$recovered" "$INSTALL_ROOT/backups/disaster-source-$(date -u +%Y%m%dT%H%M%SZ)" || return
+  local preserved="$INSTALL_ROOT/backups/disaster-source-$(date -u +%Y%m%dT%H%M%SZ)"
+  install -m 600 "$DISASTER_WORK/import-result.json" "$recovered/import-result.json" || return
+  mv -- "$recovered" "$preserved" || return
   install_launcher || return
   start_live || { die '恢复数据已保留，但站点健康检查失败。检查 DNS/端口后 repair；不要重新安装或 purge。'; return 1; }
   note '整站恢复完成。网站仍处于维护状态，支付与兑换保持关闭，请重新登录后台。'
   note '核对恢复后的数据和账务后，使用菜单 16 恢复中转节点管理连接；执行机需重新关联。验收后再开放营业，并用菜单 9 设置自动备份。'
-  note "详细导入记录已保存在本机私有目录：$DISASTER_WORK/import-result.json。无需手工编辑该文件。"
+  note "详细导入记录已保存在本机私有目录：$preserved/import-result.json。无需手工编辑该文件。"
 }
