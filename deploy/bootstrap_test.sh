@@ -21,7 +21,7 @@ if version_check_tree "$version_fixture" v0.0.0; then printf '%s\n' 'FAIL: misma
 awk '/raw.githubusercontent.com\/mozziexwz\/node\/v1.1.0\/agent.sh/ {sub("/v1.1.0/agent.sh", "/v0.2.4/agent.sh")} {print}' "$TEST_REPO/apps/web/src/admin.tsx" > "$version_fixture/apps/web/src/admin.tsx"
 if version_check_tree "$version_fixture" "$INITIAL_VERSION"; then printf '%s\n' 'FAIL: stale shared admin command accepted' >&2; exit 1; fi
 cp -- "$TEST_REPO/apps/web/src/admin.tsx" "$version_fixture/apps/web/src/admin.tsx"
-sed '0,/"version": "1.0.2"/s//"version": "0.2.4"/' "$TEST_REPO/apps/web/package-lock.json" > "$version_fixture/apps/web/package-lock.json"
+sed '0,/"version": "1.1.0"/s//"version": "0.2.4"/' "$TEST_REPO/apps/web/package-lock.json" > "$version_fixture/apps/web/package-lock.json"
 if version_check_tree "$version_fixture" "$INITIAL_VERSION"; then printf '%s\n' 'FAIL: stale web package-lock version accepted' >&2; exit 1; fi
 printf '%s\n' 'PASS: cross-entrypoint version defaults, actual tag mismatch, stale admin command and package-lock rejection'
 export BOOTSTRAP_TEST_TRACE="$TEST_WORK/manager-args"
