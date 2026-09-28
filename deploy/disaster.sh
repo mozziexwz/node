@@ -184,6 +184,16 @@ disaster_maintenance_read() {
 disaster_record() {
   "$DISASTER_TOOL" disaster record --file "$INSTALL_ROOT/status/backup-history.json" --id "$DISASTER_RUN_ID" --stage "$1" "${@:2}"
 }
+disaster_schedule_snapshot() {
+  # Import an existing managed plan's state after an upgrade, without enabling
+  # it or treating an untested saved password as verified.
+  local timer=/etc/systemd/system/msboost-disaster-backup.timer
+  [[ -f $timer && ! -L $timer ]] || return 0
+  grep -qx '# MSBOOST_DISASTER_V1' "$timer" || return 0
+  local -a args=()
+  if systemctl is-enabled --quiet msboost-disaster-backup.timer && systemctl is-active --quiet msboost-disaster-backup.timer; then args+=(--enabled); fi
+  "$DISASTER_TOOL" disaster schedule-record --file "$INSTALL_ROOT/status/backup-history.json" --config "$INSTALL_ROOT/disaster.json" "${args[@]}"
+}
 
 disaster_upload_recorded() {
   local result=0
@@ -208,6 +218,7 @@ disaster_backup() {
   "$DISASTER_TOOL" disaster prepare-dir --dir "$directory" || return
   [[ ! -L $INSTALL_ROOT/status ]] || { die '备份状态目录不能是符号链接'; return 1; }
   install -d -m 0755 "$INSTALL_ROOT/status" || return
+  disaster_schedule_snapshot || return
   filename="msboost-disaster-$(date -u +%Y%m%dT%H%M%SZ)-$(random_hex 8).tar.gz"
   DISASTER_RUN_ID=$filename
   DISASTER_FAILURE_STAGE=failed

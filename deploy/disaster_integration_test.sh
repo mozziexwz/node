@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# Real Docker/PostgreSQL disaster cycle, ONLY on an empty dedicated GitHub runner.
+# Real Docker/PostgreSQL disaster cycle, ONLY on an empty dedicated test host.
 # Invocation: sudo env GITHUB_ACTIONS=true MSBOOST_CI_DISASTER=1 PATH="$PATH" \
 #   bash deploy/disaster_integration_test.sh
 # No production host, remote SFTP, public listener, payment or SSH task is used.
 set -Eeuo pipefail
 umask 077
-[[ ${GITHUB_ACTIONS:-} == true && ${MSBOOST_CI_DISASTER:-} == 1 && $(id -u) == 0 && $(uname -s) == Linux ]] || {
-  printf '%s\n' 'REFUSED: requires root Linux GitHub Actions and explicit MSBOOST_CI_DISASTER=1.' >&2
+[[ ${MSBOOST_CI_DISASTER:-} == 1 && $(id -u) == 0 && $(uname -s) == Linux ]] || {
+  printf '%s\n' 'REFUSED: requires root Linux and explicit MSBOOST_CI_DISASTER=1.' >&2
   exit 2
 }
+if [[ ${GITHUB_ACTIONS:-} != true ]]; then
+  [[ ${MSBOOST_DISASTER_TEST_HOST:-} =~ ^[a-f0-9]{32}$ && $(cat /etc/machine-id) == "$MSBOOST_DISASTER_TEST_HOST" ]] || {
+    printf '%s\n' 'REFUSED: dedicated test VPS must be confirmed by its exact machine-id.' >&2; exit 2;
+  }
+fi
 CI_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 for dependency in docker curl jq tar sha256sum flock stat; do command -v "$dependency" >/dev/null || { printf 'Missing dependency: %s\n' "$dependency" >&2; exit 1; }; done
 printf '%s\n' 'CI_DISASTER_STAGE=initial-directory-metadata'
@@ -35,6 +40,7 @@ CI_TOOL="$CI_ROOT/msboost-restore"
 CI_ARCHIVES="$CI_ROOT/archives"
 CI_BUILD_TAG="msboost-local:$VERSION"
 CI_IMAGE= CI_IMAGE_ID= CI_TOOL_CONTAINER=
+CI_CREATED_IMAGE_TAGS=()
 CI_OPT_IDENTITY= CI_OPT_ORIGINAL_MODE= CI_OPT_CHANGED=0
 CI_WORKS=()
 declare -A CI_CADDY_METADATA=()
@@ -138,10 +144,12 @@ ci_cleanup() {
     fi
   done
   # Only tags created by this invocation are eligible for removal; never prune.
-  for work in "$CI_IMAGE" "$CI_BUILD_TAG"; do
+  for work in "${CI_CREATED_IMAGE_TAGS[@]}"; do
     [[ -n $work ]] || continue
     if docker image inspect "$work" >/dev/null 2>&1; then
-      [[ $(docker image inspect --format '{{index .Config.Labels "msboost.ci.disaster"}}' "$work") == "$CI_TOKEN" ]] && docker image rm "$work" >/dev/null || status=1
+      if [[ -n ${MSBOOST_DISASTER_PREBUILT_IMAGE:-} && $(docker image inspect --format '{{.Id}}' "$work") == "$CI_IMAGE_ID" ]] || [[ $(docker image inspect --format '{{index .Config.Labels "msboost.ci.disaster"}}' "$work") == "$CI_TOKEN" ]]; then
+        docker image rm "$work" >/dev/null || status=1
+      else status=1; fi
     fi
   done
   [[ $CI_ROOT =~ ^/root/msboost-disaster-ci\.[A-Za-z0-9]{8}$ && ! -L $CI_ROOT && $(realpath -m "$CI_ROOT") == "$CI_ROOT" ]] || exit 1
@@ -198,7 +206,7 @@ ci_assert_backup_gate() {
   compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause status > "$CI_ROOT/gate-status.json" || return
   jq -e --argjson expected "$expected" '.gateActive == $expected and (.gateActive == false or .canPauseControl == false) and (has("token") | not) and (has("tokenHash") | not)' "$CI_ROOT/gate-status.json" >/dev/null
 }
-require_platform() { :; } # The CI runner is Ubuntu; product remains Debian 12.
+require_platform() { :; } # Isolated harness also runs on Ubuntu; product supports Debian 12/13.
 ensure_docker() { docker info >/dev/null; }
 install_launcher() { :; } # Never install a system-wide command during CI.
 read_tty() { [[ $1 == *RESTORE_NEW_MSBOOST* ]] || return 1; printf RESTORE_NEW_MSBOOST; }
@@ -211,12 +219,23 @@ check_frontend() {
   jq -e '.status == "ok"' "$CI_ROOT/health.json" >/dev/null
 }
 
-note 'CI: build current source and pin dependency images; no release is published.'
+note 'Test: prepare exact source/release image and pin dependency images.'
 if docker image inspect "$CI_BUILD_TAG" >/dev/null 2>&1; then die 'CI refuses to overwrite an existing local build tag'; exit 1; fi
-docker build --build-arg "VERSION=$VERSION" --label "msboost.ci.disaster=$CI_TOKEN" --tag "$CI_BUILD_TAG" "$CI_REPO"
+if [[ -n ${MSBOOST_DISASTER_PREBUILT_IMAGE:-} ]]; then
+  [[ $MSBOOST_DISASTER_PREBUILT_IMAGE =~ ^ghcr.io/mozziexwz/node@sha256:[a-f0-9]{64}$ ]] || { die 'Only a pinned official image is accepted'; exit 1; }
+  docker pull "$MSBOOST_DISASTER_PREBUILT_IMAGE"
+  [[ $(docker image inspect "$MSBOOST_DISASTER_PREBUILT_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}') == "$VERSION" ]] || { die 'Prebuilt image version differs from test scripts'; exit 1; }
+  server_identity "$MSBOOST_DISASTER_PREBUILT_IMAGE" >/dev/null
+  docker tag "$MSBOOST_DISASTER_PREBUILT_IMAGE" "$CI_BUILD_TAG"
+else
+  docker build --build-arg "VERSION=$VERSION" --label "msboost.ci.disaster=$CI_TOKEN" --tag "$CI_BUILD_TAG" "$CI_REPO"
+fi
+CI_CREATED_IMAGE_TAGS+=("$CI_BUILD_TAG")
 CI_IMAGE_ID=$(server_identity "$CI_BUILD_TAG")
 CI_IMAGE="msboost-release:$VERSION-$(platform_arch)-${CI_IMAGE_ID:7:12}"
+if docker image inspect "$CI_IMAGE" >/dev/null 2>&1; then die 'Test refuses to overwrite an existing image alias'; exit 1; fi
 docker tag "$CI_BUILD_TAG" "$CI_IMAGE"
+CI_CREATED_IMAGE_TAGS+=("$CI_IMAGE")
 # A release-shaped local alias exercises the unmodified production allowlist.
 # Only the artifact resolver is overridden: it accepts this invocation's exact
 # locally built image ID, never an arbitrary image or a public moving tag.
@@ -245,8 +264,12 @@ freeze_images
 replace_live_environment "$STAGE/.env"
 cleanup_stage; STAGE=
 start_live
-source "$CI_REPO/deploy/backup_activity_integration_test.sh"
-ci_test_backup_activity_readonly
+if [[ ${GITHUB_ACTIONS:-} == true ]]; then
+  # Additional historical lock regression needs the runner's Go toolchain.
+  # The prebuilt-image VPS path still runs the complete online backup/restore.
+  source "$CI_REPO/deploy/backup_activity_integration_test.sh"
+  ci_test_backup_activity_readonly
+fi
 POSTGRES_TEST_IMAGE=$(env_get "$INSTALL_ROOT/.env" POSTGRES_IMAGE)
 CI_KEY_BEFORE=$(env_get "$INSTALL_ROOT/.env" MASTER_KEY)
 [[ -n $CI_KEY_BEFORE ]]
@@ -290,7 +313,9 @@ printf '%s\n' 'CI_DISASTER_STAGE=config-save'
 "$CI_TOOL" disaster config-save --file "$INSTALL_ROOT/disaster.json" --local-dir "$CI_ARCHIVES" --retention-days 30 --time 02:30 </dev/null
 printf '%s\n' 'CI_DISASTER_STAGE=config-saved'
 note 'CI: online consistent export, private key archive, pack and verification; no stop/restart.'
-compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause check > "$CI_ROOT/gate-check.json"
+if compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause check > "$CI_ROOT/gate-check.json"; then
+  die 'Historical executed DD fixture unexpectedly passed the old stop-site check'; exit 1
+fi
 jq -e '.canPauseControl == false and .gateActive == false and any(.blockers[]; .code == "execution_busy")' "$CI_ROOT/gate-check.json" >/dev/null
 CI_BACKUP_VERIFY=1
 disaster_backup
