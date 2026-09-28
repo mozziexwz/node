@@ -207,13 +207,43 @@ func RecordSchedule(file string, c Config, enabled, verified bool) error {
 	if err != nil {
 		return err
 	}
-	zone, offset := time.Now().Zone()
-	if raw, e := os.ReadFile("/etc/timezone"); e == nil {
-		zone = strings.TrimSpace(string(raw))
+	now := time.Now()
+	candidates := []string{now.Location().String()}
+	if target, e := os.Readlink("/etc/localtime"); e == nil {
+		if _, name, found := strings.Cut(filepath.ToSlash(target), "zoneinfo/"); found {
+			candidates = append(candidates, name)
+		}
 	}
+	if raw, e := os.ReadFile("/etc/timezone"); e == nil {
+		candidates = append(candidates, strings.TrimSpace(string(raw)))
+	}
+	zone, offset := scheduleTimeZone(now, candidates)
 	h.Schedule = BackupSchedule{Enabled: enabled, Time: c.Time, Zone: zone, Offset: offset, RemoteConfigured: c.RemoteHost != ""}
 	if verified {
 		h.Schedule.VerifiedAt = time.Now().UnixMilli()
 	}
 	return saveHistory(file, h)
+}
+
+// /etc/timezone can be stale after timedatectl or /etc/localtime changes.
+// Use an IANA name only when it agrees with the process's effective zone;
+// otherwise use an explicit offset, never reinterpret a CST/UTC abbreviation.
+func scheduleTimeZone(now time.Time, candidates []string) (string, int) {
+	abbreviation, offset := now.Zone()
+	for _, name := range candidates {
+		if name == "" || name == "Local" {
+			continue
+		}
+		if location, err := time.LoadLocation(name); err == nil {
+			candidateAbbreviation, candidateOffset := now.In(location).Zone()
+			if candidateOffset == offset && candidateAbbreviation == abbreviation {
+				return name, offset
+			}
+		}
+	}
+	sign, seconds := "+", offset
+	if seconds < 0 {
+		sign, seconds = "-", -seconds
+	}
+	return fmt.Sprintf("UTC%s%02d:%02d", sign, seconds/3600, seconds%3600/60), offset
 }

@@ -394,9 +394,10 @@ disaster_restore() {
   local archive=$DISASTER_ARCHIVE confirm volume image recovered_db archive_format
   if [[ -z $archive ]]; then archive=$(read_tty '输入本机整站备份 .tar.gz 的绝对路径: '); fi
   [[ $archive == /* && -f $archive && ! -L $archive ]] || { die '需要本机普通备份文件的绝对路径'; return 1; }
-  "$DISASTER_TOOL" disaster verify --archive "$archive" || return
+  "$DISASTER_TOOL" disaster verify --archive "$archive" >/dev/null || return
+  note '备份包完整校验通过。'
   archive_format=$("$DISASTER_TOOL" disaster format --archive "$archive") || return
-  note '完整恢复将使用备份时的数据、原域名、密码、主密钥和证书；备份之后的付款必须人工对账。请先停止原站点，避免双站运行。'
+  note '完整恢复将使用备份时的数据、原域名、密码和主密钥；在线备份的 HTTPS 证书会重新签发。请先停用原站点，备份之后的收款需人工核对。'
   confirm=$(read_tty '确认原站点已停机，且此 VPS 是全新目标，输入 RESTORE_NEW_MSBOOST: ')
   [[ $confirm == RESTORE_NEW_MSBOOST ]] || { die '已取消'; return 1; }
   ensure_docker || return
@@ -447,7 +448,7 @@ disaster_restore() {
   local -a key_args=()
   [[ -n $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) ]] || key_args=(--master-key-file /app/data/master.key)
   compose_live run --rm --no-deps -T --user 0:0 --volume "$recovered:/recovery:ro" --entrypoint /usr/local/bin/msboost-restore server \
-    --backup /recovery/state.msb --postgres-new-database "$recovered_db" --confirm-disaster-restore "${key_args[@]}" || return
+    --backup /recovery/state.msb --postgres-new-database "$recovered_db" --confirm-disaster-restore "${key_args[@]}" > "$DISASTER_WORK/import-result.json" || return
   [[ -f $INSTALL_ROOT/.disaster-incomplete && ! -L $INSTALL_ROOT/.disaster-incomplete ]] || return 1
   rm -- "$INSTALL_ROOT/.disaster-incomplete" || return
   # Keep the raw dump/configuration on this host; never automatically replay it.
@@ -455,5 +456,7 @@ disaster_restore() {
   mv -- "$recovered" "$INSTALL_ROOT/backups/disaster-source-$(date -u +%Y%m%dT%H%M%SZ)" || return
   install_launcher || return
   start_live || { die '恢复数据已保留，但站点健康检查失败。检查 DNS/端口后 repair；不要重新安装或 purge。'; return 1; }
-  note '整站恢复完成，维护模式开启、支付关闭、会话与 Agent 凭据已失效。请对账、重新关联 Agent 并验收后再开放营业。自动备份计划须重新配置。'
+  note '整站恢复完成。网站仍处于维护状态，支付与兑换保持关闭，请重新登录后台。'
+  note '核对恢复后的数据和账务后，使用菜单 16 恢复中转节点管理连接；执行机需重新关联。验收后再开放营业，并用菜单 9 设置自动备份。'
+  note "详细导入记录已保存在本机私有目录：$DISASTER_WORK/import-result.json。无需手工编辑该文件。"
 }
