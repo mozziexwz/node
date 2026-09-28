@@ -186,7 +186,11 @@ export function Plans({
   onRefresh: () => void;
 }) {
   const { data, error } = useData("/api/plans"),
-    { data: channels } = useData("/api/payment-channels");
+    {
+      data: channels,
+      reload: reloadChannels,
+      setData: setChannels,
+    } = useData("/api/payment-channels");
   const [selected, setSelected] = useState<RecordData | null>(null),
     [order, setOrder] = useState<RecordData | null>(null);
   return (
@@ -254,7 +258,11 @@ export function Plans({
                 primary
                 className="block"
                 disabled={!!blockedReason}
-                onClick={() => setSelected(p)}
+                onClick={() => {
+                  setChannels(null);
+                  reloadChannels();
+                  setSelected(p);
+                }}
               >
                 {blockedReason ? "暂不可兑换" : "选择权益"}
               </Button>
@@ -408,6 +416,12 @@ export function Orders({
                 )[o.state] || o.state}
               </Badge>
               {o.reviewReason && <small>{o.reviewReason}</small>}
+              {o.state === "pending" && (
+                <small>
+                  原订单处理中，将于 {date(o.expiresAt)}{" "}
+                  到期；处理完成或到期后可再次兑换。
+                </small>
+              )}
             </>,
             date(o.createdAt),
             o.paymentUrl && o.state === "pending" ? (
@@ -726,7 +740,9 @@ export function Routes({ user }: { user: RecordData }) {
               </div>
             </div>
             <div className="card stat">
-              <div className="stat-top">出口节点→客户 MSBOOST TCP 连接延迟(ms)</div>
+              <div className="stat-top">
+                出口节点→客户 MSBOOST TCP 连接延迟(ms)
+              </div>
               <div className="stat-value">
                 {diagnosis.result.latencyMs ?? "—"}
               </div>

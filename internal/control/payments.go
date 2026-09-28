@@ -238,14 +238,26 @@ func (a *App) registerPayments(mux *http.ServeMux) {
 }
 func (a *App) paymentChannels(w http.ResponseWriter, r *http.Request) {
 	admin := strings.Contains(r.URL.Path, "/admin/")
+	var userID string
 	if admin {
 		if _, err := a.Admin(r); err != nil {
 			commerceError(w, 403, err)
 			return
 		}
+	} else {
+		u, err := a.User(r)
+		if err != nil {
+			commerceError(w, 401, err)
+			return
+		}
+		userID = u.ID
 	}
+	w.Header().Set("Cache-Control", "no-store, private")
 	out := []PaymentChannel{}
 	err := a.Store.View(func(s *State) error {
+		if !admin && !onlinePaymentAllowed(s, userID) {
+			return nil
+		}
 		for _, ch := range ListDocs[PaymentChannel](s, "payment_channels") {
 			if !admin && !ch.Enabled {
 				continue
@@ -272,6 +284,24 @@ func (a *App) paymentChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, 200, map[string]any{"channels": out})
+}
+
+// Authorization is read from current persisted state, never a stale session or
+// client field. Missing fields in older user records deliberately mean false.
+func onlinePaymentAllowed(s *State, userID string) bool {
+	u := s.Users[userID]
+	return u != nil && u.Status == "active" && u.OnlinePaymentAllowed
+}
+
+// Only sanitize response copies. Existing signed orders remain valid for
+// callback settlement; revocation must not discard money already paid.
+func memberOrderView(s *State, userID string, o Order) Order {
+	ch, ok := LoadDoc[PaymentChannel](s, "payment_channels", o.ChannelID)
+	if !onlinePaymentAllowed(s, userID) || o.State != "pending" || o.ExpiresAt <= time.Now().UnixMilli() || !ok || !ch.Enabled ||
+		(ch.Type == "alipay" && !boolSetting(s, "payali")) || (ch.Type == "wxpay" && !boolSetting(s, "paywx")) {
+		o.PaymentURL = ""
+	}
+	return o
 }
 func (a *App) paymentSaveChannel(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.Admin(r); err != nil {

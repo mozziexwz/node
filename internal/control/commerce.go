@@ -768,6 +768,8 @@ func (a *App) commerceOrders(w http.ResponseWriter, r *http.Request) {
 					if user := s.Users[o.UserID]; user != nil {
 						o.UserEmail = user.Email
 					}
+				} else {
+					o = memberOrderView(s, u.ID, o)
 				}
 				out = append(out, o)
 			}
@@ -794,6 +796,7 @@ func (a *App) commerceOrder(w http.ResponseWriter, r *http.Request) {
 		if !ok || o.UserID != u.ID {
 			return errors.New("兑换记录不存在")
 		}
+		o = memberOrderView(s, u.ID, o)
 		return nil
 	})
 	if err != nil {
@@ -836,6 +839,7 @@ func (a *App) commerceCreateOrder(w http.ResponseWriter, r *http.Request) {
 				return errors.New("幂等键已用于其他兑换记录")
 			}
 			out, _ = LoadDoc[Order](s, "orders", prev.ObjectID)
+			out = memberOrderView(s, u.ID, out)
 			return nil
 		}
 		user := s.Users[u.ID]
@@ -870,7 +874,7 @@ func (a *App) commerceCreateOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, o := range ListDocs[Order](s, "orders") {
 			if o.UserID == u.ID && o.State == "pending" && o.ExpiresAt > now {
-				return errors.New("已有待处理兑换，请先完成或等待30分钟过期")
+				return fmt.Errorf("已有待处理兑换，将于 %s 到期；请等待处理完成或到期后再兑换", time.UnixMilli(o.ExpiresAt).UTC().Format(time.RFC3339))
 			}
 		}
 		out = Order{ID: commerceID(), UserID: u.ID, Plan: p, AmountCents: p.PriceCents, Currency: "CNY", ChannelID: in.ChannelID, State: "pending", RequestID: in.RequestID, CreatedAt: now, ExpiresAt: now + 30*60*1000, EntitlementVersion: entitlementVersion(s, u.ID)}
@@ -883,6 +887,9 @@ func (a *App) commerceCreateOrder(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		} else {
+			if !onlinePaymentAllowed(s, u.ID) {
+				return errors.New("当前账号未开通在线支付，请使用枫叶兑换")
+			}
 			ch, ok := LoadDoc[PaymentChannel](s, "payment_channels", in.ChannelID)
 			if !ok || !ch.Enabled {
 				return errors.New("兑换渠道不可用")

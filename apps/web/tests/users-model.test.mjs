@@ -3,6 +3,31 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import ts from "typescript";
 
+function whitelistDraftTest() {
+  assert.equal(userDraft(null).onlinePaymentAllowed, "false");
+  const original = {
+    email: "12345678@qq.com",
+    onlinePaymentAllowed: true,
+    rateMbps: 1,
+  };
+  const baseline = userDraft(original);
+  assert.equal(baseline.onlinePaymentAllowed, "true");
+  assert.equal(
+    Object.hasOwn(
+      userPatch(original, baseline, { ...baseline, email: "87654321@qq.com" }),
+      "onlinePaymentAllowed",
+    ),
+    false,
+  );
+  assert.equal(
+    userPatch(original, baseline, {
+      ...baseline,
+      onlinePaymentAllowed: "false",
+    }).onlinePaymentAllowed,
+    false,
+  );
+}
+
 const source = fs.readFileSync(
   new URL("../src/users-model.ts", import.meta.url),
   "utf8",
@@ -17,6 +42,8 @@ const { unitInteger, integerUnit, userDraft, userPatch, sortedUsers, DAY_MS } =
   await import(
     "data:text/javascript;base64," + Buffer.from(output).toString("base64")
   );
+
+test("online payment defaults closed and ordinary edits preserve explicit grants", whitelistDraftTest);
 
 test("user whole-leaf/GB conversions are exact and reject unsafe input", () => {
   assert.equal(unitInteger("29", 0, "枫叶"), 29);
@@ -80,10 +107,17 @@ test("admin can change entitlement level without changing the grant deadline", (
   };
   const baseline = userDraft(user, now);
   assert.equal(baseline.level, "1");
-  const patch = userPatch(user, baseline, { ...baseline, level: "3" }, now + 1000);
+  const patch = userPatch(
+    user,
+    baseline,
+    { ...baseline, level: "3" },
+    now + 1000,
+  );
   assert.equal(patch.level, 3);
   assert.equal(Object.hasOwn(patch, "expiresAt"), false);
-  assert.throws(() => userPatch(user, baseline, { ...baseline, level: "4" }, now));
+  assert.throws(() =>
+    userPatch(user, baseline, { ...baseline, level: "4" }, now),
+  );
 });
 
 test("editing days explicitly sets a deadline from save time and preserves exact funds", () => {

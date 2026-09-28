@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, RecordData } from "./api";
-import { Button, ErrorNotice, leaves, Notice } from "./ui";
+import { Button, ErrorNotice, leaves, Notice, date } from "./ui";
 
 // This is only an order selector. No payment status or signature from the
 // browser URL is trusted; the authenticated order API owns the result.
@@ -114,6 +114,12 @@ export function PaymentReturn({
           <Notice tone={order.state === "paid" ? "green" : "orange"}>
             {labels[order.state] || "状态待核对"}
             {order.reviewReason && <p>{order.reviewReason}</p>}
+            {order.state === "pending" && (
+              <p>
+                原订单处理中，将于 {date(order.expiresAt)}{" "}
+                到期；处理完成或到期后可再次兑换。
+              </p>
+            )}
           </Notice>
           {order.state !== "paid" && (
             <p className="muted mt8">

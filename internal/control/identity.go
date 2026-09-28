@@ -25,20 +25,21 @@ import (
 )
 
 type User struct {
-	ID              string `json:"id"`
-	Email           string `json:"email"`
-	Role            string `json:"role"`
-	Status          string `json:"status"`
-	PasswordHash    string `json:"passwordHash,omitempty"`
-	EmailVerifiedAt int64  `json:"emailVerifiedAt"`
-	CreatedAt       int64  `json:"createdAt"`
-	ExpiresAt       int64  `json:"expiresAt"`
-	BalanceCents    int64  `json:"balanceCents"`
-	TrafficTotal    int64  `json:"trafficTotal"`
-	TrafficUsed     int64  `json:"trafficUsed"`
-	RateMbps        int64  `json:"rateMbps"`
-	Level           int    `json:"level"`
-	PlanID          string `json:"planId"`
+	ID                   string `json:"id"`
+	Email                string `json:"email"`
+	Role                 string `json:"role"`
+	Status               string `json:"status"`
+	PasswordHash         string `json:"passwordHash,omitempty"`
+	EmailVerifiedAt      int64  `json:"emailVerifiedAt"`
+	CreatedAt            int64  `json:"createdAt"`
+	ExpiresAt            int64  `json:"expiresAt"`
+	BalanceCents         int64  `json:"balanceCents"`
+	TrafficTotal         int64  `json:"trafficTotal"`
+	TrafficUsed          int64  `json:"trafficUsed"`
+	RateMbps             int64  `json:"rateMbps"`
+	Level                int    `json:"level"`
+	PlanID               string `json:"planId"`
+	OnlinePaymentAllowed bool   `json:"onlinePaymentAllowed"`
 }
 
 type Session struct {
@@ -932,17 +933,18 @@ func (a *App) smtpTest(w http.ResponseWriter, r *http.Request) {
 }
 
 type adminUserInput struct {
-	Email        *string `json:"email"`
-	Password     string  `json:"password"`
-	Role         *string `json:"role"`
-	Status       *string `json:"status"`
-	BalanceCents *int64  `json:"balanceCents"`
-	ExpiresAt    *int64  `json:"expiresAt"`
-	TrafficTotal *int64  `json:"trafficTotal"`
-	TrafficUsed  *int64  `json:"trafficUsed"`
-	RateMbps     *int64  `json:"rateMbps"`
-	Level        *int    `json:"level"`
-	Reason       string  `json:"reason"`
+	OnlinePaymentAllowed *bool   `json:"onlinePaymentAllowed"`
+	Email                *string `json:"email"`
+	Password             string  `json:"password"`
+	Role                 *string `json:"role"`
+	Status               *string `json:"status"`
+	BalanceCents         *int64  `json:"balanceCents"`
+	ExpiresAt            *int64  `json:"expiresAt"`
+	TrafficTotal         *int64  `json:"trafficTotal"`
+	TrafficUsed          *int64  `json:"trafficUsed"`
+	RateMbps             *int64  `json:"rateMbps"`
+	Level                *int    `json:"level"`
+	Reason               string  `json:"reason"`
 }
 
 func (a *App) adminUsers(w http.ResponseWriter, r *http.Request) {
@@ -1052,6 +1054,9 @@ func (a *App) saveAdminUser(w http.ResponseWriter, r *http.Request, actor *User,
 			return errors.New("用户不存在")
 		}
 		before := *u
+		if in.OnlinePaymentAllowed != nil {
+			u.OnlinePaymentAllowed = *in.OnlinePaymentAllowed
+		}
 		if in.Email != nil {
 			email := strings.ToLower(strings.TrimSpace(*in.Email))
 			if !qqEmail(email) {
@@ -1161,6 +1166,11 @@ func (a *App) saveAdminUser(w http.ResponseWriter, r *http.Request, actor *User,
 		}
 		s.Users[u.ID] = u
 		out = safeUser(u)
+		if u.OnlinePaymentAllowed != before.OnlinePaymentAllowed {
+			if err := identityAudit(s, actor.ID, "user.online_payment.update", u.ID, fmt.Sprintf("%t -> %t; %s", before.OnlinePaymentAllowed, u.OnlinePaymentAllowed, in.Reason)); err != nil {
+				return err
+			}
+		}
 		return identityAudit(s, actor.ID, "user.save", u.ID, in.Reason)
 	})
 	if err != nil {

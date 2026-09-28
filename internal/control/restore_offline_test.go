@@ -19,6 +19,7 @@ func TestOfflineRestoreCreatesNewIsolatedDatabaseAndPreservesCorruptOriginal(t *
 	b := NewBackupService(a)
 	_ = a.Store.Update(func(s *State) error {
 		s.Users[u.ID].BalanceCents = 12345
+		s.Users[u.ID].OnlinePaymentAllowed = true
 		s.Sessions["old-session"] = &Session{UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
 		if err := SaveDoc(s, "relay_agents", "node", RelayAgent{ID: "node", TokenHash: "secret", EnrollmentHash: "enrollment", Enabled: true}); err != nil {
 			return err
@@ -56,6 +57,9 @@ func TestOfflineRestoreCreatesNewIsolatedDatabaseAndPreservesCorruptOriginal(t *
 	}
 	defer store.Close()
 	err = store.View(func(s *State) error {
+		if !s.Users[u.ID].OnlinePaymentAllowed {
+			t.Error("full restore lost explicit payment whitelist grant")
+		}
 		if s.Users[u.ID].BalanceCents != 12345 || len(s.Sessions) != 0 || !boolSetting(s, "maintenance") || boolSetting(s, "payali") {
 			t.Error("full restore data/isolation mismatch")
 		}

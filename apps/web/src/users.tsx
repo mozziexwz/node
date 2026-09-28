@@ -39,6 +39,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
   const { data, error, reload } = useData("/api/admin/users");
   const [search, setSearch] = useState(""),
     [message, setMessage] = useState("");
+  const [paymentFilter, setPaymentFilter] = useState("all");
   const [sort, setSort] = useState<{
     key: UserSortKey;
     direction: "asc" | "desc";
@@ -51,8 +52,11 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
   const [reset, setReset] = useState<RecordData | null>(null);
   const now = Date.now(),
     users = sortedUsers(
-      array(data, "users").filter((u) =>
-        String(u.email).toLowerCase().includes(search.trim().toLowerCase()),
+      array(data, "users").filter(
+        (u) =>
+          String(u.email).toLowerCase().includes(search.trim().toLowerCase()) &&
+          (paymentFilter === "all" ||
+            String(u.onlinePaymentAllowed === true) === paymentFilter),
       ),
       sort.key,
       sort.direction,
@@ -133,6 +137,15 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
           onChange={(e) => setSearch(e.target.value)}
         />
         <span className="muted">{users.length} 位用户 · 点击表头可排序</span>
+        <Select
+          label="在线支付筛选"
+          value={paymentFilter}
+          onChange={(e) => setPaymentFilter(e.target.value)}
+        >
+          <option value="all">全部用户</option>
+          <option value="true">已开通在线支付</option>
+          <option value="false">未开通在线支付</option>
+        </Select>
       </div>
       <div className="card flush mt16">
         <div className="table-wrap">
@@ -141,6 +154,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
               <tr>
                 <th>用户 / 注册时间</th>
                 <th>邮箱验证</th>
+                <th>在线支付</th>
                 {sorting("balanceCents", "枫叶")}
                 {sorting("days", "剩余天数")}
                 <th>权益等级</th>
@@ -166,6 +180,11 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
                     {!!u.emailVerifiedAt && (
                       <small>{date(u.emailVerifiedAt)}</small>
                     )}
+                  </td>
+                  <td>
+                    <Badge tone={u.onlinePaymentAllowed ? "green" : "orange"}>
+                      {u.onlinePaymentAllowed ? "已开通" : "未开通"}
+                    </Badge>
                   </td>
                   <td>{leaves(u.balanceCents)}枫叶</td>
                   <td
@@ -237,7 +256,7 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
               ))}
               {!users.length && (
                 <tr>
-                  <td colSpan={10}>
+                  <td colSpan={11}>
                     <div className="empty">没有符合条件的用户</div>
                   </td>
                 </tr>
@@ -307,7 +326,18 @@ export function UsersPage({ onRefresh }: { onRefresh?: () => void } = {}) {
                 <option value="active">正常</option>
                 <option value="suspended">已暂停</option>
               </Select>
+              <Select
+                label="允许在线支付（支付宝／微信）"
+                value={editing.draft.onlinePaymentAllowed}
+                onChange={(e) => change("onlinePaymentAllowed", e.target.value)}
+              >
+                <option value="false">关闭</option>
+                <option value="true">开启</option>
+              </Select>
             </div>
+            <p className="muted mt8">
+              默认关闭。开启后可使用网站已启用的在线支付渠道，不影响枫叶兑换。撤销仅限制新下单，已创建订单仍按原规则结算。
+            </p>
             {editing.user && (
               <div className="user-verification mt16">
                 <span>当前邮箱</span>

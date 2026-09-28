@@ -36,6 +36,17 @@ test('HTTP integration: real auth, admin CRUD, financial idempotency and permiss
   const signup=await member('/api/auth/register',{email:String(Date.now()).slice(-10)+'@qq.com',password:'Local-Acceptance-Alpha!',agree:true});
   assert.equal(signup.status,201,JSON.stringify(signup.body));assert.equal(signup.body.user.emailVerifiedAt,0);assert.ok(!signup.body.user.passwordHash);
   assert.equal((await member('/api/admin/users')).status,403);
+  assert.equal(signup.body.user.onlinePaymentAllowed,false,'registration defaults closed');
+  const channel=await admin('/api/admin/payment-channels',{name:'白名单验收',version:'v1',type:'alipay',gateway:'https://gateway.invalid',merchantId:'123',merchantKey:'synthetic-whitelist-only',enabled:true});
+  assert.equal(channel.status,200,JSON.stringify(channel.body));
+  assert.deepEqual((await member('/api/payment-channels')).body.channels,[]);
+  assert.equal((await member('/api/admin/users/'+signup.body.user.id,{onlinePaymentAllowed:true},'PATCH')).status,403);
+  assert.equal((await admin('/api/admin/users/'+signup.body.user.id,{onlinePaymentAllowed:true},'PATCH')).status,200);
+  assert.equal((await member('/api/me')).body.user.onlinePaymentAllowed,true,'existing session sees grant');
+  assert.equal((await member('/api/payment-channels')).body.channels.length,1);
+  assert.equal((await admin('/api/admin/users/'+signup.body.user.id,{onlinePaymentAllowed:false},'PATCH')).status,200);
+  assert.equal((await member('/api/me')).body.user.onlinePaymentAllowed,false,'existing session sees revocation');
+  assert.deepEqual((await member('/api/payment-channels')).body.channels,[]);
   const card=await admin('/api/admin/cards',{count:1,amountCents:1000,batch:'local-acceptance'});assert.equal(card.status,201,JSON.stringify(card.body));
   const redeem={code:card.body.cards[0].code,requestId:crypto.randomUUID()};
   const redemptions=await Promise.all([member('/api/wallet/redeem',redeem),member('/api/wallet/redeem',redeem)]);

@@ -8,6 +8,7 @@ export type UserDraft = {
   password: string;
   role: string;
   status: string;
+  onlinePaymentAllowed: string;
   balance: string;
   days: string;
   total: string;
@@ -61,6 +62,8 @@ export function userDraft(
     password: "",
     role: user?.role === "admin" ? "admin" : "member",
     status: user?.status || "active",
+    onlinePaymentAllowed:
+      user?.onlinePaymentAllowed === true ? "true" : "false",
     balance: integerUnit(Math.trunc(Number(user?.balanceCents || 0) / 100), 0),
     days: user ? remainingDays(user, now).toFixed(2) : "0",
     total: integerUnit(Number(user?.trafficTotal || 0), 9),
@@ -82,6 +85,8 @@ export function userPatch(
     if (!original || draft[key] !== baseline[key])
       patch[key] = draft[key].trim();
   if (draft.password) patch.password = draft.password;
+  if (!original || draft.onlinePaymentAllowed !== baseline.onlinePaymentAllowed)
+    patch.onlinePaymentAllowed = draft.onlinePaymentAllowed === "true";
   if (!original && !draft.password) throw new Error("新增用户必须设置密码");
   if (!original || draft.balance !== baseline.balance) {
     const balance = unitInteger(draft.balance, 0, "枫叶");
