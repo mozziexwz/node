@@ -6,6 +6,8 @@ import { chromium, expect } from "@playwright/test";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
 
+const releaseVersion = `v${JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version}`;
+
 const helperCode = ts.transpileModule(
   fs.readFileSync(new URL("../src/relay-status.ts", import.meta.url), "utf8"),
   {
@@ -597,7 +599,7 @@ test(
               page.getByRole("dialog").getByRole("link", { name: "节点维护帮助" }),
             ).toHaveAttribute(
               "href",
-              /\/v1\.1\.0\/docs\/relay-recovery\.md$/,
+              `https://github.com/mozziexwz/node/blob/${releaseVersion}/docs/relay-recovery.md`,
             );
             await page.getByRole("dialog").getByRole("button", { name: "关闭窗口" }).click();
             let warning = "";

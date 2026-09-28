@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { chromium, expect } from "@playwright/test";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
 
 const base = "http://127.0.0.1:19879";
+const releaseVersion = `v${JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version}`;
 
 test("node reinstall makes fresh identity reset and connection interruption explicit", { timeout: 30000 }, async () => {
   const compiled = await build({
@@ -70,7 +72,7 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     await expect(safety).toContainText("日常升级会保留原身份和配置");
     await expect(safety).toContainText("--upgrade-in-place --acknowledge-relay-restart");
     await expect(safety).toContainText("--diagnose");
-    await expect(safety.getByRole("link", { name: "节点维护帮助" })).toHaveAttribute("href", /\/v1\.1\.0\/docs\/relay-recovery\.md$/);
+    await expect(safety.getByRole("link", { name: "节点维护帮助" })).toHaveAttribute("href", `https://github.com/mozziexwz/node/blob/${releaseVersion}/docs/relay-recovery.md`);
     await safety.getByRole("button", { name: "关闭窗口" }).click();
     page.once("dialog", (dialog) => void dialog.accept());
     await row.getByRole("button", { name: "部署 / 重装" }).click();
@@ -82,10 +84,10 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     await expect(commands).toHaveCount(3);
     const first = await commands.nth(0).textContent();
     const reset = await commands.nth(1).textContent();
-    assert.match(first, /\/v1\.1\.0\/agent\.sh/);
+    assert.ok(first.includes(`/${releaseVersion}/agent.sh`));
     assert.match(first, /--capability relay .*--offline-policy keep_last/);
     assert.doesNotMatch(first, /--fresh-reset/);
-    assert.match(reset, /\/v1\.1\.0\/agent\.sh/);
+    assert.ok(reset.includes(`/${releaseVersion}/agent.sh`));
     assert.match(reset, /--fresh-reset --acknowledge-relay-restart$/);
     await expect(dialog.getByRole("button", { name: "复制首次安装命令" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "复制全新重装命令" })).toBeVisible();
@@ -104,7 +106,7 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     const removed = page.getByRole("dialog");
     await expect(removed).toContainText("节点已从控制面退役");
     const cleanup = await removed.locator("pre.code-panel").textContent();
-    assert.match(cleanup, /\/v1\.1\.0\/deploy\/uninstall-agent\.sh/);
+    assert.ok(cleanup.includes(`/${releaseVersion}/deploy/uninstall-agent.sh`));
     assert.match(cleanup, /--agent-id 'relay-2'.*--acknowledge-stop$/);
     await expect(removed.getByRole("button", { name: "复制本机 Agent 清理命令" })).toBeVisible();
     assert.deepEqual(writes, ["/api/admin/relay-agents/relay-1/enrollment", "/api/admin/relay-agents/relay-2/fresh-reset", "/api/admin/relay-agents/relay-2"]);
