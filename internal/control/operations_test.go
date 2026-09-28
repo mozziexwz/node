@@ -23,6 +23,44 @@ func TestDisasterHistoryIsAdminOnly(t *testing.T) {
 	}
 }
 
+func TestReconnectPlanTransferIsPrivateAndIdempotent(t *testing.T) {
+	f := newBackupSSHServer(t)
+	sf := f.connect(t)
+	if err := sf.MkdirAll("/recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sf.Chmod("/recovery", 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"token":"local-fixture-only"}`)
+	if err := writeReconnectRemote(sf, "/recovery/plan.json", raw); err != nil {
+		t.Fatal(err)
+	}
+	f.files.mu.Lock()
+	writes := f.files.writes
+	unsafe := f.files.unsafeWrite
+	f.files.mu.Unlock()
+	if unsafe {
+		t.Fatal("plan sent before private permissions")
+	}
+	if err := writeReconnectRemote(sf, "/recovery/plan.json", raw); err != nil {
+		t.Fatal(err)
+	}
+	f.files.mu.Lock()
+	after := f.files.writes
+	f.files.mu.Unlock()
+	if after != writes {
+		t.Fatal("retry rewrote already verified plan")
+	}
+	if err := writeReconnectRemote(sf, "/recovery/plan.json", []byte("different")); err == nil {
+		t.Fatal("replaced different plan")
+	}
+	rows, err := sf.ReadDir("/recovery")
+	if err != nil || len(rows) != 1 {
+		t.Fatal("partial file leaked", err, rows)
+	}
+}
+
 func TestRelayUpgradeChecksEvidenceWithoutChangingState(t *testing.T) {
 	s := newState()
 	a := RelayAgent{ID: "node", Name: "Node", Address: "8.8.8.8"}

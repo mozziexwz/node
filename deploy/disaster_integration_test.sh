@@ -265,6 +265,7 @@ UPDATE control_state SET payload=jsonb_set(
       '{"articles":{"ci-article":{"id":"ci-article","title":"CI disaster proof","body":"before-snapshot","category":"test","published":true,"attachments":[{"id":"ci-attachment","name":"proof.txt","size":5,"type":"text/plain"}]}},"attachments":{"ci-attachment":{"articleId":"ci-article","metadata":{"id":"ci-attachment","name":"proof.txt","size":5,"type":"text/plain"},"bytes":"cHJvb2Y="}},"payment_channels":{"ci-channel":{"id":"ci-channel","enabled":true}}}'::jsonb),
   ARRAY['users',admin.key,'balanceCents'], '54321'::jsonb)::text,
   revision=revision+1 FROM source, admin WHERE control_state.id=1;
+UPDATE control_state SET payload=jsonb_set(payload::jsonb,'{docs,tasks}',jsonb_build_object('ci-dd',jsonb_build_object('id','ci-dd','userId',(SELECT key FROM jsonb_each(payload::jsonb->'users') WHERE value->>'role'='admin' LIMIT 1),'kind','dd','state','executed')))::text,revision=revision+1 WHERE id=1;
 SQL
 CI_USERS_BEFORE=$(compose_live exec -T database psql --username=msboost --dbname=msboost -tAX -c "SELECT md5((payload::jsonb->'users')::text) FROM control_state WHERE id=1")
 [[ $CI_USERS_BEFORE =~ ^[a-f0-9]{32}$ ]]
@@ -290,7 +291,7 @@ printf '%s\n' 'CI_DISASTER_STAGE=config-save'
 printf '%s\n' 'CI_DISASTER_STAGE=config-saved'
 note 'CI: online consistent export, private key archive, pack and verification; no stop/restart.'
 compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause check > "$CI_ROOT/gate-check.json"
-jq -e '.canPauseControl == true and .gateActive == false and .checkedRules == 0' "$CI_ROOT/gate-check.json" >/dev/null
+jq -e '.canPauseControl == false and .gateActive == false and any(.blockers[]; .code == "execution_busy")' "$CI_ROOT/gate-check.json" >/dev/null
 CI_BACKUP_VERIFY=1
 disaster_backup
 CI_BACKUP_VERIFY=0
