@@ -15,7 +15,7 @@ export function relayStatus(rule: RecordData, routeOnline?: boolean) {
             (segment: RecordData) => segment.protocolVersion >= 2,
           )
         ? "mixed"
-        : "lease";
+        : "unconfirmed";
   const recovery = relayNeedsRecovery(rule);
   const control =
     rule.controlStatus ||
@@ -47,8 +47,7 @@ export function relayStatus(rule: RecordData, routeOnline?: boolean) {
   };
   const stopPending =
     rule.stopStatus === "pending" ||
-    (mode === "lease" &&
-      ["pausing", "revoking"].includes(rule.syncState || rule.state));
+    ["pausing", "revoking"].includes(rule.syncState || rule.state);
   const stopConfirmed = rule.stopStatus === "confirmed";
   const keepLastConfirmed =
     mode === "keep_last" && rule.keepLastConfirmed === true && !recovery;
@@ -76,23 +75,20 @@ export function relayStatus(rule: RecordData, routeOnline?: boolean) {
           : "管理连接状态未知",
     runtimeLabel: runtime[rule.runtimeStatus] || "状态未知",
     policyText:
-      mode === "lease"
-        ? "短租约模式（v1）：失联后按有效租约停止，旧配置最长保留 45 秒；实际停止情况仍需核实。"
+      mode === "unconfirmed"
+        ? "等待节点连接并确认配置。"
         : mode === "mixed"
-          ? "混合模式：含短租约节点，未确认全链路离线保留，不能保证失联期间连续运行。"
+          ? "部分节点尚未确认配置，请检查相关节点连接及版本。"
           : keepLastConfirmed
-            ? "已确认离线保留（全链路 ACK）；这不代表失联期间业务可用性已核实。"
-            : "离线保留模式尚未获得全链路确认，不能据此判断失联后的业务可用性。",
+            ? "节点已确认：面板离线时保留最后配置。"
+            : "正在等待所有节点确认当前配置。",
     stopText: stopPending
-      ? "待节点停止确认，端口及旧目标继续占用。" +
-        (mode === "lease"
-          ? "v1 将同时依据短租约状态核对。"
-          : "不能用管理心跳或旧租约时间替代停止确认。")
+      ? "正在等待节点停止转发，确认后释放端口。节点离线时请先恢复管理连接。"
       : stopConfirmed
         ? "当前停止请求已获节点确认；这是最后报告，不是实时业务探测。"
         : "",
     recoveryText: recovery
-      ? "恢复核对期间保留端口及旧目标。管理凭据失效不代表旧业务已停止；请由运维通过本机 root 受信恢复流程逐规则核对，或独立确认旧节点已停止。"
+      ? "网站恢复后需要重新连接节点。请在节点管理中打开“恢复管理连接”向导；原有转发会保留。"
       : "",
     accountingText: rule.accountingDegraded
       ? "计量状态降级，流量需核对；不能据此判断业务已停止。"
@@ -117,12 +113,12 @@ export function relaySegmentStopText(segment: RecordData) {
       segment.ackState === "stopped" &&
       segment.appliedGeneration === segment.configGeneration &&
       ["pause", "revoke"].includes(segment.lastCommandAction)
-      ? "v2：明确停止已确认"
+      ? "已确认停止"
       : ["pause", "revoke"].includes(segment.lastCommandAction)
-        ? "v2：等待明确停止确认"
-        : "v2：尚无明确停止确认";
+        ? "等待停止确认"
+        : "尚未请求停止";
   }
-  return "v1：短租约截止";
+  return "等待节点连接确认";
 }
 
 export function relayAccountingVisible(data: RecordData | null) {

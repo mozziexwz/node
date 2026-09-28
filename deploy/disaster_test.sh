@@ -11,6 +11,7 @@ TEST_WORK=$(mktemp -d "$TEST_REPO/.cache/disaster-test.XXXXXXXX")
 trap '[[ -d $TEST_WORK && ! -L $TEST_WORK && $(realpath -m "$TEST_WORK") == "$TEST_WORK" ]] && command rm -rf -- "$TEST_WORK"' EXIT
 source "$TEST_REPO/deploy/manage.sh"
 source "$TEST_REPO/deploy/disaster.sh"
+source "$TEST_REPO/deploy/disaster_legacy_test_fixture.sh"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 trace() { printf '%s\n' "$*" >> "$TRACE"; }
@@ -245,6 +246,7 @@ mock_disaster_tool() {
     upload) [[ -s $archive ]] || fail 'upload before local archive exists'; [[ $MOCK_FAIL != upload ]] ;;
     retain) [[ $MOCK_FAIL != retention ]] ;;
     verify) [[ $MOCK_FAIL != archive-verify ]] ;;
+    format) printf 1 ;;
     unpack)
       [[ $MOCK_FAIL != unpack ]] || return 1
       mkdir -p -- "$directory"
@@ -395,7 +397,7 @@ done
 installed_fixture maintenance-no-args
 expect_failure run_maintenance --force
 expect_failure manage_main disaster-backup-maintenance
-(read_tty() { printf 14; }; expect_failure menu)
+(read_tty() { printf 14; }; [[ $(menu) == disaster-test ]] || fail 'choice 14 must be remote connectivity test')
 assert_absent "$TRACE" 'compose stop'
 installed_fixture strict-timer-cannot-waive; MOCK_FAIL=legacy
 (

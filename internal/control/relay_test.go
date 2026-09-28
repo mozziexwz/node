@@ -53,7 +53,7 @@ func relayTestSync(t *testing.T, mux http.Handler, token string, in relayruntime
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest("POST", "/api/relay-agent/sync", bytes.NewReader(raw))
+	r := httptest.NewRequest("POST", "/_test/legacy-relay-sync", bytes.NewReader(raw))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()

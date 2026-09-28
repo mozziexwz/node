@@ -442,8 +442,8 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.OfflinePolicy == "" {
 		cfg.OfflinePolicy = KeepLast
 	}
-	if cfg.OfflinePolicy != "lease" && cfg.OfflinePolicy != KeepLast {
-		return errors.New("offline policy must be lease or keep_last")
+	if cfg.OfflinePolicy != KeepLast {
+		return errors.New("offline policy must be keep_last; upgrade legacy nodes before connecting")
 	}
 	if runtime.GOOS != "linux" {
 		return errors.New("production relay runtime requires Linux process-death protection")
@@ -458,11 +458,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.StateDir == "" {
 		return errors.New("relay state directory is required")
 	}
-	if cfg.OfflinePolicy == "lease" {
-		if _, err := os.Lstat(filepath.Join(cfg.StateDir, v2StateFile)); err == nil || !errors.Is(err, os.ErrNotExist) {
-			return errors.New("refusing to downgrade a keep_last state directory to lease")
-		}
-	} else if err := ensureV2StateDir(cfg.StateDir); err != nil {
+	if err := ensureV2StateDir(cfg.StateDir); err != nil {
 		return err
 	}
 	if cfg.OfflinePolicy == KeepLast {
@@ -506,10 +502,6 @@ func Run(ctx context.Context, cfg Config) error {
 				return errors.New("v2 token file is not trusted private state")
 			}
 		}
-	} else if data, err := os.ReadFile(tokenPath); err == nil {
-		if err = json.Unmarshal(data, &token); err != nil {
-			return err
-		}
 	}
 	if token.Token == "" {
 		if cfg.EnrollmentToken == "" {
@@ -526,109 +518,5 @@ func Run(ctx context.Context, cfg Config) error {
 			return err
 		}
 	}
-	if cfg.OfflinePolicy == KeepLast {
-		return runV2(ctx, cfg, token.AgentID, token.Token)
-	}
-	s := &runtimeState{cfg: cfg, processes: map[string]*process{}, pending: map[string]Traffic{}, journal: filepath.Join(cfg.StateDir, "traffic-journal.json"), observerToken: randomID()}
-	if data, err := os.ReadFile(s.journal); err == nil {
-		if err = json.Unmarshal(data, &s.pending); err != nil {
-			return err
-		}
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	s.observerURL = "http://" + listener.Addr().String() + "/observer?token=" + s.observerToken
-	mux := http.NewServeMux()
-	mux.HandleFunc("/observer", s.observer)
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go server.Serve(listener)
-	defer server.Close()
-	defer func() {
-		s.mu.Lock()
-		for id := range s.processes {
-			s.stopLocked(id)
-		}
-		s.mu.Unlock()
-	}()
-	// Lease shutdown runs independently of network operations. A blocked sync can
-	// never extend an offline rule beyond its last server-authorized lease.
-	watchdogDone := make(chan struct{})
-	defer close(watchdogDone)
-	go func() {
-		ticker := time.NewTicker(250 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-watchdogDone:
-				return
-			case <-ticker.C:
-				s.mu.Lock()
-				for id, p := range s.processes {
-					if !time.Now().Before(p.expires) {
-						s.stopLocked(id)
-					}
-				}
-				s.mu.Unlock()
-			}
-		}
-	}()
-	boot := randomID()
-	sequence := int64(0)
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		sequence++
-		in := SyncRequest{BootID: boot, Sequence: sequence, Version: "msboost-relay/1", Capabilities: []string{SocksGuardCapability}}
-		s.mu.Lock()
-		for _, p := range s.processes {
-			in.Acks = append(in.Acks, p.ack)
-		}
-		for _, sample := range s.pending {
-			in.Traffic = append(in.Traffic, sample)
-		}
-		s.mu.Unlock()
-		var response SyncResponse
-		requestStarted := time.Now()
-		err = call(ctx, cfg, token.Token, "/api/relay-agent/sync", in, &response)
-		if err == nil {
-			// Deduct the full request round trip conservatively. Network delay
-			// must never extend a server lease or overlap a target replacement.
-			response.ServerTime += time.Since(requestStarted).Milliseconds()
-			if err = s.apply(ctx, response); err != nil {
-				return err
-			}
-			s.mu.Lock()
-			for _, ack := range in.Acks {
-				if ack.State != "stopped" {
-					continue
-				}
-				p := s.processes[ack.ID]
-				if p == nil || p.ack.State != "stopped" || p.rule.Version != ack.Version {
-					continue
-				}
-				select {
-				case <-p.done:
-					delete(s.processes, ack.ID)
-				default:
-				}
-			}
-			for _, sample := range in.Traffic {
-				if current, ok := s.pending[sample.Epoch]; ok && current.Sequence == sample.Sequence {
-					delete(s.pending, sample.Epoch)
-				}
-			}
-			persistErr := s.persistLocked()
-			s.mu.Unlock()
-			if persistErr != nil {
-				return persistErr
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
+	return runV2(ctx, cfg, token.AgentID, token.Token)
 }

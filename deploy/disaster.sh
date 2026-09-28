@@ -139,6 +139,9 @@ disaster_pause_end() {
 disaster_cleanup() {
   local code=$?
   trap - EXIT
+  if [[ $code != 0 && -n ${DISASTER_RUN_ID:-} && -n ${DISASTER_TOOL:-} ]]; then
+    disaster_record "${DISASTER_FAILURE_STAGE:-failed}" || true
+  fi
   if [[ ${DISASTER_TOOL_CONTAINER:-} =~ ^[a-f0-9]{64}$ ]]; then docker rm "$DISASTER_TOOL_CONTAINER" >/dev/null || code=1; fi
   # Never restart the control plane before confirmed unlock. This also handles
   # an uncertain begin result, partial stop, failed export and an ordinary signal.
@@ -177,90 +180,109 @@ disaster_maintenance_tty_valid() { [[ ${maintenance_tty_fd:-} =~ ^[0-9]+$ && -t 
 disaster_maintenance_read() {
   IFS= read -r -u "$maintenance_tty_fd" -p '逐次确认请输入 BACKUP_WITH_RELAY_INTERRUPTION（其他输入取消）: ' maintenance_confirmation || { die '确认已取消或结束，未执行停站'; return 1; }
 }
-disaster_backup_maintenance() {
-  set +xv
-  [[ $# == 0 ]] || { die '手动维护备份不接受参数或自动确认选项'; return 2; }
-  [[ $(id -u) == 0 && $(uname -s) == Linux ]] || { die '手动维护备份仅允许目标 Linux 服务器 root 执行'; return 1; }
-  [[ -z ${INVOCATION_ID:-} && -z ${SYSTEMD_EXEC_PID:-} && -z ${JOURNAL_STREAM:-} ]] || { die '手动维护备份禁止从 systemd 自动任务调用；定时备份仍使用严格门禁'; return 1; }
-  local maintenance_tty_fd maintenance_confirmation='' result=0
-  export -n maintenance_confirmation
-  disaster_maintenance_open_tty || return
-  note '风险：本次备份将短暂停止原有控制面服务，v1 / 混合链可能在短租约到期后断开，既有游戏连接可能中断，需要自行重连。'
-  note '这里只允许你明确接受链路离线能力不足的中断风险；执行任务、网页备份活动、恢复冲突、坏记录和所有并发门禁仍不可绕过。'
-  note '这是单次手动操作，不会放宽自动计划、迁移节点或停止客户 Agent / GOST。'
-  if ! disaster_maintenance_read || [[ $maintenance_confirmation != BACKUP_WITH_RELAY_INTERRUPTION ]]; then
-    exec {maintenance_tty_fd}>&-
-    note '已取消手动维护备份，未执行停站。'
-    return 1
+
+disaster_record() {
+  "$DISASTER_TOOL" disaster record --file "$INSTALL_ROOT/status/backup-history.json" --id "$DISASTER_RUN_ID" --stage "$1" "${@:2}"
+}
+
+disaster_upload_recorded() {
+  local result=0
+  "$DISASTER_TOOL" disaster upload --config "$INSTALL_ROOT/disaster.json" --archive "$1" --history "$INSTALL_ROOT/status/backup-history.json" --id "$DISASTER_RUN_ID" || result=$?
+  if [[ $result == 0 || $result == 3 ]]; then disaster_record remote || return; fi
+  if [[ $result == 3 ]]; then
+    DISASTER_FAILURE_STAGE=cleanup_warning
+    disaster_record cleanup_warning || return
+    return 3
   fi
-  if ! disaster_backup maintenance; then result=1; fi
-  exec {maintenance_tty_fd}>&-
   return "$result"
 }
+
 disaster_backup() {
-  # Ordinary/manual-safe and timer entrypoints always default to strict.
-  # Environment variables cannot opt into maintenance; that internal argument
-  # is accepted only during the wrapper's currently open, confirmed root TTY.
-  local mode=${1:-strict}
-  [[ $# -le 1 && ( $mode == strict || $mode == maintenance ) ]] || return 2
-  if [[ $mode == maintenance ]]; then
-    [[ ${maintenance_confirmation:-} == BACKUP_WITH_RELAY_INTERRUPTION ]] && disaster_maintenance_tty_valid || { die '缺少本轮真实终端风险确认，未执行停站'; return 1; }
-  fi
+  [[ $# == 0 ]] || { die '在线备份不接受停站或强制参数'; return 2; }
   assert_managed || return
   disaster_validate_environment "$INSTALL_ROOT/.env" || return
   disaster_tool || return
-  local directory filename database_name volume image running
+  local directory filename volume running remote
   directory=$(disaster_settings localDir) || return
-  filename="msboost-disaster-$(date -u +%Y%m%dT%H%M%SZ)-$(random_hex 8).tar.gz"
+  remote=$(disaster_settings hasRemote) || return
   "$DISASTER_TOOL" disaster prepare-dir --dir "$directory" || return
-  database_name=$(env_get "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME); database_name=${database_name:-msboost}
-  [[ $database_name =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]] || { die '数据库名称无效'; return 1; }
-  image=$(env_get "$INSTALL_ROOT/.env" POSTGRES_IMAGE)
-  [[ $image == *@sha256:* ]] || { die '数据库镜像尚未固定摘要，请先修复部署'; return 1; }
-  for volume in app_data database_data caddy_data caddy_config; do disaster_assert_volume "msboost_$volume" || return; done
+  [[ ! -L $INSTALL_ROOT/status ]] || { die '备份状态目录不能是符号链接'; return 1; }
+  install -d -m 0755 "$INSTALL_ROOT/status" || return
+  filename="msboost-disaster-$(date -u +%Y%m%dT%H%M%SZ)-$(random_hex 8).tar.gz"
+  DISASTER_RUN_ID=$filename
+  DISASTER_FAILURE_STAGE=failed
+  disaster_record started --remote="$remote" || return
+  running=$(compose_live ps --status running --services) || return
+  grep -qx database <<< "$running" || { die '数据库未运行，请先使用菜单修复网站'; return 1; }
+  for volume in app_data database_data; do disaster_assert_volume "msboost_$volume" || return; done
   DISASTER_WORK=$(mktemp -d /root/msboost-disaster-work.XXXXXXXX) || return
   install -m 600 "$INSTALL_ROOT/.env" "$DISASTER_WORK/site.env" || return
   local -a configuration=(deploy install.sh .managed-by-msboost)
   [[ ! -f $INSTALL_ROOT/disaster.json ]] || configuration+=(disaster.json)
   tar -cf "$DISASTER_WORK/deployment.tar" -C "$INSTALL_ROOT" "${configuration[@]}" || return
-  DISASTER_RUNNING=()
-  running=$(compose_live ps --status running --services) || return
-  for volume in caddy server; do if grep -qx "$volume" <<< "$running"; then DISASTER_RUNNING+=("$volume"); fi; done
-  grep -qx database <<< "$running" || { die '数据库未运行；先 repair 后备份'; return 1; }
-  if [[ $mode == strict ]]; then note '安全整站快照须先通过完整 v2 keep_last 链门禁；自动计划不会接受旧链路中断风险。客户独立 VPS 服务不在操作范围内。'; fi
-  disaster_pause_begin "$mode" || return
-  if [[ ${#DISASTER_RUNNING[@]} -gt 0 ]]; then
-    DISASTER_RESUME=1
-    compose_live stop --timeout 60 "${DISASTER_RUNNING[@]}" || return
-  fi
-  note '  → 导出 PostgreSQL 原始快照'
-  compose_live exec -T database pg_dump --username=msboost --dbname="$database_name" --format=custom > "$DISASTER_WORK/database.dump" || return
-  [[ -s $DISASTER_WORK/database.dump ]] || { die '数据库导出为空'; return 1; }
-  # The helper is read-only and does not start the application or any worker.
   local -a key_args=()
   [[ -n $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) ]] || key_args=(--master-key-file /app/data/master.key)
-  note '  → 只读导出加密业务快照'
-  compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server export "${key_args[@]}" > "$DISASTER_WORK/state.msb" || return
-  for volume in app_data caddy_data caddy_config; do
-    note "  → 导出数据卷：$volume"
-    docker run --rm --network none --read-only --user 0:0 --entrypoint tar \
-      --mount "type=volume,source=msboost_$volume,target=/snapshot,readonly" "$image" -cf - -C /snapshot . > "$DISASTER_WORK/$volume.tar" || return
-    note "  → 校验数据卷归档：$volume"
-    "$DISASTER_TOOL" disaster validate-volume --archive "$DISASTER_WORK/$volume.tar" || return
-  done
-  note '  → 解除备份写入冻结'
-  if ! disaster_pause_end; then disaster_pause_recovery_hint; return 1; fi
-  note '  → 恢复备份前正在运行的服务并检查健康'
-  if [[ ${#DISASTER_RUNNING[@]} -gt 0 ]]; then disaster_resume_services "${DISASTER_RUNNING[@]}" || return; fi
-  DISASTER_RESUME=0
-  note '  → 打包并校验整站备份'
-  "$DISASTER_TOOL" disaster pack --dir "$DISASTER_WORK" --output "$directory/$filename" || return
-  note "整站快照已完成并校验：$directory/$filename（含主密钥与密码，勿公开上传）。"
-  # Remote failure preserves the verified local bundle and does not prune.
-  note '  → 按已保存配置处理异地上传与保留策略'
-  "$DISASTER_TOOL" disaster upload --config "$INSTALL_ROOT/disaster.json" --archive "$directory/$filename" || return
+  note '[1/4] 在线导出网站数据、文章附件和原密钥（网站及节点保持运行）'
+  disaster_record export || return
+  compose_live run --rm --no-deps -T --user 0:0 --volume "$DISASTER_WORK:/recovery" --entrypoint /usr/local/bin/msboost-restore server export-online --directory /recovery "${key_args[@]}" || return
+  note '[2/4] 打包并完整校验本地备份'
+  disaster_record pack || return
+  "$DISASTER_TOOL" disaster pack-online --dir "$DISASTER_WORK" --output "$directory/$filename" || return
+  disaster_record local --archive "$directory/$filename" || return
+  note "本地备份成功：$directory/$filename"
+  if [[ $remote == true ]]; then
+    note '[3/4] 上传异地并回读校验'
+    DISASTER_FAILURE_STAGE=remote_failed
+    disaster_record upload || return
+    disaster_upload_recorded "$directory/$filename" || return
+    note '异地备份成功：上传与回读校验均已通过'
+  else
+    note '[3/4] 未配置异地目标，本次仅保存本地备份'
+  fi
+  DISASTER_FAILURE_STAGE=cleanup_warning
+  note '[4/4] 按保留策略整理旧备份'
   "$DISASTER_TOOL" disaster retain --config "$INSTALL_ROOT/disaster.json" || return
+  disaster_record complete || return
+  DISASTER_RUN_ID=
+  note '在线整站备份完成。可在菜单“备份状态与记录”或后台查看结果。'
 }
+
+disaster_status() {
+  assert_managed || return
+  disaster_tool || return
+  "$DISASTER_TOOL" disaster status --file "$INSTALL_ROOT/status/backup-history.json" || return
+  note 'systemd 实际计划状态：'
+  systemctl list-timers msboost-disaster-backup.timer --no-pager || true
+  note '查看最近运行日志：journalctl -u msboost-disaster-backup.service -n 60 --no-pager'
+}
+
+disaster_test_remote() {
+  assert_managed || return
+  disaster_tool || return
+  "$DISASTER_TOOL" disaster test-remote --config "$INSTALL_ROOT/disaster.json"
+}
+
+disaster_retry() {
+  assert_managed || return
+  disaster_tool || return
+  local archive remote
+  archive=${DISASTER_ARCHIVE:-}
+  [[ -n $archive ]] || archive=$(read_tty '输入要重新上传的本地整站备份绝对路径: ')
+  remote=$(disaster_settings hasRemote) || return
+  [[ $remote == true ]] || { die '尚未配置异地目标，请先配置并测试'; return 1; }
+  "$DISASTER_TOOL" disaster verify --archive "$archive" >/dev/null || return
+  DISASTER_RUN_ID=$(basename -- "$archive")
+  install -d -m 0755 "$INSTALL_ROOT/status" || return
+  disaster_record started --remote || return
+  disaster_record local --archive "$archive" || return
+  DISASTER_FAILURE_STAGE=remote_failed
+  disaster_record upload || return
+  disaster_upload_recorded "$archive" || return
+  disaster_record complete || return
+  DISASTER_RUN_ID=
+  note '异地重传及完整回读校验成功。'
+}
+
 disaster_configure() {
   assert_managed || return
   disaster_tool || return
@@ -285,11 +307,20 @@ disaster_configure() {
     [[ $prune != YES ]] || remote_args+=(--prune-remote)
   fi
   enabled=$(read_tty '启用每日自动备份？输入 YES 启用，其余仅保存设置: ')
-  printf '%s' "$password" | "$DISASTER_TOOL" disaster config-save --file "$INSTALL_ROOT/disaster.json" --local-dir "$directory" --retention-days "$days" --time "$when" "${remote_args[@]}" || return
+  note '正在验证配置；异地目标将测试登录、目录写入和回读。失败时保留原配置和计划。'
+  printf '%s' "$password" | "$DISASTER_TOOL" disaster config-save --verify-remote --file "$INSTALL_ROOT/disaster.json" --local-dir "$directory" --retention-days "$days" --time "$when" "${remote_args[@]}" || return
   unset password
   disaster_timer off || return
   if [[ $enabled == YES ]]; then disaster_timer on "$when" || return; fi
-  note '配置已保存为 root-only 文件；远程密码不回显、不进入命令行。自动备份仅按明确启用的计划运行。'
+  install -d -m 0755 "$INSTALL_ROOT/status" || return
+  local -a schedule_args=()
+  [[ $enabled != YES ]] || schedule_args+=(--enabled)
+  "$DISASTER_TOOL" disaster schedule-record --file "$INSTALL_ROOT/status/backup-history.json" --config "$INSTALL_ROOT/disaster.json" --verified "${schedule_args[@]}" || return
+  note '配置已验证并保存。连接测试通过不代表已经产生整站备份。'
+  if [[ $enabled == YES ]]; then
+    note '每日计划已启用，现在执行首次完整备份验证。'
+    disaster_backup
+  fi
 }
 disaster_timer() {
   local mode=$1 when=${2:-} file
@@ -349,10 +380,11 @@ disaster_restore() {
   [[ ! -e $INSTALL_ROOT && ! -L $INSTALL_ROOT ]] || { die '整站恢复仅用于全新目标：/opt/msboost 已存在，拒绝覆盖。已有站点请按文档恢复到新数据库。'; return 1; }
   validate_source || return
   disaster_tool || return
-  local archive=$DISASTER_ARCHIVE confirm volume image recovered_db
+  local archive=$DISASTER_ARCHIVE confirm volume image recovered_db archive_format
   if [[ -z $archive ]]; then archive=$(read_tty '输入本机整站备份 .tar.gz 的绝对路径: '); fi
   [[ $archive == /* && -f $archive && ! -L $archive ]] || { die '需要本机普通备份文件的绝对路径'; return 1; }
   "$DISASTER_TOOL" disaster verify --archive "$archive" || return
+  archive_format=$("$DISASTER_TOOL" disaster format --archive "$archive") || return
   note '完整恢复将使用备份时的数据、原域名、密码、主密钥和证书；备份之后的付款必须人工对账。请先停止原站点，避免双站运行。'
   confirm=$(read_tty '确认原站点已停机，且此 VPS 是全新目标，输入 RESTORE_NEW_MSBOOST: ')
   [[ $confirm == RESTORE_NEW_MSBOOST ]] || { die '已取消'; return 1; }
@@ -361,9 +393,12 @@ disaster_restore() {
   DISASTER_WORK=$(mktemp -d /root/msboost-disaster-work.XXXXXXXX) || return
   "$DISASTER_TOOL" disaster unpack --archive "$archive" --dir "$DISASTER_WORK/bundle" || return
   local recovered="$DISASTER_WORK/bundle"
+  local -a restore_volumes=(app_data)
+  if [[ $archive_format == 1 ]]; then restore_volumes+=(caddy_data caddy_config)
+  else note '在线备份恢复：网站数据和原密钥将恢复，HTTPS 证书由 Caddy 自动重新签发；历史备份文件不重复迁入。'; fi
   # Only the verified current release's scripts/Compose are installed. Archived
   # scripts are retained for reference but never executed or used as Compose.
-  for volume in app_data caddy_data caddy_config; do "$DISASTER_TOOL" disaster validate-volume --archive "$recovered/$volume.tar" || return; done
+  for volume in "${restore_volumes[@]}"; do "$DISASTER_TOOL" disaster validate-volume --archive "$recovered/$volume.tar" || return; done
   image=$(env_get "$recovered/site.env" MSBOOST_IMAGE)
   disaster_validate_environment "$recovered/site.env" || return
   [[ $(env_get "$recovered/site.env" MSBOOST_VERSION) == "$VERSION" ]] || { die "需使用备份同版本的安装入口恢复；当前入口 $VERSION 与备份不符，不进行隐式升级。"; return 1; }
@@ -392,7 +427,7 @@ disaster_restore() {
   done
   image=$(env_get "$INSTALL_ROOT/.env" POSTGRES_IMAGE)
   [[ $image == *@sha256:* ]] || return 1
-  for volume in app_data caddy_data caddy_config; do
+  for volume in "${restore_volumes[@]}"; do
     disaster_assert_volume "msboost_$volume" || return
     docker run --rm -i --network none --read-only --user 0:0 --entrypoint tar \
       --mount "type=volume,source=msboost_$volume,target=/restore" "$image" -xf - -C /restore --numeric-owner < "$recovered/$volume.tar" || return

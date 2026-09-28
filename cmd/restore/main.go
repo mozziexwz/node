@@ -15,6 +15,20 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "relay-upgrade-check" {
+		if err := control.CheckRelayUpgrade(connectionURL(false), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "relay-reconnect" {
+		if err := control.RunRelayReconnectWizard(connectionURL(false), os.Getenv("MASTER_KEY"), os.Getenv("PUBLIC_URL"), "/recovery"); err != nil {
+			fmt.Fprintln(os.Stderr, "恢复连接："+err.Error())
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "relay-recovery" {
 		if err := control.RunLocalRelayRecovery(connectionURL(false), os.Getenv("MASTER_KEY"), os.Getenv("PUBLIC_URL"), os.Args[2:], os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "受信中转恢复："+err.Error())
@@ -51,18 +65,25 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "disaster" {
 		if err := disaster.Run(os.Args[2:], os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "整站备份工具："+err.Error())
-			os.Exit(1)
+			os.Exit(disaster.ExitCode(err))
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "export" {
+	if len(os.Args) > 1 && (os.Args[1] == "export" || os.Args[1] == "export-online") {
 		exportFlags := flag.NewFlagSet("export", flag.ExitOnError)
 		keyFile := exportFlags.String("master-key-file", "", "原始 32 字节 master.key（未设置 MASTER_KEY 时使用）")
+		directory := exportFlags.String("directory", "", "在线快照私有输出目录")
 		_ = exportFlags.Parse(os.Args[2:])
 		if exportFlags.NArg() != 0 {
 			os.Exit(2)
 		}
-		if err := control.ExportPostgresBackup(connectionURL(false), os.Getenv("MASTER_KEY"), *keyFile, os.Stdout); err != nil {
+		var err error
+		if os.Args[1] == "export-online" {
+			err = control.ExportOnlineBackup(connectionURL(false), os.Getenv("MASTER_KEY"), *keyFile, *directory)
+		} else {
+			err = control.ExportPostgresBackup(connectionURL(false), os.Getenv("MASTER_KEY"), *keyFile, os.Stdout)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "导出失败："+err.Error())
 			os.Exit(1)
 		}

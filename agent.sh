@@ -4,16 +4,18 @@ set +xv
 set -Eeuo pipefail
 umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-version=v1.0.2
+version=v1.1.0
 capability=''; server=''; token_file=''; offline_policy=''; offline_policy_set=0; acknowledge_restart=0; fresh_reset=0; upgrade_in_place=0
+diagnose=0
 usage() {
   printf '%s\n' 'MSBOOST 执行机 / 中转节点安装入口（Debian 11/12/13，amd64/arm64）' \
-    '用法：bash agent.sh --capability executor|relay --server https://panel.example.com [--version v1.0.2] [--token-file /root/private-token]' \
+    '用法：bash agent.sh --capability executor|relay --server https://panel.example.com [--version v1.1.0] [--token-file /root/private-token]' \
     'executor 为控制执行机，relay 为中转节点；请使用对应的注册令牌。' \
     '未指定 --token-file 时隐藏输入令牌；控制面地址必须为 HTTPS。' \
     '此新版入口仅允许 v0.2.4 或更新的稳定版本；旧安装器缺少 v2 状态与共享程序保护。' \
-    '新装 relay 默认 keep_last；可显式 --offline-policy lease 兼容旧链。' \
-    '已有 lease 服务切换 keep_last 仍需 --acknowledge-relay-restart，迁移会中断原连接。' \
+    '中转节点统一使用 keep_last：面板离线时保留最后配置。' \
+    '节点升级会重启服务，请选择维护时间并确认现有连接可能中断。' \
+    '只读检查服务和面板连通性：--capability relay --server https://panel.example.com --diagnose。' \
     '已有 keep_last Relay 保留原身份升级：--upgrade-in-place --acknowledge-relay-restart；不需要也不接受新注册令牌，升级会中断现有连接。' \
     '旧 Relay v2 身份不会因粘贴新令牌自动替换。仅在确认旧转发全部可中断时，显式同时传 --fresh-reset --acknowledge-relay-restart；旧私有状态会留在备份。'
 }
@@ -25,6 +27,7 @@ while (( $# )); do
     --acknowledge-relay-restart) acknowledge_restart=1; shift ;;
     --fresh-reset) fresh_reset=1; shift ;;
     --upgrade-in-place) upgrade_in_place=1; shift ;;
+    --diagnose) diagnose=1; shift ;;
     --capability|--server|--version|--token-file|--offline-policy)
       (( $# >= 2 )) || fail "缺少 $1 参数"
       case "$1" in --capability) capability=$2 ;; --server) server=${2%/} ;; --version) version=$2 ;; --token-file) token_file=$2 ;; --offline-policy) offline_policy=$2; offline_policy_set=1 ;; esac
@@ -32,9 +35,24 @@ while (( $# )); do
     *) fail "未知参数 $1" ;;
   esac
 done
+if (( diagnose )); then
+  [[ $(id -u) == 0 && $capability == relay && $server =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || fail '检查连接需要在节点 VPS 使用 root，指定 relay 和 HTTPS 面板地址。'
+  printf '\n节点服务状态：\n'
+  systemctl show msboost-relay.service --property=ActiveState,SubState,Result --no-pager || true
+  printf '\n面板 HTTPS 连通性：\n'
+  if curl --fail --silent --show-error --proto '=https' --tlsv1.2 --connect-timeout 8 --max-time 15 "$server/api/health" >/dev/null; then
+    printf '面板可访问。请回后台核对本节点管理连接；HTTPS 可访问本身不代表节点身份认证通过。\n'
+  else printf '无法访问面板，请检查域名、DNS、网络或防火墙。\n'; fi
+  if [[ -e /var/lib/msboost-relay/relay-v2-state.json || -e /var/lib/private/msboost-relay/relay-v2-state.json ]]; then
+    printf '已找到节点持久配置。日常升级请使用后台提供的保留配置命令。\n'
+  else printf '尚未找到新版节点配置，请确认节点是否安装完成。\n'; fi
+  printf '若面板是从备份恢复的，请在面板服务器运行 msboost relay-reconnect。\n'
+  exit 0
+fi
 [[ "$capability" == executor || "$capability" == relay ]] || fail '请选择 executor（控制执行机）或 relay（中转节点）。'
 if [[ $capability == relay ]]; then
   [[ -n $offline_policy ]] || offline_policy=keep_last
+  [[ $offline_policy == keep_last ]] || fail '新版中转仅支持 keep_last，请先迁移旧节点。'
   [[ $fresh_reset == 0 || ( $offline_policy == keep_last && $acknowledge_restart == 1 ) ]] || fail '全新重置中转节点需要 keep_last，并同时传 --acknowledge-relay-restart 明确确认旧连接将断开。'
   [[ $upgrade_in_place == 0 || ( $fresh_reset == 0 && $offline_policy == keep_last && $acknowledge_restart == 1 && -z $token_file ) ]] || fail '原地升级仅用于已有 keep_last 中转节点：须传 --acknowledge-relay-restart，且不得传新注册令牌、--fresh-reset 或 lease。'
 else

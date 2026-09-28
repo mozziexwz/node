@@ -729,7 +729,7 @@ func TestRelayV2UnknownInventoryAndDowngradeFreeze(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer "+f.tokens[0])
 	w := httptest.NewRecorder()
 	f.mux.ServeHTTP(w, r)
-	if w.Code != 409 {
+	if w.Code != http.StatusGone {
 		t.Fatal("v2 node silently downgraded to lease sync")
 	}
 }

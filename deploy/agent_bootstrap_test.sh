@@ -44,10 +44,8 @@ grep -qx -- '--offline-policy' "$AGENT_TEST_TRACE" || fail 'default relay policy
 grep -qx keep_last "$AGENT_TEST_TRACE" || fail 'default relay did not select keep_last'
 ! grep -qx -- '--acknowledge-relay-restart' "$AGENT_TEST_TRACE" || fail 'new relay incorrectly acknowledged a restart'
 rm -- "$AGENT_TEST_TRACE"
-bash "$TEST_REPO/agent.sh" --capability relay --server https://panel.example.com --version v9.8.7 --token-file "$TEST_WORK/token" --offline-policy lease > "$TEST_WORK/lease.log" 2>&1 || fail 'explicit lease forwarding failed'
-grep -qx -- '--offline-policy' "$AGENT_TEST_TRACE" || fail 'explicit lease option not forwarded'
-grep -qx lease "$AGENT_TEST_TRACE" || fail 'explicit lease compatibility lost'
-rm -- "$AGENT_TEST_TRACE"
+if bash "$TEST_REPO/agent.sh" --capability relay --server https://panel.example.com --version v9.8.7 --token-file "$TEST_WORK/token" --offline-policy lease > "$TEST_WORK/lease.log" 2>&1; then fail 'removed lease mode accepted'; fi
+[[ ! -f $AGENT_TEST_TRACE ]] || fail 'removed lease mode reached installer'
 bash "$TEST_REPO/agent.sh" --capability relay --server https://panel.example.com --version v9.8.7 --token-file "$TEST_WORK/token" --offline-policy keep_last --acknowledge-relay-restart > "$TEST_WORK/keep-last.log" 2>&1 || fail 'explicit keep_last forwarding failed'
 grep -qx -- '--offline-policy' "$AGENT_TEST_TRACE" || fail 'offline policy option not forwarded'
 grep -qx keep_last "$AGENT_TEST_TRACE" || fail 'keep_last not forwarded'
@@ -69,7 +67,11 @@ for old_version in v0.0.0 v0.1.99 v0.2.0 v0.2.3 v0.1.999999999999999999999999999
       relay-keep-last) args+=(--offline-policy keep_last) ;;
     esac
     if bash "$TEST_REPO/agent.sh" "${args[@]}" > "$TEST_WORK/old-version.log" 2>&1; then fail 'legacy unsafe installer version accepted'; fi
-    grep -Fq '旧 Agent 安装器缺少 v2 状态与共享程序保护' "$TEST_WORK/old-version.log" || fail 'old version hit an unrelated guard'
+    if [[ $mode == relay-lease ]]; then
+      grep -Fq '新版中转仅支持 keep_last' "$TEST_WORK/old-version.log" || fail 'removed policy not rejected'
+    else
+      grep -Fq '旧 Agent 安装器缺少 v2 状态与共享程序保护' "$TEST_WORK/old-version.log" || fail 'old version hit an unrelated guard'
+    fi
     [[ ! -e $AGENT_TEST_EARLY_TRACE && ! -e $AGENT_TEST_TRACE ]] || fail 'old installer version reached privilege/download/mutation paths'
   done
 done
@@ -81,7 +83,7 @@ done
 unset AGENT_TEST_EARLY_TRACE
 # All supported branches, including components too large for machine integer
 # arithmetic, use only synthetic assets. No version is queried over a network.
-for supported in v0.2.4 v0.2.5 v0.3.0 v1.0.0 v1.0.1 v1.0.2 v9.8.7 v0.2.999999999999999999999999999999999999999999 v0.999999999999999999999999999999999999999999.0 v999999999999999999999999999999999999999999.0.0; do
+for supported in v0.2.4 v0.2.5 v0.3.0 v1.0.0 v1.0.1 v1.1.0 v9.8.7 v0.2.999999999999999999999999999999999999999999 v0.999999999999999999999999999999999999999999.0 v999999999999999999999999999999999999999999.0.0; do
   AGENT_TEST_RELEASE="$supported" bash "$TEST_REPO/agent.sh" --capability relay --server https://panel.example.com --version "$supported" --token-file "$TEST_WORK/token" > "$TEST_WORK/supported-version.log" 2>&1 || fail 'supported version comparison failed or overflowed'
   [[ -f $AGENT_TEST_TRACE ]] || fail 'supported version never reached the synthetic installer'
   rm -- "$AGENT_TEST_TRACE"

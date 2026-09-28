@@ -264,10 +264,10 @@ export function ResourcePage({ kind }: { kind: string }) {
     [token, setToken] = useState<RecordData | null>(null),
     [blockedAgent, setBlockedAgent] = useState<RecordData | null>(null),
     [deletedAgent, setDeletedAgent] = useState<RecordData | null>(null);
-  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.0.2/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
+  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.1.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
   const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;
   const relayUninstallCommand = (id: string) =>
-    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.0.2/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
+    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v1.1.0/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
   async function freshResetAgent(row: RecordData) {
     if (
       !confirm(
@@ -412,9 +412,8 @@ export function ResourcePage({ kind }: { kind: string }) {
               )}
               {kind === "agents" && row.enrollmentAllowed !== true && (
                 <>
-                  <Badge tone="orange">重装受保护</Badge>
                   <Button onClick={() => setBlockedAgent(row)}>
-                    查看限制 / 安全重装
+                    {row.reconcileState === "recovery_required" ? "恢复管理连接" : "升级 / 检查连接"}
                   </Button>
                 </>
               )}
@@ -596,33 +595,40 @@ export function ResourcePage({ kind }: { kind: string }) {
         </Modal>
       )}
       {blockedAgent && kind === "agents" && (
-        <Modal title={`节点重装限制：${blockedAgent.name}`} onClose={() => setBlockedAgent(null)}>
+        <Modal title={`节点维护：${blockedAgent.name}`} onClose={() => setBlockedAgent(null)}>
           <ErrorNotice error={message} />
-          <Notice tone="orange">
-            {blockedAgent.enrollmentBlockedReason || "普通令牌轮换已锁定。"}
-          </Notice>
+          {blockedAgent.reconcileState === "recovery_required" ? <>
+            <Notice>网站恢复后需要重新连接这个节点。请在面板服务器运行下面命令，向导会核对节点并自动传送恢复材料，无需编辑文件。</Notice>
+            <pre className="code-panel mt16">msboost relay-reconnect</pre>
+            <p>按提示选择节点、输入节点 SSH 信息，并确认旧面板已停用。配置一致的转发可保留；有差异时向导会列出影响，再由你选择处理。</p>
+          </> : <>
+            <Notice>此节点已经安装。日常升级会保留原身份和配置，不需要新的安装令牌。</Notice>
+            <p className="mt16">在此节点 VPS 的 root 终端运行下方命令升级。服务会重启，现有连接可能短暂中断，请选择维护时间。</p>
+            <pre className="code-panel mt16">{`${agentBootstrapCommand} --upgrade-in-place --acknowledge-relay-restart`}</pre>
+            <Button onClick={() => void copyText(`${agentBootstrapCommand} --upgrade-in-place --acknowledge-relay-restart`).catch((e) => setMessage(e.message))}>复制保留配置的升级命令</Button>
+            <p className="mt16">检查管理连接（不重启服务）：</p>
+            <pre className="code-panel">{`${agentBootstrapCommand} --diagnose`}</pre>
+            <Button onClick={() => void copyText(`${agentBootstrapCommand} --diagnose`).catch((e) => setMessage(e.message))}>复制检查命令</Button>
+          </>}
           <p className="mt16">
-            若无关联线路和用户中转，且历史转发已获明确停止确认，可申请安全全新重装：
-            后台会在同一事务内退役旧节点身份、撤销旧凭据并生成新节点和令牌。
-            原 VPS 上的旧进程不会由后台远程停止；请在维护窗口使用生成的全新重装命令。
+            需要清除原配置重新部署时，先在下方处理关联线路和用户转发，再申请重新部署。
           </p>
           <p className="muted mt16">
-            若仍有关联业务或停止证明不足，申请会被拒绝。请先在隧道管理及用户中转处理关联，
-            等待真实停止确认；不要因为管理连接离线就假定业务已停止。
+            重新部署会中断此节点现有连接。管理连接离线时，节点仍可能继续转发。
           </p>
           <div className="actions mt16">
             <Button primary onClick={() => void freshResetAgent(blockedAgent)}>
-              申请安全全新重装
+              申请重新部署
             </Button>
             <a className="btn" href="#routes">管理关联隧道</a>
             <a className="btn" href="#rules">管理用户中转</a>
             <a
               className="btn"
-              href="https://github.com/mozziexwz/node/blob/v1.0.2/docs/relay-recovery.md"
+              href="https://github.com/mozziexwz/node/blob/v1.1.0/docs/relay-recovery.md"
               target="_blank"
               rel="noopener noreferrer"
             >
-              受信恢复指引
+              节点维护帮助
             </a>
           </div>
         </Modal>
@@ -658,7 +664,7 @@ export function ResourcePage({ kind }: { kind: string }) {
               {token.freshReset
                 ? `旧节点 ${token.oldAgentId} 已退役，原管理凭据失效；新节点 ${token.agent?.id} 已创建。请在 15 分钟内于原 VPS 完成全新重装。`
                 : token.reinstall ? "已生成新的节点注册令牌。" : "若目标 VPS 曾安装中转 Agent，"}
-              旧 keep_last 状态会优先使用旧身份，新令牌不会自动重新绑定。仅在旧身份已无当前控制面业务、确认旧转发及现有连接均可中断时，使用下方“已有节点全新重装”命令；安装器会校验受管归属并将旧状态移入 root 私有备份。已确认 v2 或仍有关联业务的节点禁止普通令牌轮换，须先走受信恢复流程。
+              已安装节点的日常更新请返回列表使用“升级 / 检查连接”。只有明确要清除原节点配置时才使用全新重装；网站灾难恢复后使用“恢复管理连接”。
             </Notice>
           )}
           {!token.freshReset && <>
@@ -1364,7 +1370,7 @@ export function AdminRules() {
     if (
       !confirm(
         action === "delete"
-          ? `请求撤销 ${r.userEmail || r.userId} 在 ${r.routeName} 的中转并删除服务器配置？待节点停止确认前，端口及旧目标继续占用。${relayStatus(r).mode === "lease" ? "v1 同时依据短租约状态核对。" : "v2 必须获得明确停止确认，不以旧租约时间推定停止。"}`
+          ? `请求撤销 ${r.userEmail || r.userId} 在 ${r.routeName} 的中转并删除服务器配置？等待节点确认停止后才会释放端口及旧目标；节点离线时保留待处理状态。`
           : `${action === "pause" ? "暂停" : "恢复"} ${r.userEmail || r.userId} 在 ${r.routeName} 的转发？`,
       )
     )
@@ -1554,9 +1560,6 @@ export function AdminRules() {
               </p>
               <p className="mt8">
                 状态：{status(selected)}
-                {relayStatus(selected).mode === "lease" && selected.stopDeadline
-                  ? `；v1 短租约截止 ${date(selected.stopDeadline)}`
-                  : ""}
               </p>
               <RelayStatusDetail rule={selected} />
               <Table
@@ -1564,9 +1567,9 @@ export function AdminRules() {
                   "节点 ID",
                   "监听端口",
                   "限速",
-                  "ACK",
-                  "ACK 时间",
-                  "停止确认 / v1 租约",
+                  "节点确认",
+                  "确认时间",
+                  "停止状态",
                 ]}
                 rows={(selected.segments || []).map((seg: RecordData) => [
                   seg.agentId,
@@ -1581,15 +1584,11 @@ export function AdminRules() {
                     } as Record<string, string>
                   )[seg.ackState] || seg.ackState,
                   date(seg.ackAt),
-                  seg.protocolVersion >= 2
-                    ? relaySegmentStopText(seg)
-                    : `${relaySegmentStopText(seg)}：${date(seg.lastLease)}`,
+                  relaySegmentStopText(seg),
                 ])}
               />
               <Notice>
-                上下行各自限速，每条规则独立。暂停与撤销请求不等于节点已停止；v1
-                按短租约核对，v2
-                需明确停止确认。恢复核对期间保留端口及旧目标，禁止直接恢复或删除规则。
+                上下行各自限速，每条规则独立。暂停与删除需要等待节点执行并确认；节点离线时请先恢复管理连接。
               </Notice>
               <div className="mt16">{actions(selected)}</div>
             </>

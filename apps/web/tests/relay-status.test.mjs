@@ -50,7 +50,7 @@ test("only complete keep_last ACK advertises confirmed offline retention; v2 nev
     keepLastConfirmed: true,
   });
   assert.equal(confirmed.keepLastConfirmed, true);
-  assert.match(confirmed.policyText, /已确认离线保留/);
+  assert.match(confirmed.policyText, /面板离线时保留最后配置/);
   for (const value of [
     relayStatus({ offlinePolicy: "keep_last", keepLastConfirmed: false }),
     relayStatus({ offlinePolicy: "mixed", keepLastConfirmed: true }),
@@ -59,7 +59,8 @@ test("only complete keep_last ACK advertises confirmed offline retention; v2 nev
     assert.doesNotMatch(value.policyText, /已确认离线保留|45 秒/);
   }
   assert.doesNotMatch(confirmed.policyText, /45 秒|租约/);
-  assert.match(relayStatus({ offlinePolicy: "lease" }).policyText, /v1.*45 秒/);
+  assert.equal(relayStatus({ offlinePolicy: "lease" }).mode, "unconfirmed");
+  assert.doesNotMatch(relayStatus({ offlinePolicy: "lease" }).policyText, /45 秒|租约/);
   assert.equal(
     relayStatus({ segments: [{ protocolVersion: 2 }] }).mode,
     "mixed",
@@ -82,9 +83,9 @@ test("pending stop retains resources; recovery overrides optimistic confirmation
     "处理中",
   );
   assert.equal(view.keepLastConfirmed, false);
-  assert.match(view.stopText, /待节点停止确认，端口及旧目标继续占用/);
-  assert.match(view.recoveryText, /本机 root 受信恢复流程逐规则核对/);
-  assert.match(view.recoveryText, /管理凭据失效不代表旧业务已停止/);
+  assert.match(view.stopText, /等待节点停止转发，确认后释放端口/);
+  assert.match(view.recoveryText, /恢复管理连接/);
+  assert.match(view.recoveryText, /原有转发会保留/);
   const segment = {
     protocolVersion: 2,
     lastCommandAction: "pause",
@@ -93,16 +94,16 @@ test("pending stop retains resources; recovery overrides optimistic confirmation
     configGeneration: 2,
     appliedGeneration: 2,
   };
-  assert.equal(relaySegmentStopText(segment), "v2：明确停止已确认");
+  assert.equal(relaySegmentStopText(segment), "已确认停止");
   assert.equal(
     relaySegmentStopText({ ...segment, appliedGeneration: 1 }),
-    "v2：等待明确停止确认",
+    "等待停止确认",
   );
   assert.equal(
     relaySegmentStopText({ ...segment, stopConfirmed: false }),
-    "v2：等待明确停止确认",
+    "等待停止确认",
   );
-  assert.equal(relaySegmentStopText({ protocolVersion: 1 }), "v1：短租约截止");
+  assert.equal(relaySegmentStopText({ protocolVersion: 1 }), "等待节点连接确认");
 });
 test("accounting overview stays hidden only when there are no periods and no anomaly", () => {
   assert.equal(relayAccountingVisible(null), false);
@@ -486,8 +487,8 @@ test(
             const dialog = page.getByRole("dialog");
             await expect(dialog).toContainText("已用上行流量：450.00 MB");
             await expect(dialog).toContainText("已用下行流量：1.25 GB");
-            await expect(dialog).toContainText("v2：等待明确停止确认");
-            await expect(dialog).toContainText("v2：明确停止已确认");
+            await expect(dialog).toContainText("等待停止确认");
+            await expect(dialog).toContainText("已确认停止");
             await expect(dialog).not.toContainText("1999");
             await expect(dialog).not.toContainText("45 秒");
             await expect(dialog).not.toContainText("最迟租约截止");
@@ -516,7 +517,7 @@ test(
               page.getByText(/Token 失效不代表旧业务已停止/),
             ).toBeVisible();
             await expect(
-              page.getByText(/本机 root 中转恢复入口逐规则核对/),
+              page.getByText(/恢复节点管理连接向导/),
             ).toBeVisible();
             await page
               .getByLabel("选择加密备份")
@@ -585,18 +586,18 @@ test(
                 exact: true,
               }),
             ).toHaveCount(0);
-            await expect(protectedNode.getByText("重装受保护")).toBeVisible();
+            await expect(protectedNode.getByText("升级 / 检查连接")).toBeVisible();
             await protectedNode
-              .getByRole("button", { name: "查看限制 / 安全重装" })
+              .getByRole("button", { name: "升级 / 检查连接" })
               .click();
             await expect(
               page.getByRole("dialog"),
-            ).toContainText("禁止普通部署/重装");
+            ).toContainText("日常升级会保留原身份和配置");
             await expect(
-              page.getByRole("dialog").getByRole("link", { name: "受信恢复指引" }),
+              page.getByRole("dialog").getByRole("link", { name: "节点维护帮助" }),
             ).toHaveAttribute(
               "href",
-              /\/v1\.0\.2\/docs\/relay-recovery\.md$/,
+              /\/v1\.1\.0\/docs\/relay-recovery\.md$/,
             );
             await page.getByRole("dialog").getByRole("button", { name: "关闭窗口" }).click();
             let warning = "";

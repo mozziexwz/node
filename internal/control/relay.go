@@ -217,7 +217,7 @@ func relayRuleView(s *State, rule UserRule, admin bool, now int64) RelayRuleView
 	case "revoking":
 		out.StopDeadline = rule.DeleteAfter
 	}
-	out.OfflinePolicy = "lease"
+	out.OfflinePolicy = "unconfirmed"
 	if relayRuleUsesV2(s, rule) {
 		out.OfflinePolicy, out.KeepLastConfirmed = "keep_last", len(rule.Segments) > 0
 		allReportedRunning := len(rule.Segments) > 0
@@ -581,7 +581,9 @@ func (a *App) RegisterRelay(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/admin/user-rules/{id}", a.relayEditRule)
 	mux.HandleFunc("DELETE /api/admin/user-rules/{id}", a.relayDeleteRule)
 	mux.HandleFunc("POST /api/relay-agent/register", a.relayRegisterAgent)
-	mux.HandleFunc("POST /api/relay-agent/sync", a.relaySyncAgent)
+	mux.HandleFunc("POST /api/relay-agent/sync", func(w http.ResponseWriter, r *http.Request) {
+		Fail(w, http.StatusGone, "此节点程序已不再受支持，请升级为 keep_last 节点后连接")
+	})
 	mux.HandleFunc("POST /api/relay-agent/v2/sync", a.relaySyncAgentV2)
 }
 func (a *App) relayRoutes(w http.ResponseWriter, r *http.Request) {

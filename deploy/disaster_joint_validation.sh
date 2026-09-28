@@ -73,6 +73,7 @@ PY
   (cd "$ASSETS" && sha256sum --check --strict assets.sha256 >/dev/null)
   source "$ASSETS/deploy/manage.sh"
   source "$ASSETS/deploy/disaster.sh"
+  source "$ASSETS/deploy/disaster_legacy_test_fixture.sh" # historical gate-only regression; not the production online entrypoint
   INSTALL_ROOT="$WORK/site" PROJECT=$JOINT_PROJECT SOURCE_DIR=$ASSETS
   DISASTER_WORK= DISASTER_TOOL_DIR= DISASTER_TOOL_CONTAINER= DISASTER_PAUSE_RELEASE=0 DISASTER_RESUME=0
   DISASTER_RUNNING=()

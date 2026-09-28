@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly REPOSITORY=mozziexwz/node
-readonly INITIAL_VERSION=v1.0.2
+readonly INITIAL_VERSION=v1.1.0
 
 bootstrap_help() {
   printf '%s\n' \
@@ -12,18 +12,18 @@ bootstrap_help() {
     '  bash install.sh                       中文交互菜单' \
     '  bash install.sh install --domain panel.example.com --email 12345678@qq.com' \
     '  bash install.sh install --ip 203.0.113.10 --email 12345678@qq.com --allow-insecure-http' \
-    '  bash install.sh upgrade [--version v1.0.2]' \
+    '  bash install.sh upgrade [--version v1.1.0]' \
     '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  bash install.sh repair|status|logs|uninstall|purge' \
     '  bash install.sh admin-password        本机交互修改已有管理员密码（不停止服务）' \
-    '  bash install.sh disaster-backup|disaster-config|disaster-disable' \
+    '  bash install.sh disaster-backup|disaster-config|disaster-disable|disaster-status|disaster-test|disaster-retry' \
     '  bash install.sh disaster-restore --archive /root/msboost-backup/整站备份.tar.gz [--version vX.Y.Z]' \
     '默认拉取预构建镜像；只有显式 --build 才在服务器编译源码。' \
     'uninstall 卸载但保留数据；purge 为独立彻底清理，需要两次交互确认。'
 }
 
 bootstrap_menu() {
-  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 一键整站灾难备份' '  9) 设置整站备份目录 / 远程密码 / 每日计划' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  12) 修改已有管理员密码（仅本机 root）' '  0) 退出' >&2
+  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 立即整站备份（网站保持运行）' '  9) 配置并验证自动备份' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  12) 修改已有管理员密码（仅本机 root）' '  13) 备份状态与记录' '  14) 测试异地备份连接' '  15) 重新上传已有备份' '  16) 恢复节点管理连接向导' '  0) 退出' >&2
   local choice
   read -r -p '请选择: ' choice </dev/tty
   case "$choice" in
@@ -31,6 +31,7 @@ bootstrap_menu() {
     5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 0) printf exit ;;
     8) printf disaster-backup ;; 9) printf disaster-config ;; 10) printf disaster-restore ;; 11) printf disaster-disable ;;
     12) printf admin-password ;;
+    13) printf disaster-status ;; 14) printf disaster-test ;; 15) printf disaster-retry ;; 16) printf relay-reconnect ;;
     *) printf '%s\n' '无效选择' >&2; return 1 ;;
   esac
 }
@@ -45,7 +46,7 @@ bootstrap_main() {
   elif [[ $1 != --* ]]; then action=$1; shift
   fi
   [[ $action != exit ]] || return 0
-  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-config|disaster-disable|disaster-restore|admin-password) ;; *) bootstrap_help; return 2 ;; esac
+  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-config|disaster-disable|disaster-restore|disaster-status|disaster-test|disaster-retry|relay-reconnect|admin-password) ;; *) bootstrap_help; return 2 ;; esac
   # Reject all arguments before parsing or echoing them: a password accidentally
   # supplied as an option must never be reflected into deployment diagnostics.
   if [[ $action == admin-password && $# != 0 ]]; then printf '%s\n' 'admin-password 不接受参数；邮箱和密码只能从本机终端输入。' >&2; return 2; fi

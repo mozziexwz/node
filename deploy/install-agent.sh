@@ -17,8 +17,8 @@ usage() {
 令牌文件必须归 root 所有，权限 0600 或更严格，只包含对应角色的注册令牌。
 安装过程不会回显令牌。GOST 固定为已审核的 3.3.0，不使用 latest。
 只更新带 MSBOOST 所有权标记的安装；服务启动失败时尝试恢复原程序、服务与配置。
-新装 relay 默认启用 keep_last；可显式 --offline-policy lease 兼容旧链。
-已有 lease 服务切换 keep_last 还需 --acknowledge-relay-restart。
+中转节点统一使用 keep_last，面板离线时保留最后配置。
+升级会重启服务并中断现有连接，请选择维护时间。
 已有 keep_last 身份可在维护窗口显式 --upgrade-in-place --acknowledge-relay-restart；
 此模式不接受 --token-file，保留原身份和规则，但重启会中断现有连接。
 已有 keep_last 状态会优先使用旧管理令牌，不能靠粘贴新注册令牌重新绑定控制面。
@@ -54,6 +54,7 @@ done
 [[ "$capability" == executor || "$capability" == relay ]] || fail '请选择 executor（控制执行机）或 relay（中转节点）。'
 if [[ $capability == relay ]]; then
   [[ -n $offline_policy ]] || offline_policy=keep_last
+  [[ $offline_policy == keep_last ]] || fail '新版中转仅支持 keep_last，请先迁移旧节点。'
   [[ $fresh_reset == 0 || ( $offline_policy == keep_last && $acknowledge_restart == 1 ) ]] || fail '全新重置中转节点需要 keep_last，并同时传 --acknowledge-relay-restart 明确确认旧连接将断开。'
   [[ $upgrade_in_place == 0 || ( $fresh_reset == 0 && $offline_policy == keep_last && $acknowledge_restart == 1 && -z $token_file ) ]] || fail '原地升级仅用于已有 keep_last 中转节点：须传 --acknowledge-relay-restart，且不得传新注册令牌、--fresh-reset 或 lease。'
 else

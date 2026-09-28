@@ -6,7 +6,7 @@ umask 077
 INSTALL_ROOT=/opt/msboost
 PROJECT=msboost
 MARKER=MSBOOST_DEPLOY_V1
-VERSION=v1.0.2
+VERSION=v1.1.0
 SOURCE_DIR=
 DOMAIN=
 IP_ADDRESS=
@@ -29,7 +29,7 @@ usage() {
     '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  msboost repair|status|logs|uninstall|purge' \
     '  msboost admin-password        本机交互修改已有管理员密码（不停止服务）' \
-    '  msboost disaster-backup|disaster-config|disaster-disable' \
+    '  msboost disaster-backup|disaster-config|disaster-disable|disaster-status|disaster-test|disaster-retry' \
     '  bash install.sh disaster-restore --archive /root/msboost-backup/整站备份.tar.gz' \
     '  --build 需显式选择，并提供已校验的完整源码包。' \
     'uninstall 保留配置、密钥、数据库、应用数据、证书及备份。' \
@@ -41,9 +41,9 @@ read_tty() {
   printf '%s' "$answer"
 }
 menu() {
-  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 一键整站灾难备份' '  9) 设置整站备份目录 / 远程密码 / 每日计划' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  12) 修改已有管理员密码（仅本机 root）' '  0) 退出' >&2
+  printf '\n%s\n' 'MSBOOST 网站部署管理' '  1) 安装网站' '  2) 升级（先备份）' '  3) 修复（保留配置和密钥）' '  4) 查看状态' '  5) 查看日志' '  6) 卸载（保留全部数据）' '  7) 彻底清理（不可恢复）' '  8) 立即整站备份（网站保持运行）' '  9) 配置并验证自动备份' '  10) 一键灾难恢复（仅全新目标）' '  11) 停用整站自动备份计划' '  12) 修改已有管理员密码（仅本机 root）' '  13) 备份状态与记录' '  14) 测试异地备份连接' '  15) 重新上传已有备份' '  16) 恢复节点管理连接向导' '  0) 退出' >&2
   local choice; choice=$(read_tty '请选择: ')
-  case "$choice" in 1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;; 5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 8) printf disaster-backup ;; 9) printf disaster-config ;; 10) printf disaster-restore ;; 11) printf disaster-disable ;; 12) printf admin-password ;; 0) printf exit ;; *) die '无效选择' ;; esac
+  case "$choice" in 1) printf install ;; 2) printf upgrade ;; 3) printf repair ;; 4) printf status ;; 5) printf logs ;; 6) printf uninstall ;; 7) printf purge ;; 8) printf disaster-backup ;; 9) printf disaster-config ;; 10) printf disaster-restore ;; 11) printf disaster-disable ;; 12) printf admin-password ;; 13) printf disaster-status ;; 14) printf disaster-test ;; 15) printf disaster-retry ;; 16) printf relay-reconnect ;; 0) printf exit ;; *) die '无效选择' ;; esac
 }
 require_platform() (
   [[ $(id -u) == 0 ]] || { die '请在目标服务器以 root 或 sudo 运行'; return 1; }
@@ -360,6 +360,8 @@ check_frontend() {
 start_live() {
   [[ ! -e $INSTALL_ROOT/.disaster-incomplete && ! -L $INSTALL_ROOT/.disaster-incomplete ]] || { die '灾难恢复尚未完成，拒绝启动空或部分恢复的站点。请保留数据与私有工作目录，按恢复文档人工核查。'; return 1; }
   note '  → 启动容器并检查应用、反向代理及 HTTPS'
+  [[ ! -L $INSTALL_ROOT/status ]] || { die '状态目录不能是符号链接'; return 1; }
+  install -d -m 0755 "$INSTALL_ROOT/status" || return
   local expected_id actual_id
   expected_id=$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID)
   actual_id=$(server_identity "$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE)") || return
@@ -426,6 +428,7 @@ upgrade_site() {
   if [[ $RECOVER_INCOMPLETE == 1 ]]; then recover_incomplete_site; return; fi
   prepare_stage || return
   acquire_images || return
+  check_relay_upgrade || return
   snapshot_deployment || return
   if ! apply_stage; then
     note "升级失败，尝试恢复旧镜像与配置；保留备份 $SNAPSHOT。"
@@ -434,6 +437,18 @@ upgrade_site() {
     return 1
   fi
   note "升级完成：$VERSION；旧配置/数据库快照保存在 $SNAPSHOT。请验证业务后再自行归档备份。"
+}
+check_relay_upgrade() {
+  note '升级前核对节点协议（不停止网站或转发）'
+  local image database database_name
+  image=$(env_get "$STAGE/.env" MSBOOST_IMAGE_ID)
+  database=$(compose_live ps --quiet database) || return
+  [[ $image =~ ^sha256:[a-f0-9]{64}$ && $database =~ ^[a-f0-9]{64}$ ]] || return 1
+  database_name=$(env_get "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME); database_name=${database_name:-msboost}
+  docker run --rm --read-only --user 0:0 --cap-drop ALL --security-opt no-new-privileges:true --log-driver none \
+    --network "container:$database" --env-file "$INSTALL_ROOT/.env" --env DATABASE_URL= \
+    --env DATABASE_HOST=127.0.0.1 --env DATABASE_PORT=5432 --env DATABASE_USER=msboost --env "DATABASE_NAME=$database_name" --env DATABASE_SSLMODE=disable \
+    --entrypoint /usr/local/bin/msboost-restore "$image" relay-upgrade-check
 }
 recover_incomplete_site() {
   # Narrow recovery for the v0.1.1 os-release collision, not a way to bypass
@@ -626,6 +641,7 @@ manage_main() {
   if [[ $# == 0 ]]; then action=$(menu); else action=$1; shift; fi
   case "$action" in help|--help|-h) usage; return 0 ;; exit) return 0 ;; stop) action=uninstall ;; esac
   if [[ $action == admin-password && $# != 0 ]]; then die 'admin-password 不接受参数；邮箱和密码只能从本机终端输入'; return 2; fi
+  if [[ $action == relay-reconnect && $# != 0 ]]; then die '恢复向导不接受参数'; return 2; fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --version|--source-dir|--domain|--ip|--email|--archive)
@@ -638,11 +654,18 @@ manage_main() {
       *) die "未知参数 $1"; return 2 ;;
     esac
   done
-  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-config|disaster-disable|disaster-restore|admin-password) ;; *) usage; return 2 ;; esac
+  case "$action" in install|upgrade|repair|status|logs|uninstall|purge|disaster-backup|disaster-config|disaster-disable|disaster-restore|disaster-status|disaster-test|disaster-retry|relay-reconnect|admin-password) ;; *) usage; return 2 ;; esac
   require_platform || return
   require_release_version || return
   assert_root_path || return
-  [[ -z $DISASTER_ARCHIVE || $action == disaster-restore ]] || { die '--archive 仅用于灾难恢复'; return 2; }
+  if [[ $action == relay-reconnect ]]; then
+    [[ $# == 0 ]] || { die '恢复连接向导不接受参数'; return 2; }
+    local module_root
+    module_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    source "$module_root/backup_activity_recovery.sh"
+    source "$module_root/relay_recovery.sh"
+  fi
+  [[ -z $DISASTER_ARCHIVE || $action == disaster-restore || $action == disaster-retry ]] || { die '--archive 仅用于灾难恢复或备份重传'; return 2; }
   if [[ $action == disaster-* || $action == uninstall || $action == purge ]]; then
     local disaster_module
     disaster_module="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/disaster.sh"
@@ -668,7 +691,9 @@ manage_main() {
   # a predictable root lock file in a directory where another user can plant it.
   [[ ! -L /run/msboost-deploy.lock && ( ! -e /run/msboost-deploy.lock || ( -f /run/msboost-deploy.lock && $(stat -c %u /run/msboost-deploy.lock) == 0 ) ) ]] || { die '部署锁文件归属异常'; return 1; }
   exec 9>/run/msboost-deploy.lock
-  flock -n 9 || { die '另一个 MSBOOST 部署管理操作正在运行'; return 1; }
+  if [[ $action != status && $action != logs && $action != disaster-status ]]; then
+    flock -n 9 || { die '另一个 MSBOOST 部署管理操作正在运行'; return 1; }
+  fi
   trap cleanup_stage EXIT
   if [[ $action == disaster-* ]]; then trap disaster_cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; fi
   case "$action" in
@@ -677,9 +702,13 @@ manage_main() {
     status) assert_managed && compose_live ps ;;
     logs) assert_managed && compose_live logs --tail 200 server caddy database ;;
     admin-password) admin_password_site ;;
+    relay-reconnect) relay_reconnect_site ;;
     disaster-backup) disaster_backup ;;
     disaster-config) disaster_configure ;;
-    disaster-disable) assert_managed && disaster_timer off && note '整站自动备份已停用；配置和已保存的本机/远程备份未删除。' ;;
+    disaster-status) disaster_status ;;
+    disaster-test) disaster_test_remote ;;
+    disaster-retry) disaster_retry ;;
+    disaster-disable) assert_managed && disaster_timer off && disaster_tool && install -d -m 0755 "$INSTALL_ROOT/status" && "$DISASTER_TOOL" disaster schedule-record --file "$INSTALL_ROOT/status/backup-history.json" --config "$INSTALL_ROOT/disaster.json" && note '整站自动备份已停用；配置和已保存的本机/远程备份未删除。' ;;
     disaster-restore) disaster_restore ;;
   esac
 }

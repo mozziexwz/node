@@ -4,7 +4,7 @@
 
 ## 兼容与启用范围
 
-全新 `--capability relay` 安装在未指定策略时使用 `keep_last`，通过独立 `/api/relay-agent/v2/sync` 同步。旧链仍可显式指定 `--offline-policy lease`，继续使用 `/api/relay-agent/sync` 的 v1 短租约。v0.2.4 的历史默认值是 lease；网站升级、版本号变化或控制面重启都不会自动切换已有节点。
+受管 Relay 只支持 keep_last，使用 `/api/relay-agent/v2/sync`。旧 `/api/relay-agent/sync` 返回 410，不再提供 lease 运行模式。网站升级前检查实际节点协议，旧节点需先迁移；历史归档仍能读取，不代表旧运行协议仍受支持。
 
 已有活动 lease 服务迁移到 keep_last 必须逐台、逐条完整线路安排维护，并显式传 `--offline-policy keep_last --acknowledge-relay-restart`。升级 Agent 会结束其子进程和原 TCP 连接，不属于管理失联不断流的保证范围。建议优先在全新 Debian 12 节点安装验证，再决定是否迁移旧节点；缺少重启确认时安装器必须在停止原服务前拒绝。
 

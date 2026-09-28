@@ -172,7 +172,7 @@ source "$TEST_REPO/install.sh"
 if bootstrap_main backup-reconcile > "$OUTPUT" 2>&1; then fail 'bootstrap exposed removed reconciliation entrypoint'; fi
 check_isolation
 read_tty() { printf 13; }
-if menu > "$OUTPUT" 2>&1; then fail 'installed menu still accepts removed choice 13'; fi
+[[ $(menu) == disaster-status ]] || fail 'choice 13 must open read-only backup status, not legacy reconciliation'
 if grep -q '13) printf backup-reconcile' "$TEST_REPO/install.sh"; then fail 'bootstrap menu still exposes choice 13'; fi
 grep -q 'backup_activity_recovery.sh' "$TEST_REPO/deploy/manage.sh" || fail 'private recovery module copy integration missing'
 printf '%s\n' 'PASS: local root/TTY backup reconciliation, pinned server/database/volume identity, readonly original lock mount, strict inspection/stdin proof, no service lifecycle or secret leakage'

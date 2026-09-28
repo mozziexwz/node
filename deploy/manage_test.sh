@@ -72,10 +72,12 @@ docker() {
           if [[ -f $TEST_WORK/fail-next-up ]]; then rm -- "$TEST_WORK/fail-next-up"; return 1; fi
           if [[ ${*: -1} == caddy && -f $TEST_WORK/fail-next-caddy-up ]]; then rm -- "$TEST_WORK/fail-next-caddy-up"; return 1; fi
           return 0 ;;
-        down|ps|logs) return 0 ;;
+        ps) if [[ "$*" == 'ps --quiet database' ]]; then printf '%064d' 8; fi ;;
+        down|logs) return 0 ;;
         *) fail "unexpected compose command: $*" ;;
       esac ;;
     ps) [[ ${MOCK_PS_FAIL:-0} == 0 ]] || return 1; [[ ${MOCK_CONTAINERS:-0} == 0 ]] || printf 'existing-container\n'; return 0 ;;
+    run) [[ ${*: -1} == relay-upgrade-check ]] || fail 'unexpected Docker helper'; return 0 ;;
     network)
       if [[ ${1:-} == ls ]]; then [[ ${MOCK_NETWORK:-0} == 0 ]] || printf 'msboost_control\n'; return 0; fi
       return 1 ;;
@@ -189,7 +191,7 @@ uninstall_site
 ! grep -Eq '(^| )(rm|prune|--volumes|-v)( |$)' "$TRACE" || fail 'uninstall deletes data'
 repair_site
 
-VERSION=v1.0.2
+VERSION=v1.1.0
 MOCK_PULL_FAIL=1
 expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/original.env" || fail 'failed pull modified config'
@@ -200,7 +202,7 @@ expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/original.env" || fail 'failed upgrade did not restore prior environment'
 [[ -s $SNAPSHOT/database.dump ]] || fail 'upgrade skipped backup'
 upgrade_site
-[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == v1.0.2 ]] || fail 'successful upgrade wrong version'
+[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == v1.1.0 ]] || fail 'successful upgrade wrong version'
 [[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) == "$(env_get "$TEST_WORK/original.env" MASTER_KEY)" ]] || fail 'upgrade changed master key'
 
 expect_failure purge_site

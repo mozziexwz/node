@@ -43,7 +43,7 @@
 - `POST /api/admin/relay-agents`、`PUT /api/admin/relay-agents/{id}` 输入 `{name,address,addresses?:[],enabled,portRanges:[{start,end}]}`。address为主公网IP，addresses额外登记IPv4/IPv6；去重后含主地址最多16个。清空addresses仅保留主地址，不假称自动发现网卡。端口最多50段，1–65535不重叠。节点级requireFront已取消：旧值和旧请求字段忽略；仅保留隧道级requireFront。引用中的用户规则阻止变更地址集合。
 - 创建返回 `{agent,enrollmentToken,installArgs}`，一次性注册令牌15分钟有效。installArgs为 `{installer:"deploy/install-agent.sh",args:[...],tokenEnvironment:"MSBOOST_RELAY_ENROLLMENT_TOKEN",instructions}`；args使用安装器支持的 `--token-file`，需替换实际Agent路径和审核后SHA256，令牌单独保存到root私有0600文件，不放进命令行。不是给cmd/agent传入不存在的 `--enrollment-token` 参数，也不从网页自动执行shell。编辑不回显token。缩端口池、改IP、增强前置要求若破坏现有规则则阻止并说明。
 - `DELETE /api/admin/relay-agents/{id}`有路线/规则/租约引用时阻止。删除不卸载远端机器。
-- `POST /api/admin/relay-agents/{id}/enrollment` 重新签发15分钟注册令牌并撤销旧令牌。纯 v1 返回旧租约截止；v2 返回恢复核对警告，不承诺45秒停止，相关资源继续保留。重装会中断原连接；需要保留既有进程时使用本机受信恢复流程，不用注册令牌冒充热接管。
+- `POST /api/admin/relay-agents/{id}/enrollment` 重新签发15分钟注册令牌并撤销旧令牌。已安装节点不重新签发注册令牌，提示升级或恢复向导，相关资源继续保留。重装会中断原连接；需要保留既有进程时使用本机受信恢复流程，不用注册令牌冒充热接管。
 - `GET /api/admin/user-rules` → `{rules}`，包括 `userEmail` 及脱敏诊断字段；界面支持邮箱/线路/状态筛选。
 - `GET/PATCH/DELETE /api/admin/user-rules/{ruleId}` 提供详情、`{paused:true|false}` 暂停/恢复及撤销。纯 v1 按最后租约失效后归档；v2 / 混合链路等待所有 v2 段精确 revoke 停止 ACK，未确认前不释放端口或旧目标。恢复核对期间禁止普通删除/恢复覆盖。管理员不能通过此接口取得用户客户端配置或认证秘密。线路/节点删除冲突给出具体关联与管理入口。
 
@@ -63,15 +63,15 @@
 
 ## Agent运行契约和运维边界
 
-`App.RegisterCommerce(mux)`、`App.RegisterRelay(mux)` 注册端点；启动 `StartCommerce(ctx)`、`StartRelay(ctx)` 处理兑换记录过期和失效规则。`SetFrontProvisioner(tasks.ProvisionFront)` 接入执行器。Relay Agent 在 Linux 运行并需要独立 GOST v3 二进制。全新 Relay 默认 keep_last，注册后使用 `/api/relay-agent/v2/sync`；显式 `--offline-policy lease` 才使用 `/api/relay-agent/sync` 的 5 秒短租约协议。协议结构位于 `internal/relayruntime/protocol.go`，既有节点不自动迁移。
+`App.RegisterCommerce(mux)`、`App.RegisterRelay(mux)` 注册端点；启动 `StartCommerce(ctx)`、`StartRelay(ctx)` 处理兑换记录过期和失效规则。`SetFrontProvisioner(tasks.ProvisionFront)` 接入执行器。Relay Agent 在 Linux 运行并需要独立 GOST v3 二进制。Relay 只支持 keep_last，注册后使用 `/api/relay-agent/v2/sync`；旧同步端点返回 410。协议结构位于 `internal/relayruntime/protocol.go`，既有节点不自动迁移。
 
 GOST每条规则独立子进程，固定配置与源IP白名单；多跳内部节点只允许上一跳候选源IP，前置模式入口仅允许前置源IP。部署网络必须确保节点出站源IP与登记address一致。域名目标首次创建时解析并检查所有地址为公网，然后固定IP，DNS变更需重配。控制流不承载游戏字节。已用官方GOST v3.3.0（官方checksum核验）通过本机回环真实双跳TCP、运行ACK、累计Observer和撤销关闭端口的集成测试；这不替代客户VPS公网路径验收。
 
-首次部署仍需下游绑定ACK后才发布入口；v2 已运行入口不因下游管理心跳过期而撤销。GOST Observer提供真实监听状态和累计traffic，令牌不会授予SSH/DD能力。纯 v1 离线超过租约由watchdog停止；v2 使用独立 `/api/relay-agent/v2/sync`，命令/流量分别明确 ACK，遗漏、坏响应和管理失联不删除既有配置。Linux父进程死亡保护仍保留。恢复、限额与状态字段详见 [Relay v2 契约](relay-v2-contract.md)。
+首次部署仍需下游绑定ACK后才发布入口；v2 已运行入口不因下游管理心跳过期而撤销。GOST Observer提供真实监听状态和累计traffic，令牌不会授予SSH/DD能力。新版不运行旧租约 watchdog；使用独立 `/api/relay-agent/v2/sync`，命令/流量分别明确 ACK，遗漏、坏响应和管理失联不删除既有配置。Linux父进程死亡保护仍保留。恢复、限额与状态字段详见 [Relay v2 契约](relay-v2-contract.md)。
 
 TLS跳使用GOST 3.3.0的tls listener与forward+tls连接器。每条用户规则、每个TLS节点生成独立ECDSA证书，服务端仅保存AES-GCM加密私钥；同步响应只向该节点交付自己的私钥，上一层只得到公开信任证书与节点DNS身份。GOST要求secure=true、固定CA和serverName，最低TLS1.2；不使用InsecureSkipVerify。证书有效期一年，纯 v1 剩余不足7天时自动轮换；含 v2 的整链普通重连不轮换，须经 [root 显式证书维护](relay-recovery.md) 更新选中规则，可能重建其连接。过期证书不会降低验证要求。运行时将证书/密钥写入私有临时文件，正常结束或启动失败会清理；异常崩溃遗留需检查。源IP白名单仍保护入站；当前不是双向客户端证书认证。
 
-计量停止依赖控制面可达性；v1 另有45秒租约，v2 / keep_last 失联期间新发生的到期/封禁/超额决定延后执行，非精确到最后一字节的分布式硬配额。v2 旧权益样本计入原账务周期而不扣新权益；跨月或时钟异常且无法精确拆分的区间进入待核对。异常断电可损失 Observer 最后尚未产出的样本，缓存耗尽必须显示计量降级。当前速率是每条规则双向分别限速；全账户共享速率、UDP、双向客户端证书认证、无损故障迁移没有宣称完成。FLVX 未完整迁入或宣称兼容。
+计量停止依赖控制面可达性；keep_last 失联期间新发生的到期/封禁/超额决定延后执行，非精确到最后一字节的分布式硬配额。v2 旧权益样本计入原账务周期而不扣新权益；跨月或时钟异常且无法精确拆分的区间进入待核对。异常断电可损失 Observer 最后尚未产出的样本，缓存耗尽必须显示计量降级。当前速率是每条规则双向分别限速；全账户共享速率、UDP、双向客户端证书认证、无损故障迁移没有宣称完成。FLVX 未完整迁入或宣称兼容。
 
 网页安全恢复不回滚商务数据：白名单只恢复站点设置、文章附件、线路与节点定义，完整保留当前用户身份、订单、卡密、流水、请求/支付去重、支付配置、权益、用户规则、计量和未知新集合。当前规则引用的线路节点保留当前拓扑；预检需带当前恢复范围摘要。恢复后保持维护并撤销 Agent 凭据；涉及 v2 时保留资源和运行关联，冻结自动覆盖，不能推定旧转发已停止。受保护接管不会自动开放支付或营业。完整快照仅由离线 `msboost-restore` 导入全新库，绝不在线覆写旧库，见 [恢复指南](backup-recovery.md) 与 [逐规则受信恢复](relay-recovery.md)。
 

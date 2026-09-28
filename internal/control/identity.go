@@ -695,6 +695,7 @@ func filteredSettings(s *State, admin bool) map[string]any {
 	out["freeToolsVerifiedOnly"] = out["freeToolsRequireVerifiedEmail"]
 	out["smtpReady"] = smtpReady(s)
 	if admin {
+		out["disasterBackupEmailEnabled"] = boolSetting(s, "disasterBackupEmailEnabled")
 		c, _ := getSMTP(s)
 		c.CredentialConfigured = c.Secret != ""
 		c.Secret = ""
@@ -724,7 +725,7 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) {
 					key = "freeToolsRequireVerifiedEmail"
 				}
 				switch key {
-				case "register", "invite", "turnstile", "smtp", "deploy", "relay", "dd", "paidCreate", "planSale", "cards", "paywx", "payali", "monitor", "localSave", "publicArticles", "attachments", "maintenance", "registrationEmailVerificationRequired", "freeToolsRequireVerifiedEmail", "purchaseRequireVerifiedEmail":
+				case "disasterBackupEmailEnabled", "register", "invite", "turnstile", "smtp", "deploy", "relay", "dd", "paidCreate", "planSale", "cards", "paywx", "payali", "monitor", "localSave", "publicArticles", "attachments", "maintenance", "registrationEmailVerificationRequired", "freeToolsRequireVerifiedEmail", "purchaseRequireVerifiedEmail":
 					var value bool
 					if json.Unmarshal(raw, &value) != nil {
 						return fmt.Errorf("%s 必须为布尔值", key)

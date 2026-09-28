@@ -31,8 +31,7 @@ fixture_binary "$TEST_WORK/unsupported-prefix" '  -offline-policy-unsupported st
 
 install_agent_parse_args --capability relay --server https://panel.example.test/
 [[ $offline_policy == keep_last && $acknowledge_restart == 0 && $server == https://panel.example.test ]] || test_fail 'v0.3 relay default is not keep_last'
-install_agent_parse_args --capability relay --offline-policy lease
-[[ $offline_policy == lease && $acknowledge_restart == 0 ]] || test_fail 'explicit lease compatibility was lost'
+reject install_agent_parse_args --capability relay --offline-policy lease
 install_agent_parse_args --capability relay --offline-policy keep_last --acknowledge-relay-restart --agent /fixture/agent --gost-version 3.3.0
 [[ $offline_policy == keep_last && $acknowledge_restart == 1 && $agent_file == /fixture/agent && $gost_version == 3.3.0 ]] || test_fail 'explicit migration flags lost'
 install_agent_parse_args --capability relay --fresh-reset --acknowledge-relay-restart
@@ -313,7 +312,7 @@ for mode in default-relay explicit-lease explicit-keep-last explicit-fresh-reset
       invalid-upgrade-executor) args=(--capability executor --server https://panel.example.test --upgrade-in-place --acknowledge-relay-restart) ;;
       invalid-upgrade-old-version) args=(--capability relay --server https://panel.example.test --version v0.3.3 --upgrade-in-place --acknowledge-relay-restart) ;;
     esac
-    if [[ $mode == invalid-* ]]; then
+    if [[ $mode == invalid-* || $mode == explicit-lease ]]; then
       reject command bash "$TEST_REPO/agent.sh" "${args[@]}"
       [[ ! -d $bootstrap_stage && ! -e $BOOTSTRAP_ARGS ]] || test_fail 'invalid bootstrap reached network/install'
     else
@@ -324,8 +323,6 @@ for mode in default-relay explicit-lease explicit-keep-last explicit-fresh-reset
         default-relay)
           grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" && grep -Fxq keep_last "$BOOTSTRAP_ARGS" || test_fail 'default relay did not forward keep_last'
           ! grep -Fxq -- --acknowledge-relay-restart "$BOOTSTRAP_ARGS" || test_fail 'new relay incorrectly acknowledged a restart' ;;
-        explicit-lease)
-          grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" && grep -Fxq lease "$BOOTSTRAP_ARGS" || test_fail 'explicit lease compatibility lost by bootstrap' ;;
         explicit-keep-last)
           grep -Fxq -- --offline-policy "$BOOTSTRAP_ARGS" && grep -Fxq keep_last "$BOOTSTRAP_ARGS" && grep -Fxq -- --acknowledge-relay-restart "$BOOTSTRAP_ARGS" || test_fail 'explicit migration flags lost by bootstrap' ;;
         explicit-fresh-reset)

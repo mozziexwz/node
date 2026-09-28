@@ -26,6 +26,7 @@ const maxBundleSize int64 = 64 << 30
 
 var bundleName = regexp.MustCompile(`^msboost-disaster-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{16}\.tar\.gz$`)
 var members = []string{"site.env", "deployment.tar", "state.msb", "database.dump", "app_data.tar", "caddy_data.tar", "caddy_config.tar"}
+var onlineMembers = []string{"site.env", "deployment.tar", "state.msb", "app_data.tar"}
 
 type digest struct {
 	SHA256 string `json:"sha256"`
@@ -131,6 +132,17 @@ func publishBundle(partial, output string) error {
 }
 
 func Pack(directory, output string) error {
+	return packBundle(directory, output, 1, members)
+}
+
+// Online bundles contain the logical database snapshot and the original key.
+// Mutable caches, prior backup files and ACME runtime storage are not snapshots
+// of business data. Caddy recreates its certificates on the restored host.
+func PackOnline(directory, output string) error {
+	return packBundle(directory, output, 2, onlineMembers)
+}
+
+func packBundle(directory, output string, version int, files []string) error {
 	if !bundleName.MatchString(filepath.Base(output)) {
 		return errors.New("整站备份文件名格式无效")
 	}
@@ -143,9 +155,9 @@ func Pack(directory, output string) error {
 	if _, err := os.Lstat(output); !os.IsNotExist(err) {
 		return errors.New("输出文件已存在或不可检查，拒绝覆盖")
 	}
-	manifest := Manifest{Version: 1, CreatedAt: time.Now().UTC().Unix(), Files: map[string]digest{}}
+	manifest := Manifest{Version: version, CreatedAt: time.Now().UTC().Unix(), Files: map[string]digest{}}
 	var total int64
-	for _, name := range members {
+	for _, name := range files {
 		filename := filepath.Join(directory, name)
 		info, err := regular(filename)
 		if err != nil {
@@ -186,7 +198,7 @@ func Pack(directory, output string) error {
 	if _, err = tw.Write(raw); err != nil {
 		return err
 	}
-	for _, name := range members {
+	for _, name := range files {
 		if err = tw.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: manifest.Files[name].Size, Typeflag: tar.TypeReg}); err != nil {
 			return err
 		}
@@ -247,12 +259,19 @@ func readBundle(archive, destination string) (Manifest, error) {
 		return m, errors.New("整站归档缺少有效清单")
 	}
 	raw, err := io.ReadAll(tr)
-	if err != nil || json.Unmarshal(raw, &m) != nil || m.Version != 1 || m.CreatedAt <= 0 || m.CreatedAt > time.Now().Add(5*time.Minute).Unix() || len(m.Files) != len(members) {
+	if err != nil || json.Unmarshal(raw, &m) != nil || (m.Version != 1 && m.Version != 2) || m.CreatedAt <= 0 || m.CreatedAt > time.Now().Add(5*time.Minute).Unix() {
 		return m, errors.New("整站备份清单无效")
+	}
+	files := members
+	if m.Version == 2 {
+		files = onlineMembers
+	}
+	if len(m.Files) != len(files) {
+		return m, errors.New("整站备份文件清单不完整")
 	}
 	allowed := map[string]bool{}
 	var total int64
-	for _, name := range members {
+	for _, name := range files {
 		d, ok := m.Files[name]
 		if !ok || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(d.SHA256) || d.Size <= 0 || d.Size > maxBundleSize-total {
 			return m, errors.New("整站备份清单文件或大小无效")
@@ -260,7 +279,7 @@ func readBundle(archive, destination string) (Manifest, error) {
 		total += d.Size
 		allowed[name] = true
 	}
-	for range members {
+	for range files {
 		h, err := tr.Next()
 		if err != nil {
 			return m, err

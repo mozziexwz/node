@@ -184,10 +184,9 @@ printf '%s\n' \
 compose_live() {
   if [[ $CI_BACKUP_VERIFY == 1 ]]; then
     case "$1" in
-      stop) ci_assert_backup_gate true || return ;;
-      start) ci_assert_backup_gate false || return ;;
-      exec) if [[ " $* " == *' database pg_dump '* ]]; then ci_assert_backup_gate true || return; fi ;;
-      run) if [[ " $* " == *' server export '* ]]; then ci_assert_backup_gate true || return; fi ;;
+      stop|start|restart|down) die 'Online backup attempted to stop/restart services'; return 1 ;;
+      exec) if [[ " $* " == *' database pg_dump '* ]]; then die 'Unexpected duplicate database export'; return 1; fi ;;
+      run) if [[ " $* " == *' server backup-pause begin'* ]]; then die 'Online backup requested a pause gate'; return 1; fi ;;
     esac
   fi
   ( unset MSBOOST_IMAGE MSBOOST_VERSION MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS MSBOOST_DATABASE_NAME POSTGRES_PASSWORD POSTGRES_IMAGE CADDY_IMAGE
@@ -289,7 +288,7 @@ printf '%s\n' 'CI_DISASTER_STAGE=prepare-archive-directory'
 printf '%s\n' 'CI_DISASTER_STAGE=config-save'
 "$CI_TOOL" disaster config-save --file "$INSTALL_ROOT/disaster.json" --local-dir "$CI_ARCHIVES" --retention-days 30 --time 02:30 </dev/null
 printf '%s\n' 'CI_DISASTER_STAGE=config-saved'
-note 'CI: real stop, pg_dump, encrypted export, volume archives, pack and verification.'
+note 'CI: online consistent export, private key archive, pack and verification; no stop/restart.'
 compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause check > "$CI_ROOT/gate-check.json"
 jq -e '.canPauseControl == true and .gateActive == false and .checkedRules == 0' "$CI_ROOT/gate-check.json" >/dev/null
 CI_BACKUP_VERIFY=1
@@ -297,7 +296,7 @@ disaster_backup
 CI_BACKUP_VERIFY=0
 CI_WORKS+=("$DISASTER_WORK")
 ci_assert_backup_gate false
-[[ $DISASTER_PAUSE_RELEASE == 0 && $(stat -c '%u:%a' "$DISASTER_WORK/backup-pause.token") == 0:600 && $(wc -c < "$DISASTER_WORK/backup-pause.token") == 65 ]]
+[[ $DISASTER_PAUSE_RELEASE == 0 && ! -e $DISASTER_WORK/backup-pause.token ]]
 [[ $(compose_live ps --status running --services | sort | tr '\n' ' ') == 'caddy database server ' ]]
 mapfile -t CI_BUNDLES < <(find "$CI_ARCHIVES" -maxdepth 1 -type f -name 'msboost-disaster-*.tar.gz')
 [[ ${#CI_BUNDLES[@]} == 1 ]]
@@ -306,9 +305,12 @@ CI_ARCHIVE=${CI_BUNDLES[0]}
 "$CI_TOOL" disaster unpack --archive "$CI_ARCHIVE" --dir "$CI_ROOT/inspection"
 [[ ! -e $CI_ROOT/inspection/backup-pause.token ]]
 if tar -tzf "$CI_ARCHIVE" | grep -Fq backup-pause.token; then die 'CI backup archive contains the runtime gate credential'; exit 1; fi
-[[ $(head -c 5 "$CI_ROOT/inspection/database.dump") == PGDMP && -s $CI_ROOT/inspection/state.msb ]]
+[[ ! -e $CI_ROOT/inspection/database.dump && -s $CI_ROOT/inspection/state.msb ]]
+[[ $("$CI_TOOL" disaster format --archive "$CI_ARCHIVE") == 2 ]]
+[[ ! -e $CI_ROOT/inspection/caddy_data.tar && ! -e $CI_ROOT/inspection/caddy_config.tar ]]
 cmp "$INSTALL_ROOT/.env" "$CI_ROOT/inspection/site.env"
-for volume in app_data caddy_data caddy_config; do "$CI_TOOL" disaster validate-volume --archive "$CI_ROOT/inspection/$volume.tar"; done
+"$CI_TOOL" disaster validate-volume --archive "$CI_ROOT/inspection/app_data.tar"
+[[ $(tar -tf "$CI_ROOT/inspection/app_data.tar" | sort | tr '\n' ' ') == '. master.key ' ]]
 
 # Model complete loss of ONLY this explicitly marked CI site. The verified
 # recovery bundle is outside /opt/msboost and survives removal of its volumes.
@@ -348,16 +350,11 @@ SQL
 [[ $CI_STATE_OK == t ]]
 [[ $(compose_live exec -T database psql --username=msboost --dbname=msboost -tAX -c "SELECT to_regclass('public.control_state') IS NULL") == t ]]
 for volume in app_data caddy_data caddy_config; do
-  proof=$(docker run --rm --network none --read-only --user 0:0 --entrypoint sh --mount "type=volume,source=msboost_$volume,target=/proof,readonly" "$POSTGRES_TEST_IMAGE" -c 'cat /proof/ci-proof.txt; stat -c "%u:%g:%a" /proof/ci-proof.txt')
-  [[ $proof == $'MSBOOST isolated volume proof\n10001:10001:600' ]]
+  docker run --rm --network none --read-only --user 0:0 --entrypoint sh --mount "type=volume,source=msboost_$volume,target=/proof,readonly" "$POSTGRES_TEST_IMAGE" -c 'test ! -e /proof/ci-proof.txt'
 done
-for volume in caddy_data caddy_config; do
-  metadata=$(docker run --rm --network none --read-only --user 0:0 --entrypoint stat --mount "type=volume,source=msboost_$volume,target=/proof,readonly" "$POSTGRES_TEST_IMAGE" -c '%u:%g:%a' -- /proof/caddy)
-  [[ $metadata == "${CI_CADDY_METADATA[$volume]}" ]]
-  printf 'CI_DISASTER_CADDY_METADATA_RESTORED %s %s\n' "$volume" "$metadata"
-done
+docker run --rm --network none --read-only --user 0:0 --entrypoint sh --mount "type=volume,source=msboost_app_data,target=/proof,readonly" "$POSTGRES_TEST_IMAGE" -c 'test "$(stat -c "%u:%g:%a" /proof/master.key)" = 10001:10001:600; test "$(wc -c < /proof/master.key)" = 32'
 check_frontend
 bound=$(compose_live port caddy 80)
 curl --fail --silent --show-error --noproxy '*' "http://$bound/api/settings" > "$CI_ROOT/restored-public-settings.json"
 jq -e '.maintenance == true and .paywx == false and .payali == false and .planSale == false' "$CI_ROOT/restored-public-settings.json" >/dev/null
-printf '%s\n' 'PASS: real Docker cold recovery preserved user identity/balance, master key, article/attachment and three volume files; restored a NEW PostgreSQL DB; maintenance on and payments off.'
+printf '%s\n' 'PASS: online backup and real Docker cold recovery preserved identity/balance, original key and article/attachment; excluded historical backup/cache files; restored a NEW database; maintenance on and payments off.'

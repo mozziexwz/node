@@ -3,6 +3,22 @@
 # Depends only on the trusted local Docker/config template helpers in
 # backup_activity_recovery.sh. It does not invoke that module's reconciliation.
 
+relay_reconnect_site() (
+  set +xv
+  umask 077
+  ulimit -c 0 || return
+  [[ $# == 0 && -t 0 && -t 1 ]] || { die '请在面板服务器 root 交互终端运行 msboost relay-reconnect'; return 1; }
+  local recovery_image_id recovery_database_id recovery_database_name
+  relay_recovery_site_identity || return
+  [[ ! -L $INSTALL_ROOT/recovery ]] || { die '恢复目录不能是符号链接'; return 1; }
+  install -d -m 0700 "$INSTALL_ROOT/recovery" || return
+  backup_activity_docker run --rm -it --pull never --read-only --user 0:0 --cap-drop ALL --security-opt no-new-privileges:true --log-driver none --ulimit core=0 \
+    --network "container:$recovery_database_id" --env-file "$INSTALL_ROOT/.env" \
+    --env DATABASE_URL= --env DATABASE_HOST=127.0.0.1 --env DATABASE_PORT=5432 --env DATABASE_USER=msboost --env "DATABASE_NAME=$recovery_database_name" --env DATABASE_SSLMODE=disable \
+    --mount "type=bind,source=$INSTALL_ROOT/recovery,target=/recovery" \
+    --entrypoint /usr/local/bin/msboost-restore "$recovery_image_id" relay-reconnect
+)
+
 relay_recovery_open_tty() {
   if ! exec {recovery_tty_fd}<>/dev/tty; then die '中转恢复必须使用本机真实交互终端'; return 1; fi
   [[ -t $recovery_tty_fd ]] || { die '中转恢复不接受自动确认或管道终端'; return 1; }

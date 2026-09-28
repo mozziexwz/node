@@ -396,8 +396,17 @@ func TestDisasterRemoteRealSSHUploadAndNoOverwrite(t *testing.T) {
 	if err != nil || dir.Mode().Perm() != 0700 {
 		t.Fatal("remote directory not private")
 	}
-	if err := uploadWithDial(context.Background(), c, archive, f.dial(t)); err == nil {
-		t.Fatal("existing backup overwritten")
+	f.fs.mu.Lock()
+	writesBeforeRetry := f.fs.writes
+	f.fs.mu.Unlock()
+	if err := uploadWithDial(context.Background(), c, archive, f.dial(t)); err != nil {
+		t.Fatal("verified identical backup should allow retry", err)
+	}
+	f.fs.mu.Lock()
+	writesAfterRetry := f.fs.writes
+	f.fs.mu.Unlock()
+	if writesAfterRetry != writesBeforeRetry {
+		t.Fatal("idempotent retry rewrote the remote file")
 	}
 	file, err = sf.Open(name)
 	if err != nil {

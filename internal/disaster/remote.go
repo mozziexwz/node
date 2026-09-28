@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/mozziexwz/node/internal/executor"
 	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
 )
 
 type remoteDial func(context.Context, string, string) (net.Conn, error)
@@ -74,56 +72,36 @@ func uploadWithDial(ctx context.Context, config Config, archive string, dial rem
 	if _, err = file.Seek(0, io.SeekStart); err != nil {
 		return errors.New("本机备份无法重新读取")
 	}
-	address := net.JoinHostPort(config.RemoteHost, fmt.Sprint(config.RemotePort))
-	conn, err := dial(ctx, "tcp", address)
+	sf, closeRemote, err := connectRemote(ctx, config, dial)
 	if err != nil {
-		return errors.New("远程备份连接失败")
+		return err
 	}
-	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
-	deadline := time.Now().Add(30 * time.Minute)
-	if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
-		deadline = limit
-	}
-	handshakeDeadline := time.Now().Add(15 * time.Second)
-	if deadline.Before(handshakeDeadline) {
-		handshakeDeadline = deadline
-	}
-	if err = conn.SetDeadline(handshakeDeadline); err != nil {
-		return errors.New("远程连接无法设置超时")
-	}
-	cc, channels, requests, err := ssh.NewClientConn(conn, address, &ssh.ClientConfig{
-		User: config.RemoteUser, Auth: []ssh.AuthMethod{ssh.Password(config.Password)},
-		HostKeyCallback: executor.PinnedHostKey(config.Fingerprint), Timeout: 15 * time.Second,
-		// The terminal configuration instructs users to verify precisely the
-		// Ed25519 host key. Do not negotiate another key that has a different pin.
-		HostKeyAlgorithms: []string{ssh.KeyAlgoED25519},
-	})
-	if err != nil {
-		return errors.New("远程 SSH 指纹核对或密码认证失败")
-	}
-	client := ssh.NewClient(cc, channels, requests)
-	defer client.Close()
-	sf, err := sftp.NewClient(client)
-	if err != nil {
-		return errors.New("远程 SFTP 子系统不可用")
-	}
-	defer sf.Close()
-	if err = conn.SetDeadline(deadline); err != nil {
-		return errors.New("远程传输无法设置超时")
-	}
+	defer closeRemote()
 	var selfUID *uint32
 	if config.RemoteUser == "root" {
 		uid := uint32(0)
 		selfUID = &uid
 	}
 	if err = privateRemoteDirectory(sf, config.RemoteDir, selfUID); err != nil {
-		return err
+		return remoteDirectoryError
 	}
 	final := path.Join(config.RemoteDir, filepath.Base(archive))
-	if _, err = sf.Lstat(final); !os.IsNotExist(err) {
-		return errors.New("远程已有同名文件或目标不可检查，拒绝覆盖")
+	if existing, statErr := sf.Lstat(final); statErr == nil {
+		uid, ownerErr := executor.SFTPFileUID(existing)
+		if ownerErr != nil || selfUID != nil && *selfUID != uid || privateRemoteDirectory(sf, config.RemoteDir, &uid) != nil {
+			return remoteDirectoryError
+		}
+		if verifyRemoteFile(sf, final, info.Size(), want, uid) != nil {
+			return remoteVerifyError
+		}
+		if config.PruneRemote {
+			if err := pruneRemote(sf, config, uid); err != nil {
+				return remoteCleanupError
+			}
+		}
+		return nil // Lost responses can be retried without overwriting any file.
+	} else if !os.IsNotExist(statErr) {
+		return remoteDirectoryError
 	}
 	var nonce [8]byte
 	if _, err = rand.Read(nonce[:]); err != nil {
@@ -132,7 +110,7 @@ func uploadWithDial(ctx context.Context, config Config, archive string, dial rem
 	temporary := path.Join(config.RemoteDir, "."+filepath.Base(archive)+"."+hex.EncodeToString(nonce[:])+".partial")
 	remote, err := sf.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
 	if err != nil {
-		return errors.New("无法独占创建远程临时文件")
+		return remoteDirectoryError
 	}
 	defer remote.Close()
 	if err = remote.Chmod(0600); err != nil {
@@ -155,13 +133,13 @@ func uploadWithDial(ctx context.Context, config Config, archive string, dial rem
 	sentHash := sha256.New()
 	n, err := io.Copy(remote, io.TeeReader(io.LimitReader(file, info.Size()+1), sentHash))
 	if err != nil || n != info.Size() || hex.EncodeToString(sentHash.Sum(nil)) != want {
-		return errors.New("远程上传失败或本机文件已变化；保留本机备份与远程私有临时文件")
+		return remoteWriteError
 	}
 	if err = remote.Close(); err != nil {
-		return errors.New("远程文件关闭失败；不发布临时文件")
+		return remoteWriteError
 	}
 	if err = verifyRemoteFile(sf, temporary, info.Size(), want, uid); err != nil {
-		return err
+		return remoteVerifyError
 	}
 	if err = privateRemoteDirectory(sf, config.RemoteDir, selfUID); err != nil {
 		return err
@@ -175,10 +153,12 @@ func uploadWithDial(ctx context.Context, config Config, archive string, dial rem
 		return errors.New("远程原子发布失败；未覆盖已有备份")
 	}
 	if err = verifyRemoteFile(sf, final, info.Size(), want, uid); err != nil {
-		return err
+		return remoteVerifyError
 	}
 	if config.PruneRemote {
-		return pruneRemote(sf, config, uid)
+		if err := pruneRemote(sf, config, uid); err != nil {
+			return remoteCleanupError
+		}
 	}
 	return nil
 }

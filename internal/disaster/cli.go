@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"time"
 )
 
@@ -23,8 +24,57 @@ func Run(args []string, input io.Reader, output io.Writer) error {
 	flags.SetOutput(io.Discard)
 	var run func() error
 	switch args[0] {
+	case "record":
+		file := flags.String("file", "", "")
+		id, stage := flags.String("id", "", ""), flags.String("stage", "", "")
+		archive := flags.String("archive", "", "")
+		remote := flags.Bool("remote", false, "")
+		run = func() error { return RecordStage(*file, *id, *stage, *archive, *remote) }
+	case "schedule-record":
+		file, configFile := flags.String("file", "", ""), flags.String("config", "", "")
+		enabled, verified := flags.Bool("enabled", false, ""), flags.Bool("verified", false, "")
+		run = func() error {
+			c, err := ReadConfig(*configFile)
+			if err != nil {
+				return err
+			}
+			return RecordSchedule(*file, c, *enabled, *verified)
+		}
+	case "status":
+		file := flags.String("file", "", "")
+		run = func() error {
+			h, err := ReadHistory(*file)
+			if err != nil {
+				return err
+			}
+			state := "未启用"
+			if h.Schedule.Enabled {
+				state = "已启用"
+			}
+			fmt.Fprintf(output, "每日计划：%s；时间 %s（%s）\n", state, h.Schedule.Time, h.Schedule.Zone)
+			if h.Schedule.NextRunAt > 0 {
+				fmt.Fprintf(output, "下次计划：%s（可能有 60 秒随机延迟）\n", time.UnixMilli(h.Schedule.NextRunAt).Format(time.RFC3339))
+			}
+			if len(h.Runs) == 0 {
+				fmt.Fprintln(output, "尚无本版本备份记录；启用计划不代表已有成功备份")
+			}
+			for i, r := range h.Runs {
+				if i == 10 {
+					break
+				}
+				fmt.Fprintf(output, "%s  %s\n  本地校验成功：%t；异地校验成功：%t\n", time.UnixMilli(r.UpdatedAt).Format(time.RFC3339), r.Message, r.LocalOK, r.RemoteOK)
+				if r.Archive != "" {
+					fmt.Fprintf(output, "  文件：%s（%d 字节）\n", r.Archive, r.Size)
+				}
+				if r.Detail != "" {
+					fmt.Fprintln(output, "  处理建议："+r.Detail)
+				}
+			}
+			return nil
+		}
 	case "config-save":
 		file := flags.String("file", "", "")
+		verify := flags.Bool("verify-remote", false, "")
 		config := DefaultConfig()
 		flags.StringVar(&config.LocalDir, "local-dir", config.LocalDir, "")
 		flags.IntVar(&config.RetentionDays, "retention-days", config.RetentionDays, "")
@@ -50,7 +100,31 @@ func Run(args []string, input io.Reader, output io.Writer) error {
 			if config.RemoteHost == "" {
 				config.RemotePort, config.RemoteUser, config.RemoteDir, config.Fingerprint = 0, "", "", ""
 			}
+			if *verify {
+				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+				defer cancel()
+				return saveVerifiedConfig(ctx, *file, config, (&net.Dialer{Timeout: 15 * time.Second}).DialContext)
+			}
 			return SaveConfig(*file, config)
+		}
+	case "test-remote":
+		file := flags.String("config", "", "")
+		run = func() error {
+			config, err := ReadConfig(*file)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			if err = CheckRemote(ctx, config); err != nil {
+				return err
+			}
+			if config.RemoteHost == "" {
+				_, err = fmt.Fprintln(output, "仅本机备份，未配置异地目标")
+			} else {
+				_, err = fmt.Fprintln(output, "异地连接、登录、目录写入与回读校验通过")
+			}
+			return err
 		}
 	case "config-get":
 		file, field := flags.String("file", "", ""), flags.String("field", "", "")
@@ -59,7 +133,7 @@ func Run(args []string, input io.Reader, output io.Writer) error {
 				return errArguments
 			}
 			// Whitelist before reading the credential-bearing file.
-			if *field != "localDir" && *field != "retentionDays" && *field != "time" {
+			if *field != "localDir" && *field != "retentionDays" && *field != "time" && *field != "hasRemote" {
 				return errArguments
 			}
 			config, err := ReadConfig(*file)
@@ -74,6 +148,8 @@ func Run(args []string, input io.Reader, output io.Writer) error {
 				value = config.RetentionDays
 			case "time":
 				value = config.Time
+			case "hasRemote":
+				value = config.RemoteHost != ""
 			}
 			_, err = fmt.Fprintln(output, value)
 			return err
@@ -81,9 +157,24 @@ func Run(args []string, input io.Reader, output io.Writer) error {
 	case "prepare-dir":
 		dir := flags.String("dir", "", "")
 		run = func() error { return privateDir(*dir, true) }
-	case "pack":
+	case "pack", "pack-online":
 		dir, destination := flags.String("dir", "", ""), flags.String("output", "", "")
-		run = func() error { return Pack(*dir, *destination) }
+		run = func() error {
+			if args[0] == "pack-online" {
+				return PackOnline(*dir, *destination)
+			}
+			return Pack(*dir, *destination)
+		}
+	case "format":
+		archive := flags.String("archive", "", "")
+		run = func() error {
+			m, err := Verify(*archive)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(output, m.Version)
+			return err
+		}
 	case "verify":
 		archive := flags.String("archive", "", "")
 		run = func() error {
@@ -101,6 +192,7 @@ func Run(args []string, input io.Reader, output io.Writer) error {
 		run = func() error { return ValidateVolume(*archive) }
 	case "retain", "upload":
 		file := flags.String("config", "", "")
+		history, id := flags.String("history", "", ""), flags.String("id", "", "")
 		var archive *string
 		if args[0] == "upload" {
 			archive = flags.String("archive", "", "")
@@ -118,7 +210,13 @@ func Run(args []string, input io.Reader, output io.Writer) error {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 			defer cancel()
-			return Upload(ctx, config, *archive)
+			err = Upload(ctx, config, *archive)
+			if err != nil && *history != "" {
+				if e := recordRemoteDiagnostic(*history, *id, err); e != nil {
+					return errors.New("异地上传失败且状态记录未保存，请查看本次终端日志")
+				}
+			}
+			return err
 		}
 	default:
 		return errArguments
@@ -133,6 +231,12 @@ func Run(args []string, input io.Reader, output io.Writer) error {
 }
 
 func safeCommandError(command string, err error) error {
+	if stage, ok := err.(remoteError); ok {
+		switch stage {
+		case remoteConnectError, remoteIdentityError, remoteAuthError, remoteSFTPError, remoteDirectoryError, remoteWriteError, remoteVerifyError, remoteCleanupError, remoteProbeCleanupError:
+			return stage
+		}
+	}
 	// Only exact, locally generated config-save stages may cross the CLI
 	// boundary. Do not unwrap errors or trust text resembling a diagnostic code.
 	if command == "config-save" {

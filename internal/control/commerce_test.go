@@ -34,6 +34,9 @@ func commerceTestApp(t *testing.T) (*App, *http.ServeMux, *User) {
 	mux := http.NewServeMux()
 	a.RegisterCommerce(mux)
 	a.RegisterRelay(mux)
+	// Old snapshots still need accounting/migration fixtures, but this route
+	// and its simulator exist only in the test binary.
+	mux.HandleFunc("POST /_test/legacy-relay-sync", a.legacyRelaySyncFixture)
 	return a, mux, u
 }
 func commerceTestRequest(mux http.Handler, u *User, method, path string, input any) *httptest.ResponseRecorder {

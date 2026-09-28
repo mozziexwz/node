@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { WholeSiteBackups } from "./whole-site-backups";
 import { api, post, array, downloadFile, RecordData } from "./api";
 import {
   Header,
@@ -53,16 +54,17 @@ export function Backups() {
         sub="加密快照支持保留财务的安全恢复，或离线导入全新数据库的完整灾难恢复。客户 VPS 磁盘和浏览器本地配置不在备份范围内。"
       >
         <Button primary disabled={busy} onClick={() => void backup()}>
-          {busy ? "正在备份…" : "立即备份"}
+          {busy ? "正在备份…" : "立即业务备份"}
         </Button>
       </Header>
       <ErrorNotice error={error} />
       {message && <Notice>{message}</Notice>}
       <div className="tabs mt16">
         {[
-          ["history", "备份历史"],
-          ["schedule", "自动计划"],
-          ["targets", "远程目标"],
+          ["whole-site", "整站备份状态"],
+          ["history", "业务备份历史"],
+          ["schedule", "业务备份计划"],
+          ["targets", "业务备份目标"],
           ["restore", "恢复备份"],
         ].map(([k, n]) => (
           <button
@@ -74,6 +76,7 @@ export function Backups() {
           </button>
         ))}
       </div>
+      {tab === "whole-site" && <WholeSiteBackups />}
       {tab === "history" && (
         <div className="card flush mt16">
           <Notice>
@@ -345,13 +348,11 @@ export function Backups() {
           <h3>安全恢复（网页）</h3>
           <Notice tone="red">
             只恢复站点设置、文章附件、线路及节点定义。完整保留当前用户身份、枫叶与权益、兑换记录与兑换码、支付去重、工单审计、流量记录及用户规则。
-            当前用户规则正在关联的线路和节点保留当前版本，预检会列出。先开启维护模式并结束任务；v1
-            规则暂停后需等待节点确认或短租约失效。 keep_last
-            或混合模式不能用旧租约推定停止，恢复会保留相关资源并进入恢复核对。请先独立受信核对或隔离旧节点，再按预检结果操作。
+            当前用户规则正在关联的线路和节点保留当前版本，预检会列出。先开启维护模式并结束任务。
+            恢复后原节点可能继续转发，相关资源将保留，不会自动释放端口或覆盖配置。
             恢复前保存受保护的私有回滚副本；恢复后退出全部会话，撤销 Agent
             凭据，停用控制面的线路定义，保持维护。Token
-            失效不代表旧业务已停止。支持恢复协议的 v2 节点须通过服务器本机 root
-            中转恢复入口逐规则核对；其他节点须独立确认停止，不能直接解除恢复冻结。
+            失效不代表旧业务已停止。请在面板服务器运行 msboost，选择菜单 16“恢复节点管理连接向导”，按提示核对后恢复连接。
           </Notice>
           <div className="mt24">
             <input

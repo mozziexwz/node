@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mozziexwz/node/internal/disaster"
 	"github.com/mozziexwz/node/internal/executor"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -80,6 +81,7 @@ type BackupService struct {
 
 func NewBackupService(a *App) *BackupService { return &BackupService{app: a} }
 func (b *BackupService) Register(m *http.ServeMux) {
+	m.HandleFunc("GET /api/admin/disaster-backups", b.disasterHistory)
 	m.HandleFunc("GET /api/admin/backups", b.list)
 	m.HandleFunc("POST /api/admin/backups", b.create)
 	m.HandleFunc("GET /api/admin/backups/{id}/download", b.download)
@@ -93,6 +95,18 @@ func (b *BackupService) Register(m *http.ServeMux) {
 	m.HandleFunc("POST /api/admin/backups/preflight", b.preflight)
 	m.HandleFunc("POST /api/admin/backups/restore", b.restore)
 	m.HandleFunc("POST /api/admin/backups/retention", b.retention)
+}
+
+func (b *BackupService) disasterHistory(w http.ResponseWriter, r *http.Request) {
+	if !b.admin(w, r) {
+		return
+	}
+	h, err := disaster.ReadHistory("/app/disaster-status/backup-history.json")
+	if err != nil {
+		Fail(w, 503, "无法读取整站备份记录，请在服务器运行 msboost disaster-status 检查")
+		return
+	}
+	WriteJSON(w, 200, h)
 }
 func (b *BackupService) admin(w http.ResponseWriter, r *http.Request) bool {
 	if _, err := b.app.Admin(r); err != nil {
@@ -874,6 +888,9 @@ func prepareRestoredRelay(s *State, now int64, disaster bool) error {
 		}
 	}
 	for _, route := range ListDocs[Route](s, "routes") {
+		if err := SaveDoc(s, "relay_recovery_route_states", route.ID, map[string]bool{"enabled": route.Enabled}); err != nil {
+			return err
+		}
 		route.Enabled = false
 		route.Online = false
 		if err := SaveDoc(s, "routes", route.ID, route); err != nil {
@@ -972,6 +989,7 @@ func (b *BackupService) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				b.notifyDisasterFailure(ctx)
 				var due bool
 				err := b.app.Store.Update(func(s *State) error {
 					p, ok := LoadDoc[BackupPlan](s, "backup_plans", "default")
