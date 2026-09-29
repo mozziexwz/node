@@ -120,7 +120,7 @@ cleanup_validation() {
     for container in $containers; do
       [[ $(local_docker inspect --format '{{index .Config.Labels "msboost.validation"}}' "$container") == "$TEST_ID" ]] && local_docker rm -f "$container" >/dev/null || status=1
     done
-    for volume in app_data database_data caddy_data caddy_config; do
+    for volume in app_data database_data; do
       if grep -Fxq -- "${PROJECT}_$volume" <<< "$volumes"; then
         [[ $(local_docker volume inspect --format '{{index .Labels "msboost.validation"}}' "${PROJECT}_$volume") == "$TEST_ID" && -z $(local_docker ps -aq --filter "volume=${PROJECT}_$volume") ]] && local_docker volume rm "${PROJECT}_$volume" >/dev/null || status=1
       fi
@@ -198,7 +198,7 @@ ensure_docker
 # Sourcing the product only defines functions, but restore the isolated ID.
 PROJECT="msboost-check-$TEST_ID"
 [[ -z $(local_docker ps -aq --filter "label=com.docker.compose.project=$PROJECT") ]]
-for volume in app_data database_data caddy_data caddy_config; do ! local_docker volume inspect "${PROJECT}_$volume" >/dev/null 2>&1; done
+for volume in app_data database_data; do ! local_docker volume inspect "${PROJECT}_$volume" >/dev/null 2>&1; done
 ! local_docker network inspect "${PROJECT}_control" >/dev/null 2>&1
 DOCKER_READY=1
 
@@ -206,28 +206,28 @@ printf 'MSBOOST_IMAGE=%s\nMSBOOST_DOMAIN=localhost\nMSBOOST_SITE_ADDRESS=http://
   "$IMAGE" "$(random_admin_password)" "$(random_hex 24)" "$(random_hex 32)" > "$WORK/test.env"
 chmod 600 "$WORK/test.env"
 {
-  printf 'services:\n  server:\n    labels:\n      msboost.validation: %s\n  database:\n    labels:\n      msboost.validation: %s\n  caddy:\n    ports: !override []\n    labels:\n      msboost.validation: %s\nnetworks:\n  control:\n    internal: true\n    labels:\n      msboost.validation: %s\nvolumes:\n' "$TEST_ID" "$TEST_ID" "$TEST_ID" "$TEST_ID"
-  for volume in app_data database_data caddy_data caddy_config; do printf '  %s:\n    name: %s_%s\n    labels:\n      msboost.validation: %s\n' "$volume" "$PROJECT" "$volume" "$TEST_ID"; done
+  printf 'services:\n  server:\n    ports: !override []\n    labels:\n      msboost.validation: %s\n  database:\n    labels:\n      msboost.validation: %s\nnetworks:\n  control:\n    internal: true\n    labels:\n      msboost.validation: %s\nvolumes:\n' "$TEST_ID" "$TEST_ID" "$TEST_ID"
+  for volume in app_data database_data; do printf '  %s:\n    name: %s_%s\n    labels:\n      msboost.validation: %s\n' "$volume" "$PROJECT" "$volume" "$TEST_ID"; done
 } > "$WORK/compose-test.yml"
 printf '%s\n' 'ISOLATED_VALIDATION_STAGE=build-current-source-precompiled-image'
 install -m 0600 "$WORK/deploy/validation.dockerignore" "$WORK/.dockerignore"
 local_docker build --label "msboost.validation=$TEST_ID" -t "$IMAGE" -f "$WORK/deploy/validation.Dockerfile" "$WORK" >/dev/null
-dc pull database caddy >/dev/null
+dc pull database >/dev/null
 check_control_subnet
 CURRENT_DISK=$(df -Pk "$WORK" | awk 'NR==2 {print $3}')
 (( CURRENT_DISK - START_DISK + INITIAL_BUNDLE_DISK <= 3145728 )) || { printf 'REFUSED: validation storage including test bundle exceeded 3GiB budget.\n'; exit 1; }
 printf 'ISOLATED_VALIDATION_DISK_GROWTH_KIB=%s\n' "$((CURRENT_DISK-START_DISK+INITIAL_BUNDLE_DISK))"
 dc up -d --no-build --pull never --wait --wait-timeout 180 >/dev/null
 # An internal-only Docker network intentionally does not publish host ports.
-# Share only Caddy's private network namespace for this loopback HTTP probe;
-# no port is exposed on the VPS, even while checking the real proxy path.
-caddy_container=$(dc ps --quiet caddy)
-[[ $caddy_container =~ ^[a-f0-9]{64}$ && $(local_docker inspect --format '{{index .Config.Labels "msboost.validation"}}' "$caddy_container") == "$TEST_ID" ]]
-published=$(local_docker port "$caddy_container")
+# Share only the app's private network namespace for this loopback HTTP probe;
+# no port is exposed on the VPS. System Caddy is tested by the deployment suite.
+server_container=$(dc ps --quiet server)
+[[ $server_container =~ ^[a-f0-9]{64}$ && $(local_docker inspect --format '{{index .Config.Labels "msboost.validation"}}' "$server_container") == "$TEST_ID" ]]
+published=$(local_docker port "$server_container")
 [[ -z $published ]] || { printf 'REFUSED: isolated validation unexpectedly published a host port.\n'; exit 1; }
-printf '%s\n' 'ISOLATED_VALIDATION_STAGE=caddy-private-namespace-loopback-health'
-local_docker run --rm --network "container:$caddy_container" --read-only --user 10001:10001 --cap-drop ALL --label "msboost.validation=$TEST_ID" \
-  --entrypoint curl "$IMAGE" --fail --silent --show-error --noproxy '*' --header 'Host: localhost' http://127.0.0.1/api/health | grep -q '"status":"ok"'
+printf '%s\n' 'ISOLATED_VALIDATION_STAGE=app-private-namespace-loopback-health'
+local_docker run --rm --network "container:$server_container" --read-only --user 10001:10001 --cap-drop ALL --label "msboost.validation=$TEST_ID" \
+  --entrypoint curl "$IMAGE" --fail --silent --show-error --noproxy '*' --header 'Host: localhost' http://127.0.0.1:8080/api/health | grep -q '"status":"ok"'
 printf '%s\n' 'ISOLATED_VALIDATION_COMPOSE_HEALTHY_LOOPBACK=1'
 check_readonly_activity
 

@@ -84,3 +84,144 @@ disaster_backup() {
   "$DISASTER_TOOL" disaster upload --config "$INSTALL_ROOT/disaster.json" --archive "$directory/$filename" || return
   "$DISASTER_TOOL" disaster retain --config "$INSTALL_ROOT/disaster.json" || return
 }
+
+# Bash's elapsed clock avoids wall-clock/NTP changes during the shared deadline.
+disaster_resume_clock() { printf '%s' "$SECONDS"; }
+
+disaster_resume_services() {
+  # Older Compose v2 supports up --wait but not start --wait. Never substitute
+  # up here: only the exact existing services paused by this snapshot may start.
+  # All services share one health-polling deadline. Docker CLI calls use the
+  # local daemon, but are not forcibly interrupted if the daemon itself stalls.
+  local service container identity state health required all_ready now remaining
+  local deadline=$(( $(disaster_resume_clock) + 180 ))
+  local -a containers=() services=()
+  [[ $# -gt 0 && $# -le 2 ]] || { die '需要明确的原有备份服务集合'; return 1; }
+  for service in "$@"; do
+    [[ $service == caddy || $service == server ]] || { die '备份恢复不能启动其他服务'; return 1; }
+    [[ " ${services[*]} " != *" $service "* ]] || { die '备份恢复服务重复'; return 1; }
+    container=$(compose_live ps --all --quiet "$service") || return
+    [[ $container =~ ^[a-f0-9]{64}$ ]] || { die "原有 $service 容器缺失或不唯一，未创建替代容器"; return 1; }
+    identity=$(docker inspect --type container --format '{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$container") || return
+    [[ $identity == "$PROJECT|$service" ]] || { die "原有 $service 容器归属不符"; return 1; }
+    containers+=("$container"); services+=("$service")
+  done
+  compose_live start "${services[@]}" || return
+  while :; do
+    now=$(disaster_resume_clock)
+    [[ $now -lt $deadline ]] || { die '原有服务在 180 秒内未全部恢复健康'; return 1; }
+    all_ready=1
+    for container in "${containers[@]}"; do
+      # Only state flags are read, never service environment or health output.
+      identity=$(docker inspect --type container --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{if .Config.Healthcheck}}{{if .Config.Healthcheck.Test}}{{if eq (index .Config.Healthcheck.Test 0) "NONE"}}none{{else}}required{{end}}{{else}}none{{end}}{{else}}none{{end}}' "$container") || { die '原有服务容器在恢复期间消失'; return 1; }
+      IFS='|' read -r state health required <<< "$identity"
+      case "$state" in
+        exited|dead|removing) die '原有服务启动后退出，未通过恢复检查'; return 1 ;;
+        running|created|restarting|paused) ;;
+        *) die '原有服务运行状态无效'; return 1 ;;
+      esac
+      [[ $health != unhealthy ]] || { die '原有服务健康检查失败'; return 1; }
+      [[ $required == none || $required == required ]] || { die '原有服务健康检查状态无效'; return 1; }
+      if [[ $state != running || ( $required == required && $health != healthy ) ]]; then all_ready=0; fi
+    done
+    now=$(disaster_resume_clock)
+    [[ $now -lt $deadline ]] || { die '原有服务在 180 秒内未全部恢复健康'; return 1; }
+    [[ $all_ready == 0 ]] || return 0
+    remaining=$((deadline - now)); [[ $remaining -le 2 ]] || remaining=2
+    sleep "$remaining" || return
+  done
+}
+
+disaster_pause_recovery_hint() {
+  local command
+  note '备份写入冻结可能仍然存在；它不会超时自动解除。不要删除原 token 文件或重新生成替代 token。'
+  note "私有恢复材料：$DISASTER_WORK/backup-pause.token（仅本机 root 可读，请勿上传或粘贴内容）。"
+  printf -v command 'MSBOOST_ENV_FILE=%q docker compose --project-name %q --env-file %q -f %q run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause end < %q' \
+    "$INSTALL_ROOT/.env" "$PROJECT" "$INSTALL_ROOT/.env" "$INSTALL_ROOT/deploy/compose.yml" "$DISASTER_WORK/backup-pause.token"
+  note '排除数据库 / Docker 故障后，在本机 root 终端执行以下命令，必须确认退出码为 0，再恢复原有控制面服务：'
+  note "$command"
+  note "备份前正在运行的控制面服务：${DISASTER_RUNNING[*]:-无}。此流程不会启动或重启客户 Agent / GOST。"
+}
+
+disaster_pause_begin() {
+  set +xv
+  local token mode=${1:-strict}
+  [[ -d $DISASTER_WORK && ! -L $DISASTER_WORK ]] || { die '备份门禁需要私有工作目录'; return 1; }
+  token=$(random_hex 32) || return
+  [[ $token =~ ^[a-f0-9]{64}$ ]] || { die '备份门禁随机凭据生成失败'; return 1; }
+  # Persist the only unlock credential before any database request. Exclusive
+  # creation plus the mktemp root-only parent prevents accidental replacement.
+  (umask 077; set -o noclobber; printf '%s\n' "$token" > "$DISASTER_WORK/backup-pause.token") || return
+  unset token
+  chmod 600 "$DISASTER_WORK/backup-pause.token" || return
+  sync -f "$DISASTER_WORK/backup-pause.token" || return
+  note "备份门禁私有工作目录：$DISASTER_WORK；异常退出时请保留其中的 backup-pause.token。"
+  # Record cleanup intent BEFORE begin: a failed/lost response does not prove
+  # that PostgreSQL rolled back. A missing gate makes end safely idempotent.
+  DISASTER_PAUSE_RELEASE=1
+  if [[ $mode == maintenance ]]; then
+    if ! printf '%s\n' "$(<"$DISASTER_WORK/backup-pause.token")" "$maintenance_confirmation" |
+      compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause begin-maintenance; then
+      die '手动维护备份门禁未确认成功，未执行停站；任务、备份活动、恢复冲突和无效记录不能通过风险确认绕过。'
+      return 1
+    fi
+    note '手动维护门禁已建立：你已接受旧链路因短租约中断的风险。此备份不承诺不断流，其他安全门禁仍有效。'
+  else
+    if ! compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause begin < "$DISASTER_WORK/backup-pause.token"; then
+      die '停站备份门禁未确认成功，未执行停站；旧工具、v1 / 混合链、未确认配置或恢复状态都会阻止备份。'
+      return 1
+    fi
+    note '停站备份门禁已建立，全部控制面业务写入暂时冻结；该检查仅核对已确认状态，不代表真实线路不断流验收已完成。'
+  fi
+}
+
+disaster_pause_end() {
+  [[ ${DISASTER_PAUSE_RELEASE:-0} == 1 ]] || return 0
+  [[ -f $DISASTER_WORK/backup-pause.token && ! -L $DISASTER_WORK/backup-pause.token ]] || { die '原备份门禁 token 文件缺失或类型无效，拒绝尝试替代凭据'; return 1; }
+  compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause end < "$DISASTER_WORK/backup-pause.token" || return
+  DISASTER_PAUSE_RELEASE=0
+}
+
+
+disaster_cleanup() {
+  local code=$?
+  trap - EXIT
+  if [[ $code != 0 && -n ${DISASTER_RUN_ID:-} && -n ${DISASTER_TOOL:-} ]]; then
+    disaster_record "${DISASTER_FAILURE_STAGE:-failed}" || true
+  fi
+  if [[ ${DISASTER_TOOL_CONTAINER:-} =~ ^[a-f0-9]{64}$ ]]; then docker rm "$DISASTER_TOOL_CONTAINER" >/dev/null || code=1; fi
+  # Never restart the control plane before confirmed unlock. This also handles
+  # an uncertain begin result, partial stop, failed export and an ordinary signal.
+  if ! disaster_pause_end; then
+    disaster_pause_recovery_hint
+    code=1
+  fi
+  # A scheduled snapshot may pause only these two known containers. Resume the
+  # exact services that were running, even if export/pack/disk/upload failed.
+  if [[ ${DISASTER_PAUSE_RELEASE:-0} != 1 && ${DISASTER_RESUME:-0} == 1 && ${#DISASTER_RUNNING[@]} -gt 0 ]]; then
+    if ! disaster_resume_services "${DISASTER_RUNNING[@]}"; then
+      note '备份后服务重新启动失败，请立即检查 msboost status/logs。'; code=1
+    fi
+  fi
+  if [[ -n ${DISASTER_WORK:-} && $DISASTER_WORK == /root/msboost-disaster-work.* && ! -L $DISASTER_WORK ]]; then
+    # On failure keep sensitive staging for diagnosis. It is always root-only.
+    if [[ $code == 0 ]]; then rm -rf -- "$DISASTER_WORK"; else note "保留私有工作目录：$DISASTER_WORK"; fi
+  fi
+  if [[ -n ${DISASTER_TOOL_DIR:-} && $DISASTER_TOOL_DIR == /tmp/msboost-disaster-tool.* && ! -L $DISASTER_TOOL_DIR ]]; then rm -rf -- "$DISASTER_TOOL_DIR"; fi
+  cleanup_stage
+  exit "$code"
+}
+
+disaster_maintenance_open_tty() {
+  if ! exec {maintenance_tty_fd}<>/dev/tty; then die '手动维护备份必须使用本机真实交互终端'; return 1; fi
+  disaster_maintenance_tty_valid || { die '手动维护备份不接受管道、文件或无终端输入'; return 1; }
+}
+disaster_maintenance_tty_valid() { [[ ${maintenance_tty_fd:-} =~ ^[0-9]+$ && -t $maintenance_tty_fd ]]; }
+disaster_maintenance_read() {
+  IFS= read -r -u "$maintenance_tty_fd" -p '逐次确认请输入 BACKUP_WITH_RELAY_INTERRUPTION（其他输入取消）: ' maintenance_confirmation || { die '确认已取消或结束，未执行停站'; return 1; }
+}
+
+
+disaster_assert_volume() {
+  [[ $(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$1") == "$PROJECT" ]]
+}

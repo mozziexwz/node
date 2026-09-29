@@ -26,7 +26,7 @@ for existing in /usr/local/bin/msboost /etc/systemd/system/msboost-disaster-back
 done
 docker info >/dev/null
 [[ -z $(docker ps -aq --filter label=com.docker.compose.project=msboost) ]] || { die 'CI found existing MSBOOST containers'; exit 1; }
-for volume in msboost_app_data msboost_database_data msboost_caddy_data msboost_caddy_config; do
+for volume in msboost_app_data msboost_database_data; do
   if docker volume inspect "$volume" >/dev/null 2>&1; then die 'CI found an existing MSBOOST volume'; exit 1; fi
 done
 if docker network inspect msboost_control >/dev/null 2>&1; then die 'CI found an existing MSBOOST network'; exit 1; fi
@@ -53,7 +53,7 @@ DISASTER_RUNNING=()
 ci_docker() { (unset DOCKER_HOST DOCKER_CONTEXT DOCKER_DEFAULT_PLATFORM; command docker --host unix:///var/run/docker.sock "$@"); }
 docker() {
   if [[ ${1:-} == volume && ${2:-} == create ]]; then
-    [[ ${*: -1} =~ ^msboost_(app_data|database_data|caddy_data|caddy_config)$ ]] || return 1
+    [[ ${*: -1} =~ ^msboost_(app_data|database_data)$ ]] || return 1
     ci_docker volume create --label "msboost.ci.disaster=$CI_TOKEN" "${@:3}"
   elif [[ ${1:-} == run ]]; then
     if [[ $CI_BACKUP_VERIFY == 1 && " $* " == *'target=/snapshot,readonly'* ]]; then ci_assert_backup_gate true || return; fi
@@ -66,6 +66,7 @@ ci_assert_owner() {
 }
 ci_remove_site() {
   local volume label container
+  if [[ -f $INSTALL_ROOT/.env && -f $CADDY_SITE ]]; then caddy_publish disable || return; caddy_remove_custom || return; fi
   if [[ -e $INSTALL_ROOT || -L $INSTALL_ROOT ]]; then ci_assert_owner || { die 'CI cleanup refuses an installation without its exact marker'; return 1; }; fi
   for container in $(docker ps -aq --filter label=com.docker.compose.project=msboost); do
     [[ $(docker inspect --format '{{index .Config.Labels "msboost.ci.disaster"}}' "$container") == "$CI_TOKEN" ]] || { die 'CI cleanup refuses a foreign container'; return 1; }
@@ -78,7 +79,7 @@ ci_remove_site() {
     [[ $(docker network inspect --format '{{index .Labels "msboost.ci.disaster"}}' msboost_control) == "$CI_TOKEN" ]] || return 1
     docker network rm msboost_control >/dev/null || return
   fi
-  for volume in msboost_app_data msboost_database_data msboost_caddy_data msboost_caddy_config; do
+  for volume in msboost_app_data msboost_database_data; do
     if docker volume inspect "$volume" >/dev/null 2>&1; then
       label=$(docker volume inspect --format '{{index .Labels "msboost.ci.disaster"}}' "$volume")
       [[ $label == "$CI_TOKEN" && -z $(docker ps -aq --filter "volume=$volume") ]] || { die 'CI cleanup refuses an unowned or referenced volume'; return 1; }
@@ -182,13 +183,10 @@ printf '%s\n' \
   'services:' \
   '  server:' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" \
   '  database:' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" \
-  '  caddy:' '    ports: !override ["127.0.0.1::80"]' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" \
   'networks:' '  control:' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" \
   'volumes:' \
   '  app_data:' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" \
-  '  database_data:' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" \
-  '  caddy_data:' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" \
-  '  caddy_config:' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" > "$CI_OVERRIDE"
+  '  database_data:' '    labels:' "      msboost.ci.disaster: $CI_TOKEN" > "$CI_OVERRIDE"
 compose_live() {
   if [[ $CI_BACKUP_VERIFY == 1 ]]; then
     case "$1" in
@@ -213,7 +211,7 @@ read_tty() { [[ $1 == *RESTORE_NEW_MSBOOST* ]] || return 1; printf RESTORE_NEW_M
 disaster_tool() { [[ -x $CI_TOOL && ! -L $CI_TOOL ]] || return 1; DISASTER_TOOL=$CI_TOOL; }
 check_frontend() {
   local bound
-  bound=$(compose_live port caddy 80)
+  bound=127.0.0.1:80
   [[ $bound =~ ^127\.0\.0\.1:[0-9]+$ ]] || { die 'CI proxy must bind loopback only'; return 1; }
   curl --fail --silent --show-error --noproxy '*' --retry 10 --retry-delay 1 --retry-all-errors "http://$bound/api/health" > "$CI_ROOT/health.json" || return
   jq -e --arg version "$VERSION" '.status == "ok" and .version == $version' "$CI_ROOT/health.json" >/dev/null
@@ -246,7 +244,12 @@ load_release_image() {
   env_set "$STAGE/.env" MSBOOST_IMAGE "$CI_IMAGE"
 }
 docker pull postgres:17-bookworm >/dev/null
-docker pull caddy:2-alpine >/dev/null
+caddy_ensure
+printf 'header X-MSBOOST-Backup-Proof "system-caddy"\n' > "$CADDY_CUSTOM/proof.caddy"
+chown root:caddy "$CADDY_CUSTOM/proof.caddy"; chmod 640 "$CADDY_CUSTOM/proof.caddy"
+printf 'http://127.0.0.1:18181 {\n respond "sentinel-one"\n}\nhttp://127.0.0.1:18182 {\n respond "sentinel-two"\n}\n' > "$CADDY_ROOT/sites-enabled/ci-other.caddy"
+chmod 644 "$CADDY_ROOT/sites-enabled/ci-other.caddy"
+CI_OTHER_HASH=$(sha256sum "$CADDY_ROOT/sites-enabled/ci-other.caddy")
 CI_TOOL_CONTAINER=$(docker create --network none --label "msboost.ci.disaster=$CI_TOKEN" --entrypoint /bin/true "$CI_IMAGE")
 [[ $CI_TOOL_CONTAINER =~ ^[a-f0-9]{64}$ ]]
 docker cp "$CI_TOOL_CONTAINER:/usr/local/bin/msboost-restore" "$CI_TOOL"
@@ -278,7 +281,7 @@ CI_KEY_BEFORE=$(env_get "$INSTALL_ROOT/.env" MASTER_KEY)
 
 # Seed only synthetic state while the test app is quiesced. No business state,
 # password, token or full database JSON is printed to the CI log.
-compose_live stop --timeout 30 caddy server >/dev/null
+compose_live stop --timeout 30 server >/dev/null
 compose_live exec -T database psql --username=msboost --dbname=msboost -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
 WITH source AS (SELECT payload::jsonb AS state FROM control_state WHERE id=1),
 admin AS (SELECT account.key FROM source CROSS JOIN LATERAL jsonb_each(source.state->'users') AS account WHERE account.value->>'role'='admin' LIMIT 1)
@@ -294,17 +297,11 @@ UPDATE control_state SET payload=jsonb_set(payload::jsonb,'{docs,tasks}',jsonb_b
 SQL
 CI_USERS_BEFORE=$(compose_live exec -T database psql --username=msboost --dbname=msboost -tAX -c "SELECT md5((payload::jsonb->'users')::text) FROM control_state WHERE id=1")
 [[ $CI_USERS_BEFORE =~ ^[a-f0-9]{32}$ ]]
-for volume in app_data caddy_data caddy_config; do
+for volume in app_data; do
   docker run --rm --network none --read-only --user 0:0 --entrypoint sh --mount "type=volume,source=msboost_$volume,target=/proof" "$POSTGRES_TEST_IMAGE" \
     -c 'umask 077; printf "%s\n" "MSBOOST isolated volume proof" > /proof/ci-proof.txt; chmod 600 /proof/ci-proof.txt; chown 10001:10001 /proof/ci-proof.txt'
 done
-for volume in caddy_data caddy_config; do
-  metadata=$(docker run --rm --network none --read-only --user 0:0 --entrypoint stat --mount "type=volume,source=msboost_$volume,target=/proof,readonly" "$POSTGRES_TEST_IMAGE" -c '%u:%g:%a' -- /proof/caddy)
-  [[ $metadata =~ ^[0-9]+:[0-9]+:[0-7]{3,4}$ ]]
-  CI_CADDY_METADATA[$volume]=$metadata
-  printf 'CI_DISASTER_CADDY_METADATA_BEFORE %s %s\n' "$volume" "$metadata"
-done
-disaster_resume_services caddy server >/dev/null
+compose_live up -d --no-deps --pull never --wait server >/dev/null
 printf '%s\n' 'CI_DISASTER_STAGE=config-directory-metadata'
 stat --printf='CI_DISASTER_PATH %n %u:%g:%a\n' -- "$INSTALL_ROOT" "$CI_ROOT"
 printf '%s\n' 'CI_DISASTER_STAGE=prepare-install-directory'
@@ -325,7 +322,7 @@ CI_BACKUP_VERIFY=0
 CI_WORKS+=("$DISASTER_WORK")
 ci_assert_backup_gate false
 [[ $DISASTER_PAUSE_RELEASE == 0 && ! -e $DISASTER_WORK/backup-pause.token ]]
-[[ $(compose_live ps --status running --services | sort | tr '\n' ' ') == 'caddy database server ' ]]
+[[ $(compose_live ps --status running --services | sort | tr '\n' ' ') == 'database server ' ]]
 mapfile -t CI_BUNDLES < <(find "$CI_ARCHIVES" -maxdepth 1 -type f -name 'msboost-disaster-*.tar.gz')
 [[ ${#CI_BUNDLES[@]} == 1 ]]
 CI_ARCHIVE=${CI_BUNDLES[0]}
@@ -334,7 +331,7 @@ CI_ARCHIVE=${CI_BUNDLES[0]}
 [[ ! -e $CI_ROOT/inspection/backup-pause.token ]]
 if tar -tzf "$CI_ARCHIVE" | grep -Fq backup-pause.token; then die 'CI backup archive contains the runtime gate credential'; exit 1; fi
 [[ ! -e $CI_ROOT/inspection/database.dump && -s $CI_ROOT/inspection/state.msb ]]
-[[ $("$CI_TOOL" disaster format --archive "$CI_ARCHIVE") == 2 ]]
+[[ $("$CI_TOOL" disaster format --archive "$CI_ARCHIVE") == 3 ]]
 [[ ! -e $CI_ROOT/inspection/caddy_data.tar && ! -e $CI_ROOT/inspection/caddy_config.tar ]]
 cmp "$INSTALL_ROOT/.env" "$CI_ROOT/inspection/site.env"
 "$CI_TOOL" disaster validate-volume --archive "$CI_ROOT/inspection/app_data.tar"
@@ -380,12 +377,17 @@ SQL
 )
 [[ $CI_STATE_OK == t ]]
 [[ $(compose_live exec -T database psql --username=msboost --dbname=msboost -tAX -c "SELECT to_regclass('public.control_state') IS NULL") == t ]]
-for volume in app_data caddy_data caddy_config; do
+for volume in app_data; do
   docker run --rm --network none --read-only --user 0:0 --entrypoint sh --mount "type=volume,source=msboost_$volume,target=/proof,readonly" "$POSTGRES_TEST_IMAGE" -c 'test ! -e /proof/ci-proof.txt'
 done
 docker run --rm --network none --read-only --user 0:0 --entrypoint sh --mount "type=volume,source=msboost_app_data,target=/proof,readonly" "$POSTGRES_TEST_IMAGE" -c 'test "$(stat -c "%u:%g:%a" /proof/master.key)" = 10001:10001:600; test "$(wc -c < /proof/master.key)" = 32'
 check_frontend
-bound=$(compose_live port caddy 80)
+[[ $(curl --fail --silent http://127.0.0.1:18181) == sentinel-one ]]
+[[ $(curl --fail --silent http://127.0.0.1:18182) == sentinel-two ]]
+[[ $(sha256sum "$CADDY_ROOT/sites-enabled/ci-other.caddy") == "$CI_OTHER_HASH" ]]
+curl --fail --silent -D "$CI_ROOT/headers" http://127.0.0.1/api/health >/dev/null
+grep -qi '^X-MSBOOST-Backup-Proof: system-caddy' "$CI_ROOT/headers"
+bound=127.0.0.1:80
 curl --fail --silent --show-error --noproxy '*' "http://$bound/api/settings" > "$CI_ROOT/restored-public-settings.json"
 jq -e '.maintenance == true and .paywx == false and .payali == false and .planSale == false' "$CI_ROOT/restored-public-settings.json" >/dev/null
 printf '%s\n' 'PASS: online backup and real Docker cold recovery preserved identity/balance, original key and article/attachment; excluded historical backup/cache files; restored a NEW database; maintenance on and payments off.'

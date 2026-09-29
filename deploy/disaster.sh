@@ -39,103 +39,6 @@ disaster_tool() {
   chmod 700 "$tool_dir/$asset" || return
   DISASTER_TOOL="$tool_dir/$asset"
 }
-# Bash's elapsed clock avoids wall-clock/NTP changes during the shared deadline.
-disaster_resume_clock() { printf '%s' "$SECONDS"; }
-
-disaster_resume_services() {
-  # Older Compose v2 supports up --wait but not start --wait. Never substitute
-  # up here: only the exact existing services paused by this snapshot may start.
-  # All services share one health-polling deadline. Docker CLI calls use the
-  # local daemon, but are not forcibly interrupted if the daemon itself stalls.
-  local service container identity state health required all_ready now remaining
-  local deadline=$(( $(disaster_resume_clock) + 180 ))
-  local -a containers=() services=()
-  [[ $# -gt 0 && $# -le 2 ]] || { die '需要明确的原有备份服务集合'; return 1; }
-  for service in "$@"; do
-    [[ $service == caddy || $service == server ]] || { die '备份恢复不能启动其他服务'; return 1; }
-    [[ " ${services[*]} " != *" $service "* ]] || { die '备份恢复服务重复'; return 1; }
-    container=$(compose_live ps --all --quiet "$service") || return
-    [[ $container =~ ^[a-f0-9]{64}$ ]] || { die "原有 $service 容器缺失或不唯一，未创建替代容器"; return 1; }
-    identity=$(docker inspect --type container --format '{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$container") || return
-    [[ $identity == "$PROJECT|$service" ]] || { die "原有 $service 容器归属不符"; return 1; }
-    containers+=("$container"); services+=("$service")
-  done
-  compose_live start "${services[@]}" || return
-  while :; do
-    now=$(disaster_resume_clock)
-    [[ $now -lt $deadline ]] || { die '原有服务在 180 秒内未全部恢复健康'; return 1; }
-    all_ready=1
-    for container in "${containers[@]}"; do
-      # Only state flags are read, never service environment or health output.
-      identity=$(docker inspect --type container --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{if .Config.Healthcheck}}{{if .Config.Healthcheck.Test}}{{if eq (index .Config.Healthcheck.Test 0) "NONE"}}none{{else}}required{{end}}{{else}}none{{end}}{{else}}none{{end}}' "$container") || { die '原有服务容器在恢复期间消失'; return 1; }
-      IFS='|' read -r state health required <<< "$identity"
-      case "$state" in
-        exited|dead|removing) die '原有服务启动后退出，未通过恢复检查'; return 1 ;;
-        running|created|restarting|paused) ;;
-        *) die '原有服务运行状态无效'; return 1 ;;
-      esac
-      [[ $health != unhealthy ]] || { die '原有服务健康检查失败'; return 1; }
-      [[ $required == none || $required == required ]] || { die '原有服务健康检查状态无效'; return 1; }
-      if [[ $state != running || ( $required == required && $health != healthy ) ]]; then all_ready=0; fi
-    done
-    now=$(disaster_resume_clock)
-    [[ $now -lt $deadline ]] || { die '原有服务在 180 秒内未全部恢复健康'; return 1; }
-    [[ $all_ready == 0 ]] || return 0
-    remaining=$((deadline - now)); [[ $remaining -le 2 ]] || remaining=2
-    sleep "$remaining" || return
-  done
-}
-
-disaster_pause_recovery_hint() {
-  local command
-  note '备份写入冻结可能仍然存在；它不会超时自动解除。不要删除原 token 文件或重新生成替代 token。'
-  note "私有恢复材料：$DISASTER_WORK/backup-pause.token（仅本机 root 可读，请勿上传或粘贴内容）。"
-  printf -v command 'MSBOOST_ENV_FILE=%q docker compose --project-name %q --env-file %q -f %q run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause end < %q' \
-    "$INSTALL_ROOT/.env" "$PROJECT" "$INSTALL_ROOT/.env" "$INSTALL_ROOT/deploy/compose.yml" "$DISASTER_WORK/backup-pause.token"
-  note '排除数据库 / Docker 故障后，在本机 root 终端执行以下命令，必须确认退出码为 0，再恢复原有控制面服务：'
-  note "$command"
-  note "备份前正在运行的控制面服务：${DISASTER_RUNNING[*]:-无}。此流程不会启动或重启客户 Agent / GOST。"
-}
-
-disaster_pause_begin() {
-  set +xv
-  local token mode=${1:-strict}
-  [[ -d $DISASTER_WORK && ! -L $DISASTER_WORK ]] || { die '备份门禁需要私有工作目录'; return 1; }
-  token=$(random_hex 32) || return
-  [[ $token =~ ^[a-f0-9]{64}$ ]] || { die '备份门禁随机凭据生成失败'; return 1; }
-  # Persist the only unlock credential before any database request. Exclusive
-  # creation plus the mktemp root-only parent prevents accidental replacement.
-  (umask 077; set -o noclobber; printf '%s\n' "$token" > "$DISASTER_WORK/backup-pause.token") || return
-  unset token
-  chmod 600 "$DISASTER_WORK/backup-pause.token" || return
-  sync -f "$DISASTER_WORK/backup-pause.token" || return
-  note "备份门禁私有工作目录：$DISASTER_WORK；异常退出时请保留其中的 backup-pause.token。"
-  # Record cleanup intent BEFORE begin: a failed/lost response does not prove
-  # that PostgreSQL rolled back. A missing gate makes end safely idempotent.
-  DISASTER_PAUSE_RELEASE=1
-  if [[ $mode == maintenance ]]; then
-    if ! printf '%s\n' "$(<"$DISASTER_WORK/backup-pause.token")" "$maintenance_confirmation" |
-      compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause begin-maintenance; then
-      die '手动维护备份门禁未确认成功，未执行停站；任务、备份活动、恢复冲突和无效记录不能通过风险确认绕过。'
-      return 1
-    fi
-    note '手动维护门禁已建立：你已接受旧链路因短租约中断的风险。此备份不承诺不断流，其他安全门禁仍有效。'
-  else
-    if ! compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause begin < "$DISASTER_WORK/backup-pause.token"; then
-      die '停站备份门禁未确认成功，未执行停站；旧工具、v1 / 混合链、未确认配置或恢复状态都会阻止备份。'
-      return 1
-    fi
-    note '停站备份门禁已建立，全部控制面业务写入暂时冻结；该检查仅核对已确认状态，不代表真实线路不断流验收已完成。'
-  fi
-}
-
-disaster_pause_end() {
-  [[ ${DISASTER_PAUSE_RELEASE:-0} == 1 ]] || return 0
-  [[ -f $DISASTER_WORK/backup-pause.token && ! -L $DISASTER_WORK/backup-pause.token ]] || { die '原备份门禁 token 文件缺失或类型无效，拒绝尝试替代凭据'; return 1; }
-  compose_live run --rm --no-deps -T --user 0:0 --entrypoint /usr/local/bin/msboost-restore server backup-pause end < "$DISASTER_WORK/backup-pause.token" || return
-  DISASTER_PAUSE_RELEASE=0
-}
-
 disaster_cleanup() {
   local code=$?
   trap - EXIT
@@ -143,19 +46,6 @@ disaster_cleanup() {
     disaster_record "${DISASTER_FAILURE_STAGE:-failed}" || true
   fi
   if [[ ${DISASTER_TOOL_CONTAINER:-} =~ ^[a-f0-9]{64}$ ]]; then docker rm "$DISASTER_TOOL_CONTAINER" >/dev/null || code=1; fi
-  # Never restart the control plane before confirmed unlock. This also handles
-  # an uncertain begin result, partial stop, failed export and an ordinary signal.
-  if ! disaster_pause_end; then
-    disaster_pause_recovery_hint
-    code=1
-  fi
-  # A scheduled snapshot may pause only these two known containers. Resume the
-  # exact services that were running, even if export/pack/disk/upload failed.
-  if [[ ${DISASTER_PAUSE_RELEASE:-0} != 1 && ${DISASTER_RESUME:-0} == 1 && ${#DISASTER_RUNNING[@]} -gt 0 ]]; then
-    if ! disaster_resume_services "${DISASTER_RUNNING[@]}"; then
-      note '备份后服务重新启动失败，请立即检查 msboost status/logs。'; code=1
-    fi
-  fi
   if [[ -n ${DISASTER_WORK:-} && $DISASTER_WORK == /root/msboost-disaster-work.* && ! -L $DISASTER_WORK ]]; then
     # On failure keep sensitive staging for diagnosis. It is always root-only.
     if [[ $code == 0 ]]; then rm -rf -- "$DISASTER_WORK"; else note "保留私有工作目录：$DISASTER_WORK"; fi
@@ -169,18 +59,9 @@ disaster_settings() {
 }
 disaster_assert_volume() {
   local name=$1
-  case "$name" in msboost_app_data|msboost_caddy_data|msboost_caddy_config|msboost_database_data) ;; *) return 1 ;; esac
+  case "$name" in msboost_app_data|msboost_database_data) ;; *) return 1 ;; esac
   [[ $(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$name") == "$PROJECT" ]] || { die "卷 $name 不属于本站"; return 1; }
 }
-disaster_maintenance_open_tty() {
-  if ! exec {maintenance_tty_fd}<>/dev/tty; then die '手动维护备份必须使用本机真实交互终端'; return 1; fi
-  disaster_maintenance_tty_valid || { die '手动维护备份不接受管道、文件或无终端输入'; return 1; }
-}
-disaster_maintenance_tty_valid() { [[ ${maintenance_tty_fd:-} =~ ^[0-9]+$ && -t $maintenance_tty_fd ]]; }
-disaster_maintenance_read() {
-  IFS= read -r -u "$maintenance_tty_fd" -p '逐次确认请输入 BACKUP_WITH_RELAY_INTERRUPTION（其他输入取消）: ' maintenance_confirmation || { die '确认已取消或结束，未执行停站'; return 1; }
-}
-
 disaster_record() {
   "$DISASTER_TOOL" disaster record --file "$INSTALL_ROOT/status/backup-history.json" --id "$DISASTER_RUN_ID" --stage "$1" "${@:2}"
 }
@@ -231,6 +112,7 @@ disaster_backup() {
   local -a configuration=(deploy install.sh .managed-by-msboost)
   [[ ! -f $INSTALL_ROOT/disaster.json ]] || configuration+=(disaster.json)
   tar -cf "$DISASTER_WORK/deployment.tar" -C "$INSTALL_ROOT" "${configuration[@]}" || return
+  caddy_export "$DISASTER_WORK/proxy.tar" || return
   local -a key_args=()
   [[ -n $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) ]] || key_args=(--master-key-file /app/data/master.key)
   note '[1/4] 在线导出网站数据、文章附件和原密钥（网站及节点保持运行）'
@@ -369,11 +251,11 @@ disaster_validate_environment() {
     [[ -z ${seen[$key]:-} && $value != *'$'* && $value != *'`'* && $value != *'"'* && $value != *"'"* && $value != *$'\r'* ]] || { die '备份 .env 存在重复键或不允许的插值/引号'; return 1; }
     seen[$key]=1
     case "$key" in
-      MSBOOST_DOMAIN|MSBOOST_SITE_ADDRESS|PUBLIC_URL|COOKIE_SECURE|MSBOOST_VERSION|MSBOOST_IMAGE|MSBOOST_IMAGE_ID|MSBOOST_DATABASE_NAME|POSTGRES_IMAGE|CADDY_IMAGE|ADMIN_EMAIL|ADMIN_PASSWORD|POSTGRES_PASSWORD|MASTER_KEY) ;;
+      MSBOOST_DOMAIN|MSBOOST_SITE_ADDRESS|PUBLIC_URL|COOKIE_SECURE|MSBOOST_VERSION|MSBOOST_IMAGE|MSBOOST_IMAGE_ID|MSBOOST_DATABASE_NAME|POSTGRES_IMAGE|MSBOOST_PROXY_MODE|ADMIN_EMAIL|ADMIN_PASSWORD|POSTGRES_PASSWORD|MASTER_KEY) ;;
       *) die '备份包含自定义环境字段，需人工审核恢复，未执行归档代码'; return 1 ;;
     esac
   done < "$file"
-  [[ $(env_get "$file" MSBOOST_IMAGE_ID) =~ ^sha256:[a-f0-9]{64}$ && $(env_get "$file" POSTGRES_IMAGE) =~ ^postgres@sha256:[a-f0-9]{64}$ && $(env_get "$file" CADDY_IMAGE) =~ ^caddy@sha256:[a-f0-9]{64}$ ]] || { die '备份镜像固定摘要无效'; return 1; }
+  [[ $(env_get "$file" MSBOOST_IMAGE_ID) =~ ^sha256:[a-f0-9]{64}$ && $(env_get "$file" POSTGRES_IMAGE) =~ ^postgres@sha256:[a-f0-9]{64}$ && $(env_get "$file" MSBOOST_PROXY_MODE) == systemd ]] || { die '备份镜像固定摘要或 systemd Caddy 部署标识无效'; return 1; }
   [[ $(env_get "$file" MSBOOST_IMAGE) =~ ^ghcr.io/mozziexwz/node@sha256:[a-f0-9]{64}$ || $(env_get "$file" MSBOOST_IMAGE) =~ ^msboost-release:v[0-9]+\.[0-9]+\.[0-9]+-(amd64|arm64)-[a-f0-9]{12}$ ]] || { die '备份镜像不是官方固定摘要或已校验 Release 归档'; return 1; }
   [[ $(env_get "$file" ADMIN_EMAIL) =~ ^[1-9][0-9]{4,14}@qq\.com$ && -n $(env_get "$file" ADMIN_PASSWORD) && -n $(env_get "$file" POSTGRES_PASSWORD) ]] || { die '备份缺少原管理员或数据库凭据'; return 1; }
   value=$(env_get "$file" MASTER_KEY)
@@ -397,6 +279,7 @@ disaster_restore() {
   "$DISASTER_TOOL" disaster verify --archive "$archive" >/dev/null || return
   note '备份包完整校验通过。'
   archive_format=$("$DISASTER_TOOL" disaster format --archive "$archive") || return
+  [[ $archive_format == 3 ]] || { die '本版本仅恢复 systemd Caddy 新版备份，不迁移旧 Docker Caddy 备份。'; return 1; }
   note '完整恢复将使用备份时的数据、原域名、密码和主密钥；在线备份的 HTTPS 证书会重新签发。请先停用原站点，备份之后的收款需人工核对。'
   confirm=$(read_tty '确认原站点已停机，且此 VPS 是全新目标，输入 RESTORE_NEW_MSBOOST: ')
   [[ $confirm == RESTORE_NEW_MSBOOST ]] || { die '已取消'; return 1; }
@@ -406,14 +289,17 @@ disaster_restore() {
   "$DISASTER_TOOL" disaster unpack --archive "$archive" --dir "$DISASTER_WORK/bundle" || return
   local recovered="$DISASTER_WORK/bundle"
   local -a restore_volumes=(app_data)
-  if [[ $archive_format == 1 ]]; then restore_volumes+=(caddy_data caddy_config)
-  else note '在线备份恢复：网站数据和原密钥将恢复，HTTPS 证书由 Caddy 自动重新签发；历史备份文件不重复迁入。'; fi
+  note '恢复本站业务数据及 MSBOOST 扩展配置；不覆盖其他网站、共享 Caddy 配置及共享证书。'
   # Only the verified current release's scripts/Compose are installed. Archived
   # scripts are retained for reference but never executed or used as Compose.
   for volume in "${restore_volumes[@]}"; do "$DISASTER_TOOL" disaster validate-volume --archive "$recovered/$volume.tar" || return; done
   image=$(env_get "$recovered/site.env" MSBOOST_IMAGE)
   disaster_validate_environment "$recovered/site.env" || return
   [[ $(env_get "$recovered/site.env" MSBOOST_VERSION) == "$VERSION" ]] || { die "需使用备份同版本的安装入口恢复；当前入口 $VERSION 与备份不符，不进行隐式升级。"; return 1; }
+  "$DISASTER_TOOL" disaster validate-volume --archive "$recovered/proxy.tar" || return
+  install -d -m 0700 "$DISASTER_WORK/proxy" || return
+  tar -xf "$recovered/proxy.tar" -C "$DISASTER_WORK/proxy" --no-same-owner --no-same-permissions || return
+  caddy_import "$DISASTER_WORK/proxy" || return
   STAGE=$(mktemp -d "$DISASTER_WORK/image-stage.XXXXXXXX") || return
   install -m 600 "$recovered/site.env" "$STAGE/.env" || return
   if [[ $image == ghcr.io/mozziexwz/node@sha256:* ]]; then
@@ -431,10 +317,10 @@ disaster_restore() {
   recovered_db="msboost_restore_$(date -u +%Y%m%d%H%M%S)_$(random_hex 4)"
   env_set "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME "$recovered_db" || return
   compose_live config --quiet || return
-  compose_live pull database caddy || return
+  compose_live pull database || return
   # Do not even create app/proxy containers before import: a daemon restart
   # must not accidentally launch a still-empty site's bootstrap code.
-  for volume in app_data database_data caddy_data caddy_config; do
+  for volume in app_data database_data; do
     docker volume create --label "com.docker.compose.project=$PROJECT" --label "com.docker.compose.volume=$volume" "msboost_$volume" >/dev/null || return
   done
   image=$(env_get "$INSTALL_ROOT/.env" POSTGRES_IMAGE)

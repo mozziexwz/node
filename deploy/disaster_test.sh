@@ -54,6 +54,9 @@ assert_root_path() { [[ $INSTALL_ROOT == "$CASE_ROOT"/installation && ! -L $INST
 assert_managed() { assert_root_path && [[ -f $INSTALL_ROOT/.managed-by-msboost && $(<"$INSTALL_ROOT/.managed-by-msboost") == "$MARKER" && -f $INSTALL_ROOT/.env && ! -L $INSTALL_ROOT/.env && -d $INSTALL_ROOT/deploy ]]; }
 require_platform() { :; }
 ensure_docker() { trace ensure-docker; }
+caddy_ensure() { :; }
+caddy_import() { trace restore-owned-proxy; }
+caddy_publish() { trace "host-caddy $*"; }
 install_launcher() { trace install-launcher; }
 check_frontend() { trace frontend-check; [[ $MOCK_FAIL != frontend ]]; }
 server_identity() { printf 'sha256:%064d' 1; }
@@ -247,12 +250,13 @@ mock_disaster_tool() {
     upload) [[ -s $archive ]] || fail 'upload before local archive exists'; [[ $MOCK_FAIL != upload ]] ;;
     retain) [[ $MOCK_FAIL != retention ]] ;;
     verify) [[ $MOCK_FAIL != archive-verify ]] ;;
-    format) printf 1 ;;
+    format) printf 3 ;;
     unpack)
       [[ $MOCK_FAIL != unpack ]] || return 1
       mkdir -p -- "$directory"
       cp -- "$CASE_ROOT/recovery.env" "$directory/site.env"
       for field in app_data caddy_data caddy_config; do printf isolated-volume > "$directory/$field.tar"; done
+      tar -cf "$directory/proxy.tar" --files-from /dev/null
       printf isolated-encrypted-state > "$directory/state.msb"
       printf isolated-pg-dump > "$directory/database.dump"
       # An archived script is data only; restore must install SOURCE_DIR files.
@@ -277,7 +281,7 @@ fixture() {
   DISASTER_ARCHIVE="$CASE_ROOT/source.tar.gz"; printf fixture-archive > "$DISASTER_ARCHIVE"
   {
     printf '%s\n' MSBOOST_DOMAIN=panel.example.com MSBOOST_SITE_ADDRESS=panel.example.com PUBLIC_URL=https://panel.example.com COOKIE_SECURE=true "MSBOOST_VERSION=$VERSION"
-    printf 'MSBOOST_IMAGE=ghcr.io/mozziexwz/node@sha256:%064d\nMSBOOST_IMAGE_ID=sha256:%064d\nPOSTGRES_IMAGE=postgres@sha256:%064d\nCADDY_IMAGE=caddy@sha256:%064d\n' 1 1 2 3
+    printf 'MSBOOST_IMAGE=ghcr.io/mozziexwz/node@sha256:%064d\nMSBOOST_IMAGE_ID=sha256:%064d\nPOSTGRES_IMAGE=postgres@sha256:%064d\nMSBOOST_PROXY_MODE=systemd\n' 1 1 2
     printf '%s\n' ADMIN_EMAIL=123456789@qq.com ADMIN_PASSWORD=isolated-admin-password POSTGRES_PASSWORD=isolated-postgres-password
     printf 'MASTER_KEY=%064d\n' 9
   } > "$CASE_ROOT/recovery.env"

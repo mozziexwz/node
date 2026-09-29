@@ -15,6 +15,7 @@ assert_managed() { :; }
 disaster_validate_environment() { :; }
 disaster_tool() { DISASTER_TOOL=tool; }
 disaster_assert_volume() { :; }
+caddy_export() { tar -cf "$1" --files-from /dev/null; }
 disaster_settings() { case "$1" in localDir) printf '%s' "$WORK/backups";; hasRemote) printf true;; *) return 1;; esac; }
 env_get() { [[ $2 == MASTER_KEY ]] && printf private-fixture-key; }
 random_hex() { printf 0123456789abcdef; }

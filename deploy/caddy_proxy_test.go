@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-// Snapshot from both official lists, verified 2026-09-13. Changes must be
+// Snapshot from both official lists, verified 2026-09-29. Changes must be
 // reviewed together with Caddyfile; no live trust-list download at startup.
 const cloudflareRanges = "103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 104.16.0.0/13 104.24.0.0/14 108.162.192.0/18 131.0.72.0/22 141.101.64.0/18 162.158.0.0/15 172.64.0.0/13 173.245.48.0/20 188.114.96.0/20 190.93.240.0/20 197.234.240.0/22 198.41.128.0/17 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32"
 
@@ -36,11 +36,11 @@ func TestCaddyCloudflareTrustBoundary(t *testing.T) {
 	var trust []string
 	for _, line := range strings.Split(config, "\n") {
 		parts := strings.Fields(line)
-		if len(parts) > 1 && parts[0] == "trusted_proxies" {
-			if parts[1] != "static" || trust != nil {
+		if len(parts) > 1 && parts[0] == "remote_ip" {
+			if trust != nil {
 				t.Fatal("only one static allowlist is permitted")
 			}
-			trust = parts[2:]
+			trust = parts[1:]
 		}
 	}
 	want := strings.Fields(cloudflareRanges)
@@ -55,7 +55,7 @@ func TestCaddyCloudflareTrustBoundary(t *testing.T) {
 			t.Fatalf("unsafe trusted proxy range %q", raw)
 		}
 	}
-	for _, directive := range []string{"trusted_proxies_strict", "client_ip_headers CF-Connecting-IP X-Forwarded-For", "header_up X-Forwarded-For {client_ip}", "header_up -CF-Connecting-IP", "header_up -Forwarded", "header_up -X-Real-IP", "header_up -True-Client-IP"} {
+	for _, directive := range []string{"header_regexp CF-Connecting-IP", "vars msboost_client_ip {remote_host}", "header_up X-Forwarded-For {vars.msboost_client_ip}", "header_up -CF-Connecting-IP", "header_up -Forwarded", "header_up -X-Real-IP", "header_up -True-Client-IP"} {
 		if !strings.Contains(config, directive) {
 			t.Fatalf("missing %s", directive)
 		}
@@ -64,7 +64,7 @@ func TestCaddyCloudflareTrustBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(compose, []byte("TRUSTED_PROXY_CIDRS: 172.30.86.2/32")) || !bytes.Contains(compose, []byte("ipv4_address: 172.30.86.2")) {
+	if !bytes.Contains(compose, []byte("TRUSTED_PROXY_CIDRS: 172.30.86.1/32")) || !bytes.Contains(compose, []byte("ports: [127.0.0.1:18080:8080]")) || bytes.Contains(compose, []byte("  caddy:")) {
 		t.Fatal("app must trust precisely the Caddy peer, not Cloudflare or all Docker addresses")
 	}
 }
@@ -104,9 +104,10 @@ func TestRealCaddyClientIP(t *testing.T) {
 			address := listener.Addr().String()
 			_ = listener.Close()
 			config := productionCaddyfile(t)
-			config = strings.Replace(config, "{$MSBOOST_SITE_ADDRESS}", "http://"+address, 1)
-			config = strings.Replace(config, "server:8080", backend.URL, 1)
-			config = strings.Replace(config, "{", "{\n    admin off\n    persist_config off", 1)
+			config = strings.Replace(config, "MSBOOST_SITE_ADDRESS_PLACEHOLDER", "http://"+address, 1)
+			config = strings.Replace(config, "127.0.0.1:18080", backend.URL, 1)
+			config = strings.Replace(config, "import /etc/caddy/msboost-custom/*.caddy", "", 1)
+			config = "{\n admin off\n persist_config off\n}\n" + config
 			if trusted {
 				config = strings.Replace(config, cloudflareRanges, "127.0.0.1/32", 1)
 			}
@@ -149,7 +150,7 @@ func TestRealCaddyClientIP(t *testing.T) {
 				{"no_forwarding_headers", "", "", "127.0.0.1"},
 				{"cf_overrides_forged_xff", "198.51.100.72", "192.0.2.66, 203.0.113.90", "198.51.100.72"},
 				{"cf_ipv6", "2001:db8::42", "192.0.2.66", "2001:db8::42"},
-				{"xff_rightmost_not_spoofed_leftmost", "", "192.0.2.66, 203.0.113.90", "203.0.113.90"},
+				{"missing_cf_header_never_trusts_xff", "", "192.0.2.66, 203.0.113.90", "127.0.0.1"},
 				{"invalid_headers_fall_back_to_peer", "not-an-ip", "not-an-ip", "127.0.0.1"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {

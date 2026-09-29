@@ -73,12 +73,15 @@ func TestOnlineBundleAndHistory(t *testing.T) {
 		}
 	}
 	id := "msboost-disaster-20260928T010203Z-0123456789abcdef.tar.gz"
+	if err := os.WriteFile(filepath.Join(dir, "proxy.tar"), testFiles(t)["app_data.tar"], 0600); err != nil {
+		t.Fatal(err)
+	}
 	archive := filepath.Join(outputDir, id)
 	if err := PackOnline(dir, archive); err != nil {
 		t.Fatal(err)
 	}
 	m, err := Verify(archive)
-	if err != nil || m.Version != 2 || len(m.Files) != 4 {
+	if err != nil || m.Version != 3 || len(m.Files) != 5 {
 		t.Fatal(m, err)
 	}
 	if err := Unpack(archive, filepath.Join(outputDir, "restored")); err != nil {

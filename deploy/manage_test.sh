@@ -37,6 +37,12 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 expect_failure() { if "$@"; then fail "expected failure: $*"; fi; }
 require_platform() { :; }
 ensure_docker() { :; }
+caddy_ensure() { :; }
+caddy_remove_custom() { :; }
+caddy_publish() {
+  printf 'host-caddy %s\n' "$*" >> "$TRACE"
+  if [[ -f $TEST_WORK/fail-next-caddy-up ]]; then rm -- "$TEST_WORK/fail-next-caddy-up"; return 1; fi
+}
 assert_root_path() { [[ $INSTALL_ROOT == "$TEST_WORK"/* && ! -L $INSTALL_ROOT ]]; }
 assert_managed() { assert_root_path && [[ $(<"$INSTALL_ROOT/.managed-by-msboost") == "$MARKER" && -f $INSTALL_ROOT/.env ]]; }
 install_launcher() { :; }
@@ -156,10 +162,10 @@ fixture() {
 
 assert_start_sequence() {
   local operations=()
-  mapfile -t operations < <(grep -E '^(compose .* up |frontend-check$)' "$TRACE")
-  [[ ${#operations[@]} == 3 ]] || fail 'startup must have two bounded Compose calls followed by frontend verification'
+  mapfile -t operations < <(grep -E '^(compose .* up |host-caddy enable$|frontend-check$)' "$TRACE")
+  [[ ${#operations[@]} == 3 ]] || fail 'startup must check containers, system Caddy and frontend'
   [[ ${operations[0]} == *' up -d --no-build --pull never --wait --wait-timeout 180 database server' ]] || fail 'database/server health must precede proxy recreation'
-  [[ ${operations[1]} == *' up -d --no-build --pull never --no-deps --force-recreate --wait --wait-timeout 180 caddy' ]] || fail 'Caddy configuration was not explicitly reloaded by isolated recreation'
+  [[ ${operations[1]} == 'host-caddy enable' ]] || fail 'host Caddy was not configured after app health'
   [[ ${operations[2]} == frontend-check ]] || fail 'frontend was checked before new Caddy started'
 }
 
@@ -167,8 +173,8 @@ assert_start_sequence() {
 # trusted-proxy address even when Caddy starts after the server becomes healthy.
 grep -Fq 'ip_range: 172.30.86.128/25' "$TEST_REPO/deploy/compose.yml" || fail 'dynamic address pool overlaps reserved proxy address'
 grep -Fq 'gateway: 172.30.86.1' "$TEST_REPO/deploy/compose.yml" || fail 'network gateway contract changed'
-grep -Fq 'ipv4_address: 172.30.86.2' "$TEST_REPO/deploy/compose.yml" || fail 'Caddy fixed address missing'
-grep -Fq 'TRUSTED_PROXY_CIDRS: 172.30.86.2/32' "$TEST_REPO/deploy/compose.yml" || fail 'trusted proxy does not match Caddy'
+grep -Fq 'TRUSTED_PROXY_CIDRS: 172.30.86.1/32' "$TEST_REPO/deploy/compose.yml" || fail 'host gateway proxy trust missing'
+grep -Fq 'ports: [127.0.0.1:18080:8080]' "$TEST_REPO/deploy/compose.yml" || fail 'backend must remain loopback-only'
 
 fixture normal
 install_site
@@ -215,7 +221,7 @@ expect_failure purge_site
 MOCK_VOLUME_OWNER=msboost
 purge_site
 [[ ! -e $INSTALL_ROOT ]] || fail 'purge did not remove owned fixture'
-[[ $(grep -c '^volume rm msboost_' "$TRACE") == 4 ]] || fail 'purge did not target exactly four fixed volumes'
+[[ $(grep -c '^volume rm msboost_' "$TRACE") == 2 ]] || fail 'purge did not target exactly two fixed volumes'
 ! grep -q 'prune' "$TRACE" || fail 'global Docker prune invoked'
 
 fixture failed-install
@@ -225,55 +231,6 @@ expect_failure install_site
 [[ ! -f $TEST_WORK/builds ]] || fail 'failed install silently built'
 MOCK_PULL_FAIL=0
 repair_site
-
-# Reproduce the exact persisted v0.1.1 failure without executing an old unsafe
-# installer. This path must never create new secrets or skip a live DB backup.
-fixture os-release-recovery
-MOCK_PULL_FAIL=1
-expect_failure install_site
-env_set "$INSTALL_ROOT/.env" MSBOOST_VERSION '12 (bookworm)'
-env_set "$INSTALL_ROOT/.env" MSBOOST_IMAGE 'ghcr.io/mozziexwz/node:12 (bookworm)'
-cp "$INSTALL_ROOT/.env" "$TEST_WORK/polluted.env"
-MOCK_PULL_FAIL=0
-RECOVER_INCOMPLETE=1
-env_set "$INSTALL_ROOT/.env" MASTER_KEY ''
-expect_failure upgrade_site
-cp "$TEST_WORK/polluted.env" "$INSTALL_ROOT/.env"
-env_set "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID "sha256:$(printf '%064d' 1)"
-expect_failure upgrade_site
-cp "$TEST_WORK/polluted.env" "$INSTALL_ROOT/.env"
-MOCK_CONTAINERS=1
-expect_failure upgrade_site
-MOCK_CONTAINERS=0
-MOCK_PS_FAIL=1
-expect_failure upgrade_site
-MOCK_PS_FAIL=0
-MOCK_VOLUMES=1
-expect_failure upgrade_site
-MOCK_VOLUMES=0
-MOCK_VOLUME_LIST_FAIL=1
-expect_failure upgrade_site
-MOCK_VOLUME_LIST_FAIL=0
-MOCK_NETWORK=1
-expect_failure upgrade_site
-MOCK_NETWORK=0
-MOCK_PULL_FAIL=1
-expect_failure upgrade_site
-MOCK_PULL_FAIL=0
-cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/polluted.env" || fail 'rejected recovery modified original environment'
-MOCK_FRONT_FAIL=1
-expect_failure upgrade_site
-[[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == "$VERSION" ]] || fail 'recovery did not replace corrupt version'
-cmp -s "$SNAPSHOT/.env" "$TEST_WORK/polluted.env" || fail 'recovery did not back up original environment'
-[[ -f $SNAPSHOT/deploy/manage.sh && -f $SNAPSHOT/install.sh ]] || fail 'recovery did not back up deployment scripts'
-for key in MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS PUBLIC_URL COOKIE_SECURE ADMIN_EMAIL ADMIN_PASSWORD POSTGRES_PASSWORD MASTER_KEY; do
-  [[ $(env_get "$INSTALL_ROOT/.env" "$key") == "$(env_get "$TEST_WORK/polluted.env" "$key")" ]] || fail "recovery changed $key"
-done
-! grep -q 'pg_dump' "$TRACE" || fail 'incomplete recovery tried to back up nonexistent database'
-! grep -Eq '(^| )(rm|prune|--volumes|-v)( |$)' "$TRACE" || fail 'recovery deleted resources'
-MOCK_FRONT_FAIL=0
-repair_site
-expect_failure upgrade_site
 
 fixture invalid-release
 VERSION='12 (bookworm)'
@@ -366,7 +323,7 @@ expect_failure start_live
 : > "$TRACE"
 touch "$TEST_WORK/fail-next-caddy-up"
 expect_failure start_live
-[[ $(grep -c '^compose .* up ' "$TRACE") == 2 ]] || fail 'proxy failure did not follow healthy application'
+[[ $(grep -c '^compose .* up ' "$TRACE") == 1 ]] || fail 'proxy failure did not follow healthy application'
 ! grep -q '^frontend-check$' "$TRACE" || fail 'failed proxy reported frontend success'
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/proxy-original.env" || fail 'failed proxy start changed keys'
 
@@ -381,7 +338,7 @@ expect_failure upgrade_site
 cmp -s "$INSTALL_ROOT/deploy/Caddyfile" "$TEST_WORK/proxy-original.Caddyfile" || fail 'proxy startup failure did not restore previous Caddyfile'
 cmp -s "$INSTALL_ROOT/.env" "$TEST_WORK/proxy-original.env" || fail 'proxy startup failure did not restore previous environment'
 [[ -s $SNAPSHOT/database.dump ]] || fail 'proxy upgrade rollback had no database snapshot'
-[[ $(grep -c '^compose .* up .* --force-recreate .* caddy$' "$TRACE") == 2 ]] || fail 'rollback did not recreate Caddy with restored file'
+[[ $(grep -c '^host-caddy enable$' "$TRACE") == 2 ]] || fail 'rollback did not restore the host Caddy configuration'
 [[ $(grep -c '^frontend-check$' "$TRACE") == 1 ]] || fail 'only successfully restarted rollback proxy may reach frontend check'
 ! grep -Eq '(^| )(prune|--volumes|-v)( |$)' "$TRACE" || fail 'proxy upgrade rollback removed data'
 
@@ -391,4 +348,4 @@ assert_start_sequence
 cmp -s "$INSTALL_ROOT/deploy/Caddyfile" "$SOURCE_DIR/deploy/Caddyfile" || fail 'successful upgrade did not publish the new Caddyfile'
 [[ $(env_get "$INSTALL_ROOT/.env" MASTER_KEY) == "$(env_get "$TEST_WORK/proxy-original.env" MASTER_KEY)" ]] || fail 'successful proxy upgrade changed master key'
 
-printf '%s\n' 'PASS: offline lifecycle, proxy-only recreation/rollback, incomplete recovery, atomic config, GHCR/Release fallback, checksum/tag/architecture/imageID, HTTP and input contracts'
+printf '%s\n' 'PASS: offline lifecycle, system Caddy handoff/rollback, atomic config, GHCR/Release fallback, checksum/tag/architecture/imageID, HTTP and input contracts'

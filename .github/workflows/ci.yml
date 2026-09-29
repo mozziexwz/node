@@ -128,6 +128,7 @@ jobs:
           bash install.sh --help
           bash agent.sh --help
           bash deploy/manage_test.sh
+          bash deploy/host_caddy_test.sh
           bash deploy/bootstrap_test.sh
           bash deploy/backup_activity_recovery_test.sh
           bash deploy/relay_recovery_test.sh
@@ -220,6 +221,8 @@ jobs:
           printf '%s\n' "ADMIN_EMAIL=$ADMIN_EMAIL" "ADMIN_PASSWORD=$ADMIN_PASSWORD" "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" "PUBLIC_URL=$PUBLIC_URL" "COOKIE_SECURE=$COOKIE_SECURE" > "$MSBOOST_ENV_FILE"
           docker compose --project-name msboost --file deploy/compose.yml config --quiet
           docker compose --project-name msboost --file deploy/compose.yml up --detach --wait --wait-timeout 180
+          sudo bash -c 'source deploy/manage.sh; caddy_ensure; sed "s/MSBOOST_SITE_ADDRESS_PLACEHOLDER/http:\/\/localhost/g" deploy/Caddyfile > /etc/caddy/sites-enabled/msboost-ci.caddy; chmod 644 /etc/caddy/sites-enabled/msboost-ci.caddy; caddy_validate; systemctl reload caddy.service'
+          curl --fail http://127.0.0.1:18080/api/health | jq --exit-status --arg version "$VERSION" '.status == "ok" and .version == $version'
           curl --fail --retry 15 --retry-connrefused --retry-delay 2 --resolve localhost:80:127.0.0.1 http://localhost/api/health | jq --exit-status --arg version "$VERSION" '.status == "ok" and .version == $version'
           docker compose --project-name msboost --file deploy/compose.yml logs --tail 30
       - name: Export prebuilt image fallback for anonymous Release downloads

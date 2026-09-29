@@ -27,6 +27,7 @@ const maxBundleSize int64 = 64 << 30
 var bundleName = regexp.MustCompile(`^msboost-disaster-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{16}\.tar\.gz$`)
 var members = []string{"site.env", "deployment.tar", "state.msb", "database.dump", "app_data.tar", "caddy_data.tar", "caddy_config.tar"}
 var onlineMembers = []string{"site.env", "deployment.tar", "state.msb", "app_data.tar"}
+var systemMembers = []string{"site.env", "deployment.tar", "state.msb", "app_data.tar", "proxy.tar"}
 
 type digest struct {
 	SHA256 string `json:"sha256"`
@@ -139,7 +140,7 @@ func Pack(directory, output string) error {
 // Mutable caches, prior backup files and ACME runtime storage are not snapshots
 // of business data. Caddy recreates its certificates on the restored host.
 func PackOnline(directory, output string) error {
-	return packBundle(directory, output, 2, onlineMembers)
+	return packBundle(directory, output, 3, systemMembers)
 }
 
 func packBundle(directory, output string, version int, files []string) error {
@@ -259,12 +260,15 @@ func readBundle(archive, destination string) (Manifest, error) {
 		return m, errors.New("整站归档缺少有效清单")
 	}
 	raw, err := io.ReadAll(tr)
-	if err != nil || json.Unmarshal(raw, &m) != nil || (m.Version != 1 && m.Version != 2) || m.CreatedAt <= 0 || m.CreatedAt > time.Now().Add(5*time.Minute).Unix() {
+	if err != nil || json.Unmarshal(raw, &m) != nil || (m.Version != 1 && m.Version != 2 && m.Version != 3) || m.CreatedAt <= 0 || m.CreatedAt > time.Now().Add(5*time.Minute).Unix() {
 		return m, errors.New("整站备份清单无效")
 	}
 	files := members
 	if m.Version == 2 {
 		files = onlineMembers
+	}
+	if m.Version == 3 {
+		files = systemMembers
 	}
 	if len(m.Files) != len(files) {
 		return m, errors.New("整站备份文件清单不完整")

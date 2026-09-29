@@ -1,23 +1,15 @@
-# Cloudflare 客户端 IP 信任链
+# Cloudflare 客户端 IP
 
-默认 Compose 的路径是「客户端 → Cloudflare（可选）→ Caddy → 应用」。应用只信任 Caddy 的固定地址 `172.30.86.2/32`；不扩大为 Cloudflare 段、整个 Docker 网络或公网。
+路径为「访客 → Cloudflare（可选）→ 宿主机 Caddy → 回环发布端口 → 应用」。应用仅信任专用 Docker 桥接网关 `172.30.86.1/32`，不信任整个 Docker 子网或所有公网地址。Docker Engine 必须为 28 或更新版本。
 
-`deploy/Caddyfile` 为 Caddy 配置 15 条 IPv4、7 条 IPv6 官方 Cloudflare 网络（2026-09-13 核对）。只有实际 TCP 对端属于这些网络时，Caddy 才解析 `CF-Connecting-IP`，缺失时按 `X-Forwarded-For` 从右向左找客户端。非 Cloudflare 对端的自报 IP 头无效，采用实际对端地址。相关行为见 [Caddy 可信代理文档](https://caddyserver.com/docs/caddyfile/options#trusted_proxies) 和 [严格解析文档](https://caddyserver.com/docs/caddyfile/options#trusted_proxies_strict)。需要 Caddy 2.8 或更高版本。
+本站片段用实际 TCP 对端 `remote_ip` 匹配官方 Cloudflare IPv4/IPv6 清单（2026-09-29 核对），只在匹配且头部形态符合 IP 时采用 `CF-Connecting-IP`。不修改共享 Caddy 的全局 trusted_proxies 配置，不影响其他网站。
 
-Caddy 给应用的 `X-Forwarded-For` 被覆盖为单个已验证的 `{client_ip}`，而不是「访客、Cloudflare 边缘」原始链；其他 IP 身份头会移除。这样应用不会把最后一个 Cloudflare 边缘地址误认为执行机 IP，且不接受直连伪造值。执行机表显示的是最近心跳观察到的来源，可能为 NAT 出口；已有旧 IP 会在下一次成功心跳更新，不代表主机独占公网地址。
+直接连接时使用实际对端地址；不会接受客户端伪造的 X-Forwarded-For。Cloudflare 头缺失或明显无效也使用实际对端，不回退信任自报 XFF。最终应用继续用严格 IP 解析，不能把畸形字符串当成合法地址。其他 IP 身份头在转发时移除，XFF 覆盖为一个值。
 
-## 运维边界
+Cloudflare Worker、Pseudo IPv4 的覆盖模式、移除访客 IP 的 Managed Transform 可能改变或隐藏访客地址；显示 NAT/边缘地址不代表主机独占 IP。本站不自动修改 Cloudflare 设置，也不提供只允许 Cloudflare 访问源站的防火墙规则。
 
-- Cloudflare 地址按发布版本维护，不在启动时自动下载并信任。更新前核对官方 [IPv4 清单](https://www.cloudflare.com/ips-v4)、[IPv6 清单](https://www.cloudflare.com/ips-v6)，同步修改配置和回归测试。不配置 `0.0.0.0/0`、`::/0` 或 `private_ranges`。
-- 域名 DNS 直接解析到源站也可使用；不能因为前面还有额外负载均衡器，就把该中间层未经审核地加入可信列表。若 Docker/rootless 网络隐藏 TCP 来源，仍会拒绝信任头并显示该中间层地址，需单独核验网络而非放宽到全网。
-- Cloudflare 的同域 Worker 可以改变所报告地址；跨域 Worker 可能显示 Cloudflare 的固定 Worker 地址。启用 Pseudo IPv4 的 `Overwrite Headers` 会改写 IPv6 访客地址，若需原始地址应由域名管理员选择关闭该模式或 `Add Header`。移除访客 IP 的 Managed Transform 也会限制识别能力；这些均不由本站自动修改。[Cloudflare 头部说明](https://developers.cloudflare.com/fundamentals/reference/http-headers/)
-- 此配置不是「只允许 Cloudflare 访问源站」的防火墙或源站认证。直连仍可访问，但不能伪造 IP 头；应用权限、CSRF 和凭据认证不变。
-- 普通应用升级保留原 Caddy 镜像 digest。部署前应在隔离环境用实际固定镜像执行 `caddy validate`；过旧镜像不应直接套用新指令，需计划升级依赖。配置本身不修改防火墙或 Cloudflare 账户。
+地址清单按版本审核，不在启动时在线下载信任。变更须同步配置和测试；不要添加全网、private_ranges 或未经审核的负载均衡器。
 
-## 隔离回归
+实际 Caddy 回归：设置 CADDY_TEST_BINARY 为已验证二进制，执行 `go test ./deploy -run TestRealCaddyClientIP -count=1 -v`。覆盖直连伪造头、可信来源、IPv6、缺失/异常头和单值 XFF。可信边缘模拟只修改隔离测试配置，监听临时回环端口，不更改现网配置。
 
-使用 v0.2.2 或更新的部署管理器：它等待数据库和应用健康后，只强制重建 Caddy，重新挂载并加载当前配置；回退也重新加载旧配置。仅复制 Caddyfile 或普通 `compose up` 不保证运行中代理使用新内容，旧文件 inode 也可能仍被容器绑定。重建代理可能短暂中断连接，应安排维护窗口。
-
-`go test ./deploy -count=1` 检查官方网段快照、严格解析和应用固定可信边界。设置 `CADDY_TEST_BINARY` 为经过校验的 Caddy 二进制，再运行 `go test ./deploy -run TestRealCaddyClientIP -count=1 -v`，会启动临时回环 HTTP 服务，真实验证：直连伪造头被忽略、CF 优先、IPv6、XFF 右侧解析、异常头回退及应用仅收到单值 XFF。
-
-可信 CF 路径测试只在临时配置把 CF 段替换成回环测试地址，不修改生产配置，不冒用公网 CF 地址，不读业务数据、不占用 80/443、不修改运行中的 Caddy。
+官方参考：[Cloudflare IPv4](https://www.cloudflare.com/ips-v4)、[IPv6](https://www.cloudflare.com/ips-v6)、[头部说明](https://developers.cloudflare.com/fundamentals/reference/http-headers/)、[Caddy 请求匹配](https://caddyserver.com/docs/caddyfile/matchers)。

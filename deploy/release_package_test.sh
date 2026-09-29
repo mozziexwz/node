@@ -22,7 +22,7 @@ if [[ $(uname -s) == MINGW* || $(uname -s) == MSYS* ]]; then
 fi
 SOURCE_DIR="$TEST_WORK/source"
 mkdir -p "$SOURCE_DIR/deploy"
-for file in install.sh deploy/manage.sh deploy/compose.yml deploy/compose.build.yml deploy/Caddyfile deploy/disaster.sh deploy/backup_activity_recovery.sh deploy/relay_recovery.sh; do
+for file in install.sh deploy/manage.sh deploy/host-caddy.sh deploy/compose.yml deploy/compose.build.yml deploy/Caddyfile deploy/disaster.sh deploy/backup_activity_recovery.sh deploy/relay_recovery.sh; do
   printf 'isolated-release-source\n' > "$SOURCE_DIR/$file"
 done
 validate_source || fail 'complete current source rejected'
@@ -33,7 +33,7 @@ for module in disaster.sh backup_activity_recovery.sh relay_recovery.sh; do
 done
 legacy="$TEST_WORK/legacy"
 mkdir -p "$legacy/deploy"
-for file in install.sh deploy/manage.sh deploy/compose.yml deploy/compose.build.yml deploy/Caddyfile; do
+for file in install.sh deploy/manage.sh deploy/host-caddy.sh deploy/compose.yml deploy/compose.build.yml deploy/Caddyfile; do
   printf 'isolated-legacy-snapshot\n' > "$legacy/$file"
 done
 copy_deployment_files "$legacy" "$TEST_WORK/copied-legacy" || fail 'legacy snapshot copy compatibility regressed'

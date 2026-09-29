@@ -1,24 +1,23 @@
-{
-    servers {
-        # Cloudflare official IPv4/IPv6 ranges, verified 2026-09-13.
-        # https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6
-        # Do not add private_ranges or a catch-all: direct requests are untrusted.
-        trusted_proxies static 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 104.16.0.0/13 104.24.0.0/14 108.162.192.0/18 131.0.72.0/22 141.101.64.0/18 162.158.0.0/15 172.64.0.0/13 173.245.48.0/20 188.114.96.0/20 190.93.240.0/20 197.234.240.0/22 198.41.128.0/17 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
-        trusted_proxies_strict
-        client_ip_headers CF-Connecting-IP X-Forwarded-For
-    }
-}
-
-{$MSBOOST_SITE_ADDRESS} {
+# MSBOOST_SYSTEM_CADDY_V1
+# Site template. No shared/global settings and no private .env in Caddy's environment.
+MSBOOST_SITE_ADDRESS_PLACEHOLDER {
     encode zstd gzip
-    reverse_proxy server:8080 {
-        # The app trusts only Caddy's fixed Compose address. Forward a single
-        # validated client IP, not the original chain plus a Cloudflare edge IP.
-        header_up X-Forwarded-For {client_ip}
-        header_up -CF-Connecting-IP
-        header_up -CF-Connecting-IPv6
-        header_up -True-Client-IP
-        header_up -X-Real-IP
-        header_up -Forwarded
+    @msboost_cloudflare {
+        remote_ip 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 104.16.0.0/13 104.24.0.0/14 108.162.192.0/18 131.0.72.0/22 141.101.64.0/18 162.158.0.0/15 172.64.0.0/13 173.245.48.0/20 188.114.96.0/20 190.93.240.0/20 197.234.240.0/22 198.41.128.0/17 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+        header_regexp CF-Connecting-IP ^[0-9a-fA-F:.]+$
+    }
+    import /etc/caddy/msboost-custom/*.caddy
+    route {
+        vars msboost_client_ip {remote_host}
+        vars @msboost_cloudflare msboost_client_ip {http.request.header.CF-Connecting-IP}
+        reverse_proxy 127.0.0.1:18080 {
+            # Never trust user XFF, even when the Cloudflare client header is absent.
+            header_up X-Forwarded-For {vars.msboost_client_ip}
+            header_up -CF-Connecting-IP
+            header_up -CF-Connecting-IPv6
+            header_up -True-Client-IP
+            header_up -X-Real-IP
+            header_up -Forwarded
+        }
     }
 }

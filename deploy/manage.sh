@@ -6,14 +6,13 @@ umask 077
 INSTALL_ROOT=/opt/msboost
 PROJECT=msboost
 MARKER=MSBOOST_DEPLOY_V1
-VERSION=v1.2.0
+VERSION=v2.0.0
 SOURCE_DIR=
 DOMAIN=
 IP_ADDRESS=
 ADMIN_EMAIL=
 ALLOW_HTTP=0
 BUILD=0
-RECOVER_INCOMPLETE=0
 STAGE=
 SNAPSHOT=
 DISASTER_ARCHIVE=
@@ -26,14 +25,13 @@ usage() {
     '  msboost install --domain panel.example.com --email 12345678@qq.com' \
     '  msboost install --ip SERVER_IPV4 --email 12345678@qq.com --allow-insecure-http' \
     '  msboost upgrade [--version vX.Y.Z] [--build]' \
-    '  bash install.sh upgrade --version vX.Y.Z --recover-incomplete  （仅恢复 v0.1.1 的失败首次安装）' \
     '  msboost repair|status|logs|uninstall|purge' \
     '  msboost admin-password        本机交互修改已有管理员密码（不停止服务）' \
     '  msboost disaster-backup|disaster-config|disaster-disable|disaster-status|disaster-test|disaster-retry' \
     '  bash install.sh disaster-restore --archive /root/msboost-backup/整站备份.tar.gz' \
     '  --build 需显式选择，并提供已校验的完整源码包。' \
     'uninstall 保留配置、密钥、数据库、应用数据、证书及备份。' \
-    'purge 需要两次终端确认，只删除本站安装及四个站点数据卷。'
+    'purge 需要两次终端确认，只删除本站安装、本站 Caddy 配置及两个业务数据卷；保留共享 Caddy 与证书。'
 }
 read_tty() {
   local prompt=$1 answer
@@ -76,6 +74,7 @@ assert_managed() {
   [[ -d $INSTALL_ROOT && ! -L $INSTALL_ROOT/.managed-by-msboost && -f $INSTALL_ROOT/.managed-by-msboost && $(<"$INSTALL_ROOT/.managed-by-msboost") == "$MARKER" ]] || { die '目录不是此安装器管理的项目，拒绝覆盖或删除'; return 1; }
   [[ ! -L $INSTALL_ROOT/.env && -f $INSTALL_ROOT/.env && $(stat -c %u "$INSTALL_ROOT/.env") == 0 ]] || { die '.env 必须是 root 所有的普通文件'; return 1; }
   [[ ! -L $INSTALL_ROOT/deploy && -d $INSTALL_ROOT/deploy ]] || { die 'deploy 目录异常'; return 1; }
+  [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_PROXY_MODE) == systemd ]] || { die '本版本仅支持全新 systemd Caddy 安装，不接管旧 Docker Caddy；请备份后使用旧版本卸载清理，再全新安装。'; return 1; }
 }
 env_get() {
   local file=$1 key=$2
@@ -138,6 +137,7 @@ write_initial_environment() {
   {
     printf 'MSBOOST_DOMAIN=%s\nMSBOOST_SITE_ADDRESS=%s\nPUBLIC_URL=%s\nCOOKIE_SECURE=%s\n' "$host" "$site" "$public" "$secure"
     printf 'MSBOOST_VERSION=%s\nMSBOOST_IMAGE=ghcr.io/mozziexwz/node:%s\n' "$VERSION" "$VERSION"
+    printf 'MSBOOST_PROXY_MODE=systemd\n'
     printf 'ADMIN_EMAIL=%s\nADMIN_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nMASTER_KEY=%s\n' "$ADMIN_EMAIL" "$(random_admin_password)" "$(random_hex 32)" "$(random_hex 32)"
   } > "$INSTALL_ROOT/.env"
   chmod 600 "$INSTALL_ROOT/.env"
@@ -175,10 +175,13 @@ ensure_docker() {
     docker info >/dev/null || return
   fi
   docker compose up --help | grep -q -- --wait-timeout || { die '需要支持 up --wait-timeout 的 Docker Compose v2'; return 1; }
+  local engine_version
+  engine_version=$(docker version --format '{{.Server.Version}}') || return
+  [[ ${engine_version%%.*} =~ ^[0-9]+$ && ${engine_version%%.*} -ge 28 ]] || { die '宿主机回环端口发布要求 Docker Engine 28 或更新版本；不会自动升级影响其他容器。'; return 1; }
 }
 compose_at() {
   local directory=$1 environment=$2; shift 2
-  (unset MSBOOST_IMAGE MSBOOST_VERSION MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS MSBOOST_DATABASE_NAME POSTGRES_PASSWORD POSTGRES_IMAGE CADDY_IMAGE
+  (unset MSBOOST_IMAGE MSBOOST_VERSION MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS MSBOOST_DATABASE_NAME POSTGRES_PASSWORD POSTGRES_IMAGE
    MSBOOST_ENV_FILE="$environment" docker compose --project-name "$PROJECT" --env-file "$environment" -f "$directory/deploy/compose.yml" "$@")
 }
 compose_live() { compose_at "$INSTALL_ROOT" "$INSTALL_ROOT/.env" "$@"; }
@@ -190,11 +193,12 @@ docker() { (unset DOCKER_HOST DOCKER_CONTEXT DOCKER_DEFAULT_PLATFORM; command do
 assert_no_collision() {
   local name
   [[ -z $(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT") ]] || { die '已存在 msboost 项目的容器，拒绝接管'; return 1; }
-  for name in msboost_app_data msboost_database_data msboost_caddy_data msboost_caddy_config; do
+  for name in msboost_app_data msboost_database_data; do
     if docker volume inspect "$name" >/dev/null 2>&1; then die "发现未登记数据卷 $name，请先确认其归属；不会覆盖"; return 1; fi
   done
   if docker network inspect msboost_control >/dev/null 2>&1; then die '已存在 msboost_control 网络，拒绝接管'; return 1; fi
-  if command -v ss >/dev/null && [[ -n $(ss -H -ltn '( sport = :80 or sport = :443 )') ]]; then die 'TCP 80 或 443 已被使用；请先处理冲突，不会停止其他服务'; return 1; fi
+  if command -v ss >/dev/null && [[ -n $(ss -H -ltn '( sport = :18080 )') ]]; then die 'TCP 18080 已被其他应用使用，未接管或停止'; return 1; fi
+  [[ ! -e $CADDY_SITE && ! -L $CADDY_SITE ]] || { die '已有 MSBOOST 站点配置，拒绝接管；请先完成原安装清理'; return 1; }
 }
 validate_source() {
   [[ -n $SOURCE_DIR && -d $SOURCE_DIR ]] || { die '需要校验过的 release bundle；请使用仓库根 install.sh'; return 1; }
@@ -202,14 +206,14 @@ validate_source() {
   local file
   # Current release sources must be complete before any host mutation. The
   # copy helper remains optional for modules only when copying old snapshots.
-  for file in install.sh deploy/manage.sh deploy/compose.yml deploy/compose.build.yml deploy/Caddyfile deploy/disaster.sh deploy/backup_activity_recovery.sh deploy/relay_recovery.sh; do
+  for file in install.sh deploy/manage.sh deploy/host-caddy.sh deploy/compose.yml deploy/compose.build.yml deploy/Caddyfile deploy/disaster.sh deploy/backup_activity_recovery.sh deploy/relay_recovery.sh; do
     [[ -f $SOURCE_DIR/$file && ! -L $SOURCE_DIR/$file ]] || { die "部署包缺少普通文件 $file"; return 1; }
   done
 }
 copy_deployment_files() {
   local from=$1 to=$2 file
   install -d -m 0700 "$to/deploy" || return
-  for file in manage.sh compose.yml compose.build.yml Caddyfile; do
+  for file in manage.sh host-caddy.sh compose.yml compose.build.yml Caddyfile; do
     install -m 0600 "$from/deploy/$file" "$to/deploy/$file" || return
   done
   # Optional only for snapshot/rollback compatibility with pre-disaster releases.
@@ -246,12 +250,12 @@ prepare_stage() {
   compose_at "$STAGE" "$STAGE/.env" config --quiet || return
 }
 acquire_images() {
-  note '  → 获取数据库、反向代理和应用镜像'
+  note '  → 获取数据库和应用镜像（反向代理使用系统 Caddy）'
   # Dependency failures are distinct from a GHCR application-image failure.
-  compose_at "$STAGE" "$STAGE/.env" pull database caddy || { die 'PostgreSQL/Caddy 镜像拉取失败，停止部署，不会误用应用镜像备用来源'; return 1; }
+  compose_at "$STAGE" "$STAGE/.env" pull database || { die 'PostgreSQL 镜像拉取失败，停止部署'; return 1; }
   if [[ $BUILD == 1 ]]; then
     note '已显式选择源码构建；这会占用较多内存、CPU、磁盘和时间。'
-    (unset MSBOOST_IMAGE MSBOOST_VERSION MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS MSBOOST_DATABASE_NAME POSTGRES_PASSWORD POSTGRES_IMAGE CADDY_IMAGE
+    (unset MSBOOST_IMAGE MSBOOST_VERSION MSBOOST_DOMAIN MSBOOST_SITE_ADDRESS MSBOOST_DATABASE_NAME POSTGRES_PASSWORD POSTGRES_IMAGE
      MSBOOST_ENV_FILE="$STAGE/.env" docker compose --project-name "$PROJECT" --env-file "$STAGE/.env" -f "$STAGE/deploy/compose.yml" -f "$STAGE/deploy/compose.build.yml" build server) || return
   else
     if ! compose_at "$STAGE" "$STAGE/.env" pull server; then
@@ -264,14 +268,12 @@ acquire_images() {
   freeze_images
 }
 freeze_images() {
-  local server postgres caddy
+  local server postgres
   server=$(env_get "$STAGE/.env" MSBOOST_IMAGE)
   if [[ $server != msboost-local:* && $server != msboost-release:* ]]; then freeze_image MSBOOST_IMAGE "$server" ghcr.io/mozziexwz/node || return; fi
   record_server_identity || return
   postgres=$(env_get "$STAGE/.env" POSTGRES_IMAGE); postgres=${postgres:-postgres:17-bookworm}
-  caddy=$(env_get "$STAGE/.env" CADDY_IMAGE); caddy=${caddy:-caddy:2-alpine}
   freeze_image POSTGRES_IMAGE "$postgres" postgres || return
-  freeze_image CADDY_IMAGE "$caddy" caddy || return
 }
 freeze_image() {
   local key=$1 reference=$2 repository=$3 digest candidate digests
@@ -366,12 +368,8 @@ start_live() {
   expected_id=$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID)
   actual_id=$(server_identity "$(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE)") || return
   [[ $expected_id =~ ^sha256:[a-f0-9]{64}$ && $actual_id == "$expected_id" ]] || { die '已安装应用 imageID 发生变化或缺失，拒绝启动；请运行 repair 核实原版本'; return 1; }
-  # A bind-mounted Caddyfile can change without changing Compose's service
-  # hash. Start/verify the application first, then recreate only the proxy so
-  # it remounts the current file and actually loads its new (or rolled-back)
-  # configuration. Never force-recreate the database or other dependencies.
   compose_live up -d --no-build --pull never --wait --wait-timeout 180 database server || return
-  compose_live up -d --no-build --pull never --no-deps --force-recreate --wait --wait-timeout 180 caddy || return
+  caddy_publish enable || return
   check_frontend
 }
 replace_live_environment() (
@@ -404,6 +402,7 @@ install_site() {
   collect_install_settings || return
   ensure_docker || return
   assert_no_collision || return
+  caddy_ensure || return
   install -d -m 0700 "$INSTALL_ROOT" || return
   printf '%s\n' "$MARKER" > "$INSTALL_ROOT/.managed-by-msboost"
   write_initial_environment || return
@@ -425,7 +424,7 @@ upgrade_site() {
   [[ ! -e $INSTALL_ROOT/.disaster-incomplete && ! -L $INSTALL_ROOT/.disaster-incomplete ]] || { die '灾难导入未完成，升级不会绕过恢复隔离标记'; return 1; }
   validate_source || return
   ensure_docker || return
-  if [[ $RECOVER_INCOMPLETE == 1 ]]; then recover_incomplete_site; return; fi
+  caddy_ensure || return
   prepare_stage || return
   acquire_images || return
   check_relay_upgrade || return
@@ -450,47 +449,6 @@ check_relay_upgrade() {
     --env DATABASE_HOST=127.0.0.1 --env DATABASE_PORT=5432 --env DATABASE_USER=msboost --env "DATABASE_NAME=$database_name" --env DATABASE_SSLMODE=disable \
     --entrypoint /usr/local/bin/msboost-restore "$image" relay-upgrade-check
 }
-recover_incomplete_site() {
-  # Narrow recovery for the v0.1.1 os-release collision, not a way to bypass
-  # database backups for an existing or merely stopped deployment.
-  local resources name key
-  [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == '12 (bookworm)' &&
-     $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE) == 'ghcr.io/mozziexwz/node:12 (bookworm)' &&
-     -z $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID) ]] || {
-    die '--recover-incomplete 仅用于版本被写成 12 (bookworm) 且从未启动的失败安装；已有业务请正常 repair/upgrade'; return 1;
-  }
-  [[ $BUILD == 0 ]] || { die '首次安装恢复只使用预构建镜像'; return 1; }
-  for key in ADMIN_EMAIL ADMIN_PASSWORD POSTGRES_PASSWORD MASTER_KEY; do
-    [[ -n $(env_get "$INSTALL_ROOT/.env" "$key") ]] || { die "缺少现有 $key，停止恢复；不会生成替代密钥或密码"; return 1; }
-  done
-  resources=$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT") || return
-  [[ -z $resources ]] || { die '检测到现有 MSBOOST 容器，拒绝首次安装恢复；不会停止或删除业务'; return 1; }
-  resources=$(docker volume ls --format '{{.Name}}') || return
-  while IFS= read -r name; do
-    case "$name" in msboost_app_data|msboost_database_data|msboost_caddy_data|msboost_caddy_config)
-      die "检测到已有数据卷 $name，拒绝跳过数据库备份；不会删除数据"; return 1 ;;
-    esac
-  done <<< "$resources"
-  resources=$(docker network ls --format '{{.Name}}') || return
-  while IFS= read -r name; do
-    [[ $name != msboost_control ]] || { die '检测到已有 MSBOOST 网络，停止首次安装恢复'; return 1; }
-  done <<< "$resources"
-  assert_no_collision || return
-  prepare_stage || return
-  acquire_images || return
-  snapshot_configuration || return
-  note "已保存原始配置与脚本到 $SNAPSHOT；恢复保留域名、管理员密码和主密钥。"
-  if ! apply_stage; then
-    if [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_VERSION) == "$VERSION" && -n $(env_get "$INSTALL_ROOT/.env" MSBOOST_IMAGE_ID) ]]; then
-      die '恢复未通过健康/HTTPS检查；新版本配置及全部密钥已保留。修正 DNS/防火墙后执行 msboost repair；不要彻底清理。'
-    else
-      die '部署文件写入失败；原始配置与备份保留。检查磁盘/权限后重新执行新安装脚本的 --recover-incomplete 命令；不要彻底清理。'
-    fi
-    return 1
-  fi
-  install_launcher || return
-  note "失败的首次安装已恢复到 $VERSION：$(env_get "$INSTALL_ROOT/.env" PUBLIC_URL)；密码仍在 root-only /opt/msboost/.env。"
-}
 repair_site() {
   assert_managed || return
   [[ ! -e $INSTALL_ROOT/.disaster-incomplete && ! -L $INSTALL_ROOT/.disaster-incomplete ]] || { die '灾难导入尚未完成，repair 不会绕过恢复隔离标记；请先检查保留的私有恢复目录。'; return 1; }
@@ -502,7 +460,8 @@ repair_site() {
   [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { die '已安装版本记录无效'; return 1; }
   STAGE=$(mktemp -d "$INSTALL_ROOT/.stage.XXXXXXXX") || return
   install -m 0600 "$INSTALL_ROOT/.env" "$STAGE/.env" || return
-  compose_live pull database caddy || { die 'PostgreSQL/Caddy 镜像不可用；保留当前数据和配置'; return 1; }
+  caddy_ensure || return
+  compose_live pull database || { die 'PostgreSQL 镜像不可用；保留当前数据和配置'; return 1; }
   case "$image" in
     ghcr.io/mozziexwz/node:v*|ghcr.io/mozziexwz/node@sha256:*)
       if ! compose_live pull server; then note 'GHCR 不可用，尝试同版本 Release 预构建归档，并检查原 imageID。'; load_release_image "$expected_id" || return; fi ;;
@@ -524,33 +483,36 @@ repair_site() {
 uninstall_site() {
   assert_managed || return
   if declare -F disaster_timer >/dev/null; then disaster_timer off || return; fi
+  caddy_publish disable || return
   compose_live down --timeout 30 || return
   note '已卸载本站容器与专用网络；数据库、应用数据、TLS证书、密钥、.env 和备份均保留。恢复请运行 msboost repair。'
   note '未删除 Docker、镜像或其他项目；未操作任何客户 VPS 和独立 Agent。'
 }
 purge_site() {
   assert_managed || return
-  note '不可恢复操作：将删除 MSBOOST 的数据库、应用文件、证书、主密钥、配置及本机部署备份。请先完成离机备份。'
+  note '不可恢复操作：将删除 MSBOOST 数据库、应用文件、主密钥、本站配置及本机部署备份；保留共享 Caddy、共享证书和其他站点。请先完成离机备份。'
   [[ $(read_tty '第一次确认，请输入 DELETE_MSBOOST: ') == DELETE_MSBOOST ]] || { die '清理已取消'; return 1; }
   [[ $(read_tty '第二次确认，请输入完整路径 /opt/msboost: ') == /opt/msboost ]] || { die '清理已取消'; return 1; }
   if declare -F disaster_timer >/dev/null; then disaster_timer remove || return; fi
   local volume label
-  for volume in msboost_app_data msboost_database_data msboost_caddy_data msboost_caddy_config; do
+  for volume in msboost_app_data msboost_database_data; do
     if docker volume inspect "$volume" >/dev/null 2>&1; then
       label=$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$volume")
       [[ $label == "$PROJECT" ]] || { die "数据卷 $volume 不属于项目 msboost，停止清理"; return 1; }
     fi
   done
+  caddy_publish disable || return
   compose_live down --timeout 30 || return
-  for volume in msboost_app_data msboost_database_data msboost_caddy_data msboost_caddy_config; do
+  for volume in msboost_app_data msboost_database_data; do
     if docker volume inspect "$volume" >/dev/null 2>&1; then
       [[ -z $(docker ps -aq --filter "volume=$volume") ]] || { die "$volume 仍被容器引用，拒绝删除"; return 1; }
       docker volume rm "$volume" || return
     fi
   done
   assert_managed || return
+  caddy_remove_custom || return
   remove_managed_installation || return
-  note '已永久删除 /opt/msboost 与四个本站命名卷；只能从独立离机备份恢复。Docker、镜像、其他项目与独立 Agent 均未删除。'
+  note '已永久删除 /opt/msboost、本站 Caddy 配置与两个业务卷；只能从离机备份恢复。共享 Caddy/证书、Docker、其他站点及独立 Agent 未删除。'
 }
 remove_managed_installation() {
   [[ $INSTALL_ROOT == /opt/msboost && $(realpath -m "$INSTALL_ROOT") == /opt/msboost && ! -L $INSTALL_ROOT ]] || { die '最终清理路径验证失败'; return 1; }
@@ -650,7 +612,7 @@ manage_main() {
         shift 2 ;;
       --allow-insecure-http) ALLOW_HTTP=1; shift ;;
       --build) BUILD=1; shift ;;
-      --recover-incomplete) RECOVER_INCOMPLETE=1; shift ;;
+      --recover-incomplete) die '不再提供旧版本恢复或 Docker Caddy 迁移，请全新安装'; return 2 ;;
       *) die "未知参数 $1"; return 2 ;;
     esac
   done
@@ -676,14 +638,12 @@ manage_main() {
     assert_managed || return
     exec bash "$INSTALL_ROOT/install.sh" disaster-restore --version "$VERSION" --archive "$DISASTER_ARCHIVE"
   fi
-  if [[ $RECOVER_INCOMPLETE == 1 && $action != upgrade ]]; then die '--recover-incomplete 只能用于 upgrade'; return 2; fi
   if [[ $action != install && ( -n $DOMAIN || -n $IP_ADDRESS || -n $ADMIN_EMAIL || $ALLOW_HTTP == 1 ) ]]; then die '域名/IP/邮箱仅用于首次安装；升级修复不会重置配置'; return 2; fi
   if [[ $action == upgrade && -z $SOURCE_DIR ]]; then
     assert_managed || return
     local -a args=(upgrade)
     [[ $version_given == 0 ]] || args+=(--version "$VERSION")
     [[ $BUILD == 0 ]] || args+=(--build)
-    [[ $RECOVER_INCOMPLETE == 0 ]] || args+=(--recover-incomplete)
     exec bash "$INSTALL_ROOT/install.sh" "${args[@]}"
   fi
   # The lock covers every mutation and is retained until this process exits.
@@ -699,8 +659,8 @@ manage_main() {
   case "$action" in
     install) install_site ;; upgrade) upgrade_site ;; repair) repair_site ;;
     uninstall) uninstall_site ;; purge) purge_site ;;
-    status) assert_managed && compose_live ps ;;
-    logs) assert_managed && compose_live logs --tail 200 server caddy database ;;
+    status) assert_managed && compose_live ps && systemctl status caddy.service --no-pager ;;
+    logs) assert_managed && compose_live logs --tail 200 server database && journalctl -u caddy.service -n 80 --no-pager ;;
     admin-password) admin_password_site ;;
     relay-reconnect) relay_reconnect_site ;;
     disaster-backup) disaster_backup ;;
@@ -713,4 +673,5 @@ manage_main() {
   esac
 }
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/host-caddy.sh"
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then manage_main "$@"; fi
