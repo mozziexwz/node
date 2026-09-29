@@ -73,6 +73,9 @@ func ValidateRequest(r Request) error {
 		if r.Cleanup == nil || (r.Cleanup.Scope != "msboost" && r.Cleanup.Scope != "relay") || r.Front != nil || r.DD != nil || len(r.ClientConfig) > 0 {
 			return errors.New("清理参数无效")
 		}
+		if r.Cleanup.ManagedTaskID != "" && (r.Cleanup.Scope != "relay" || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`).MatchString(r.Cleanup.ManagedTaskID)) {
+			return errors.New("定向清理任务编号无效")
+		}
 		if r.Kind == "cleanup" && (!r.Cleanup.Confirm || r.Cleanup.PreviewID == "" || !validSHA(r.Cleanup.Digest)) {
 			return errors.New("请先预览并明确确认清理范围")
 		}

@@ -23,6 +23,7 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 	now := time.Now()
 	result := make(chan executor.Result, 1)
 	job := Task{ID: ID(), UserID: userID, Kind: "front", Host: ssh.Host, State: "queued", Phase: "paid_front", Message: "等待配置此线路的客户前置机", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli()}
+	job.SSHPort, job.SSHFingerprint = ssh.Port, ssh.Fingerprint
 	t.mu.Lock()
 	err := t.app.Store.Update(func(s *State) error {
 		if maintenance, _ := s.Settings["maintenance"].(bool); maintenance {
@@ -43,6 +44,14 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 		}
 		if err := trustSSH(s, userID, ssh); err != nil {
 			return err
+		}
+		for _, rule := range ListDocs[UserRule](s, "user_rules") {
+			if rule.UserID == userID && rule.State == "awaiting_front" && rule.EntryAddress == targetHost && rule.EntryPort == targetPort {
+				rule.FrontTaskID, rule.FrontStatus = job.ID, "deploying"
+				if err := SaveDoc(s, "user_rules", userID+":"+rule.RouteID, rule); err != nil {
+					return err
+				}
+			}
 		}
 		return SaveDoc(s, "tasks", job.ID, job)
 	})

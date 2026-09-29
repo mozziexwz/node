@@ -255,7 +255,9 @@ func TestBackupPauseTokenFrameAndRestoreIsolation(t *testing.T) {
 	if err := isolateRestoredState(s, true); err != nil {
 		t.Fatal(err)
 	}
-	if backupPauseGatePresent(s) || len(s.Docs["backup_operations"]) != 0 || !restoredRelayRecoveryRequired(s) || !boolSetting(s, "maintenance") {
+	// This fixture has no nodes or forwarding history. An old global flag is
+	// not evidence of remote runtime and must not poison future enrollment.
+	if backupPauseGatePresent(s) || len(s.Docs["backup_operations"]) != 0 || restoredRelayRecoveryRequired(s) || !boolSetting(s, "maintenance") {
 		t.Fatal("restore isolation confused local gate and relay recovery")
 	}
 }

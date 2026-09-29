@@ -4,7 +4,7 @@ package control
 // not only a fresh keep_last acknowledgement. Restore cannot infer stop from an
 // expired lease, absent capability flag, or revoked management credential.
 func restoreAgentNeedsRecovery(s *State, agent RelayAgent) bool {
-	if agent.ProtocolVersion >= 2 || agent.OfflinePolicy == "keep_last" || agent.KeepLastConfirmed || agent.ReconcileState == "recovery_required" {
+	if agent.ProtocolVersion > 0 || agent.BootID != "" || agent.LastSeen > 0 || agent.OfflinePolicy == "keep_last" || agent.KeepLastConfirmed || agent.ReconcileState == "recovery_required" {
 		return true
 	}
 	if _, ok := s.Docs["relay_v2_catalogs"][agent.ID]; ok {

@@ -125,7 +125,7 @@ func TestCleanupPythonIsolatedInventoryAndMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"preview", "cleanup", "old-v030-cleanup", "legacy-cleanup", "credential-mismatch-load", "credential-mismatch-exec", "credential-other-name", "changed", "unknown", "symlink", "dropin", "stop-hook", "continued-hook", "propagated-stop", "also-unit", "failure-trigger", "new-section"} {
+	for _, scenario := range []string{"preview", "cleanup", "scoped-cleanup", "old-v030-cleanup", "legacy-cleanup", "credential-mismatch-load", "credential-mismatch-exec", "credential-other-name", "changed", "unknown", "symlink", "dropin", "stop-hook", "continued-hook", "propagated-stop", "also-unit", "failure-trigger", "new-section"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			write := func(path, data string) {
@@ -189,9 +189,13 @@ def fake_run(args,**kwargs):
     with open(` + strconvQuote(root+"/calls") + `, 'a') as f: f.write(json.dumps(args)+'\n')
 subprocess.run=fake_run
 `
-			script = strings.Replace(script, "scope,expected,action=sys.argv[1:]", mock+"\nscope,expected,action=sys.argv[1:]", 1)
+			script = strings.Replace(script, "scope,expected,action=sys.argv[1:4]", mock+"\nscope,expected,action=sys.argv[1:4]", 1)
 			run := func(action, digest string) ([]byte, error) {
-				cmd := exec.Command(python, "-", "relay", digest, action)
+				selected := ""
+				if scenario == "scoped-cleanup" {
+					selected = "task1"
+				}
+				cmd := exec.Command(python, "-", "relay", digest, action, selected)
 				cmd.Stdin = strings.NewReader(script)
 				return cmd.CombinedOutput()
 			}
@@ -211,6 +215,8 @@ subprocess.run=fake_run
 				return
 			}
 			switch scenario {
+			case "scoped-cleanup":
+				write("etc/msboost-free/unrelated-task/untouched", "keep")
 			case "credential-mismatch-load", "credential-mismatch-exec", "credential-other-name":
 				text := unitText
 				switch scenario {
@@ -256,7 +262,7 @@ subprocess.run=fake_run
 				write(unit, text)
 			}
 			out, err = run("cleanup", report.Digest)
-			if scenario == "cleanup" || scenario == "old-v030-cleanup" || scenario == "legacy-cleanup" {
+			if scenario == "cleanup" || scenario == "scoped-cleanup" || scenario == "old-v030-cleanup" || scenario == "legacy-cleanup" {
 				if err != nil {
 					t.Fatalf("cleanup: %s %v", out, err)
 				}
@@ -265,6 +271,11 @@ subprocess.run=fake_run
 				}
 				if _, err := os.Stat(filepath.Join(root, unit)); !os.IsNotExist(err) {
 					t.Fatal("owned unit remains")
+				}
+				if scenario == "scoped-cleanup" {
+					if _, err := os.Stat(filepath.Join(root, "etc/msboost-free/unrelated-task/untouched")); err != nil {
+						t.Fatal("scoped cleanup touched another task")
+					}
 				}
 			} else {
 				if err == nil {
@@ -342,7 +353,7 @@ def fake_run(args,**kwargs):
     with open(` + strconvQuote(root+"/calls") + `,'a') as f:f.write(json.dumps(args)+'\n')
 subprocess.run=fake_run
 `
-			script = strings.Replace(script, "scope,expected,action=sys.argv[1:]", mock+"\nscope,expected,action=sys.argv[1:]", 1)
+			script = strings.Replace(script, "scope,expected,action=sys.argv[1:4]", mock+"\nscope,expected,action=sys.argv[1:4]", 1)
 			run := func(action, digest string) ([]byte, error) {
 				cmd := exec.Command(python, "-", "msboost", digest, action)
 				cmd.Stdin = strings.NewReader(script)

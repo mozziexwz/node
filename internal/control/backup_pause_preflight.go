@@ -178,7 +178,7 @@ func backupPausePreflight(s *State, now int64) BackupPauseReport {
 				}
 				action, _ := relayV2Desired(s, agent, rule, now)
 				if rule.State == "pending" || rule.State == "awaiting_front" || action == "revoke" || action == "upsert" && seg.AckState != "ready" || action == "pause" && seg.AckState != "stopped" {
-					block(rule.ID, seg.AgentID, "intent_unconfirmed", "旧链路仍有待完成的运行或停止意图，维护风险确认不能替代执行结果")
+					block(rule.ID, seg.AgentID, "intent_unconfirmed", "此配置的运行或停止结果尚未确认，请先检查节点连接与用户中转")
 				}
 				if seg.Runtime.Protocol == "tls" {
 					if seg.Runtime.TLSCertificate == "" || seg.SealedTLSKey == "" {
@@ -187,7 +187,7 @@ func backupPausePreflight(s *State, now int64) BackupPauseReport {
 				} else if _, err := relayruntime.RuntimeHash(seg.Runtime); err != nil {
 					block(rule.ID, seg.AgentID, "invalid_record", "旧转发段的运行配置无效")
 				}
-				block(rule.ID, seg.AgentID, "offline_unsupported", "存在 v1 或未确认协议的转发段，停站后可能触发短租约中断")
+				block(rule.ID, seg.AgentID, "offline_unsupported", "历史转发记录尚未完成核查，无法保证停站后的业务状态；请先恢复节点管理连接")
 				continue
 			}
 			agent, exists := agents[seg.AgentID]
@@ -244,7 +244,7 @@ func backupPausePreflight(s *State, now int64) BackupPauseReport {
 			block(command.RuleID, command.AgentID, "command_history_invalid", "当前命令缺少一致的持久历史记录")
 		}
 		if !segments[key] && !(command.Action == "revoke" && command.AckState == "stopped" && command.AppliedAt > 0 && command.AppliedAt <= now) {
-			block(command.RuleID, command.AgentID, "orphan_command", "存在脱离规则拓扑的命令，缺少终态停止证明")
+			block(command.RuleID, command.AgentID, "orphan_command", "发现缺少业务关联的历史配置，尚未确认远端已停止；记录与端口仍保留")
 		}
 	}
 	for _, old := range backupPauseHistoryConflicts(commands, history) {

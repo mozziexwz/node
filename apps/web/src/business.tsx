@@ -18,7 +18,7 @@ import {
   date,
   gb,
 } from "./ui";
-import { ConfigUpload, SSHFields, SSH, prepareSSH } from "./tools";
+import { ConfigUpload, SSHFields, SSH, prepareSSH, TaskDetail } from "./tools";
 import { PaymentReturn } from "./payment-return";
 import { relayMemberLabel, relayNeedsRecovery } from "./relay-status";
 import { RelayStatusDetail } from "./relay-status-view";
@@ -443,6 +443,7 @@ export function Orders({
   );
 }
 export function Routes({ user }: { user: RecordData }) {
+  const [frontTask, setFrontTask] = useState<RecordData | null>(null);
   const { data, error, reload } = useData("/api/routes"),
     { data: rulesData, reload: reloadRules } = useData("/api/user/rules");
   const [selected, setSelected] = useState<RecordData | null>(null),
@@ -568,6 +569,25 @@ export function Routes({ user }: { user: RecordData }) {
                   member
                 />
               )}
+              {rule?.frontStatus === "check_customer_vps" && (
+                <Notice tone="orange">
+                  前置机执行结果需要核查。请核查并按本次任务清理残留；完成前会保留线路端口，不要重复部署。
+                </Notice>
+              )}
+              {rule?.frontTaskId && (
+                <Button
+                  onClick={() =>
+                    void action(async () => {
+                      const result = await api(
+                        `/api/tasks/${rule.frontTaskId}`,
+                      );
+                      setFrontTask(result.task || result);
+                    })
+                  }
+                >
+                  前置机任务 / 定向清理
+                </Button>
+              )}
               <div className="route-action">
                 {rule ? (
                   <div className="actions">
@@ -645,6 +665,7 @@ export function Routes({ user }: { user: RecordData }) {
                 ) : (
                   <Button
                     primary
+                    disabled={!!route.admissionsClosed || !route.online}
                     onClick={() => {
                       setSelected(route);
                       setUseFront(!!route.requireFront);
@@ -658,7 +679,7 @@ export function Routes({ user }: { user: RecordData }) {
                       });
                     }}
                   >
-                    配置中转
+                    {route.admissionsClosed ? "暂停接纳新配置" : "配置中转"}
                   </Button>
                 )}
               </div>
@@ -715,13 +736,57 @@ export function Routes({ user }: { user: RecordData }) {
               />
             )}
             <Notice tone="orange">
-              仅创建当前线路。有效期间可以登录再次下载配置，到期删除服务器配置与本站转发。
+              仅创建当前线路。有效期间可以再次下载配置。到期后本站申请停止转发，离线节点需等待重新连接后执行；自备前置机由你自行清理。
             </Notice>
           </AsyncForm>
         </Modal>
       )}
+      {frontTask && (
+        <TaskDetail
+          task={frontTask}
+          owner={user.id}
+          onClose={() => {
+            setFrontTask(null);
+            reloadRules();
+          }}
+        />
+      )}
       {diagnosis && (
         <Modal title="中转诊断结果" onClose={() => setDiagnosis(null)}>
+          {diagnosis.result.exitCount > 1 && (
+            <div className="actions">
+              {Array.from(
+                { length: Math.min(8, diagnosis.result.exitCount) },
+                (_, index) => (
+                  <Button
+                    key={index}
+                    disabled={diagnosing}
+                    onClick={async () => {
+                      setDiagnosing(true);
+                      try {
+                        const result = await post(
+                          `/api/user/routes/${diagnosis.route.id}/diagnose?exit=${index}`,
+                          {},
+                        );
+                        setDiagnosis({ ...diagnosis, result });
+                      } catch (e) {
+                        setMessage((e as Error).message);
+                      } finally {
+                        setDiagnosing(false);
+                      }
+                    }}
+                  >
+                    检测出口 {index + 1}
+                  </Button>
+                ),
+              )}
+            </div>
+          )}
+          {diagnosis.result.checkedAt && (
+            <p className="muted">
+              检查时间：{new Date(diagnosis.result.checkedAt).toLocaleString()}
+            </p>
+          )}
           <div className="diagnosis-path">
             {String(
               diagnosis.result.path ||
@@ -770,7 +835,7 @@ export function Routes({ user }: { user: RecordData }) {
                 setMessage("");
                 try {
                   const result = await post(
-                    `/api/user/routes/${diagnosis.route.id}/diagnose`,
+                    `/api/user/routes/${diagnosis.route.id}/diagnose?exit=${diagnosis.result.exitIndex || 0}`,
                     {},
                   );
                   setDiagnosis({ ...diagnosis, result });

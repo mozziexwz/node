@@ -24,7 +24,7 @@ type relayAgentRetirement struct {
 	DegradedReviewDigest string         `json:"degradedReviewDigest,omitempty"`
 }
 
-var errRelayRetirement = errors.New("节点缺少完整终态退役证明或原证据发生变化；保留身份与全部历史，不释放未知节点")
+var errRelayRetirement = errors.New("尚未确认此节点的全部转发已停止，或记录需要核查；请先处理关联隧道与用户中转，再检查管理连接。节点和端口仍保留")
 
 func relayRetirementReconciled(value string) bool { return value == "" || value == "in_sync" }
 
@@ -154,6 +154,18 @@ func validateRelayRetirements(s *State, now int64) (map[string]relayAgentRetirem
 	}
 	for id, raw := range s.Docs[relayRetirementCollection] {
 		var record relayAgentRetirement
+		if !backupPauseDecode(raw, &record) || record.Agent.EnrollmentAttemptID != "" || record.Agent.EnrollmentRetryHash != "" || record.Agent.EnrollmentRetryUntil != 0 || record.Agent.EnrollmentSealedToken != "" {
+			return nil, errRelayRetirement
+		}
+		if backupPauseDecode(raw, &record) && record.Version == 2 {
+			catalog, cancelled := relayRejectedBootstrap(s, record.Agent)
+			_, alive := s.Docs["relay_agents"][id]
+			if !cancelled || alive || record.Agent.ID != id || !relayV2Identifier(id) || record.RetiredAt <= 0 || record.RetiredAt > now || record.Agent.Enabled || record.Agent.Online || record.Agent.TokenHash != "" || record.Agent.EnrollmentHash != "" || record.Agent.EnrollmentExpires != 0 || recoveryDigest(catalog) != recoveryDigest(record.Catalog) {
+				return nil, errRelayRetirement
+			}
+			retired[id] = record
+			continue
+		}
 		if !backupPauseDecode(raw, &record) || record.Version != 1 || record.Agent.ID != id || !relayV2Identifier(id) || record.RetiredAt <= 0 || record.RetiredAt > now || record.Agent.Capability != "relay" || record.Agent.ProtocolVersion != 2 || record.Agent.OfflinePolicy != "keep_last" || !record.Agent.KeepLastConfirmed || !relayV2Capabilities(record.Agent.Capabilities) || record.Agent.Enabled || record.Agent.Online || !relayRetirementReconciled(record.Agent.ReconcileState) || record.Agent.TokenHash != "" || record.Agent.EnrollmentHash != "" || record.Agent.EnrollmentExpires != 0 {
 			return nil, errRelayRetirement
 		}
@@ -197,6 +209,19 @@ func retireRelayAgent(s *State, id string, now int64) error {
 	if !backupPauseDecode(raw, &agent) || agent.ID != id {
 		return errRelayRetirement
 	}
+	if catalog, cancelled := relayRejectedBootstrap(s, agent); cancelled {
+		clearRelayEnrollmentRetry(&agent)
+		agent.TokenHash, agent.EnrollmentHash, agent.EnrollmentExpires = "", "", 0
+		agent.Enabled, agent.Online = false, false
+		if err := SaveDoc(s, relayRetirementCollection, id, relayAgentRetirement{Version: 2, Agent: agent, RetiredAt: now, Catalog: catalog}); err != nil {
+			return err
+		}
+		DeleteDoc(s, "relay_agents", id)
+		if err := relayClearEmptyRestoreLatch(s); err != nil {
+			return err
+		}
+		return commerceAudit(s, "system", "relay.agent.cancel_rejected_registration", id)
+	}
 	// Even legacy removal cannot use a display parser that silently skips a
 	// damaged route/rule and mistakes unknown references for no references.
 	bad := false
@@ -224,7 +249,7 @@ func retireRelayAgent(s *State, id string, now int64) error {
 		return nil
 	}
 	var control RelayV2Control
-	if !backupPauseDecode(s.Docs["relay_v2_control"]["default"], &control) || len(s.Docs["relay_v2_control"]) != 1 || control.RecoveryRequired || !relayV2Identifier(control.Epoch) || agent.ProtocolVersion != 2 || agent.OfflinePolicy != "keep_last" || !agent.KeepLastConfirmed || !relayRetirementReconciled(agent.ReconcileState) || !relayV2Capabilities(agent.Capabilities) {
+	if !backupPauseDecode(s.Docs["relay_v2_control"]["default"], &control) || len(s.Docs["relay_v2_control"]) != 1 || relayAgentRecoveryRequired(s, agent) || !relayV2Identifier(control.Epoch) || agent.ProtocolVersion != 2 || agent.OfflinePolicy != "keep_last" || !agent.KeepLastConfirmed || !relayRetirementReconciled(agent.ReconcileState) || !relayV2Capabilities(agent.Capabilities) {
 		return errRelayRetirement
 	}
 	catalog, commands, history, recovery, err := relayRetirementEvidence(s, id, now)
@@ -232,6 +257,7 @@ func retireRelayAgent(s *State, id string, now int64) error {
 		return errRelayRetirement
 	}
 	agent.TokenHash, agent.EnrollmentHash, agent.EnrollmentExpires = "", "", 0
+	clearRelayEnrollmentRetry(&agent)
 	agent.Enabled, agent.Online = false, false
 	record := relayAgentRetirement{Version: 1, Agent: agent, RetiredAt: now, Catalog: catalog, CommandsDigest: commands, HistoryDigest: history, RecoveryDigest: recovery}
 	if agent.AccountingDegraded {

@@ -82,6 +82,13 @@ func atomicPrivateJSON(path string, v any) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+type controlHTTPError struct{ Code int }
+
+func (e controlHTTPError) Error() string {
+	return fmt.Sprintf("control server returned HTTP %d", e.Code)
+}
+
 func call(ctx context.Context, cfg Config, token, path string, in, out any) error {
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -103,7 +110,7 @@ func call(ctx context.Context, cfg Config, token, path string, in, out any) erro
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("control server returned HTTP %d", resp.StatusCode)
+		return controlHTTPError{Code: resp.StatusCode}
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(out)
 }
@@ -507,7 +514,19 @@ func Run(ctx context.Context, cfg Config) error {
 		if cfg.EnrollmentToken == "" {
 			return errors.New("first registration needs --enrollment-token")
 		}
-		if err := call(ctx, cfg, "", "/api/relay-agent/register", map[string]string{"enrollmentToken": cfg.EnrollmentToken}, &token); err != nil {
+		var attempt struct {
+			RequestID string `json:"requestId"`
+		}
+		attemptPath := filepath.Join(cfg.StateDir, "relay-enrollment.json")
+		if err := readV2PrivateJSON(attemptPath, &attempt); errors.Is(err, os.ErrNotExist) {
+			attempt.RequestID = randomID()
+			if err := writeV2PrivateJSON(attemptPath, attempt); err != nil {
+				return err
+			}
+		} else if err != nil || !validV2ID(attempt.RequestID) {
+			return errors.New("invalid registration retry state")
+		}
+		if err := call(ctx, cfg, "", "/api/relay-agent/register", map[string]string{"enrollmentToken": cfg.EnrollmentToken, "requestId": attempt.RequestID}, &token); err != nil {
 			return err
 		}
 		writeToken := atomicPrivateJSON

@@ -11,6 +11,9 @@ func relayNodeAddresses(node RelayAgent) []string {
 	out := []string{}
 	seen := map[string]bool{}
 	for _, address := range append([]string{node.Address}, node.Addresses...) {
+		if ip := net.ParseIP(address); ip != nil {
+			address = ip.String()
+		}
 		if address != "" && !seen[address] {
 			out = append(out, address)
 			seen[address] = true

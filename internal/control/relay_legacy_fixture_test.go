@@ -147,7 +147,10 @@ func (a *App) legacyRelaySyncFixture(w http.ResponseWriter, r *http.Request) {
 			}
 			allReady, downstreamReady := len(rule.Segments) > 0, true
 			for _, seg := range rule.Segments {
-				ready := relaySegmentReady(s, seg, now)
+				// Historical simulator only. Released handlers never accept a
+				// lease timestamp as readiness or stop proof.
+				node, found := LoadDoc[RelayAgent](s, "relay_agents", seg.AgentID)
+				ready := found && seg.AckState == "ready" && seg.LastLease > now && node.Enabled && node.LastSeen > now-relayLeaseMS
 				allReady = allReady && ready
 				if !seg.Runtime.Billing {
 					downstreamReady = downstreamReady && ready

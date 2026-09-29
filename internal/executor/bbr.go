@@ -1,35 +1,37 @@
 package executor
 
-// bbrTuneScript is injected only into customer-owned VPS tasks (deploy,
-// customer relay and optional customer front). It is deliberately not used by
-// the control-plane installer or by managed executor/donation-relay Agents.
-// A dedicated sysctl.d file makes repeated runs idempotent without replacing
-// the operator's /etc/sysctl.conf.
+// Optimization is separate from provisioning. Only our candidate keys are
+// applied; unrelated sysctl configuration is never reloaded.
 const bbrTuneScript = `
 msboost_phase=bbr
 [ "$(id -u)" = 0 ]
-[ -d /etc/sysctl.d ]
-[ ! -L /etc/sysctl.d ]
+[ -d /etc/sysctl.d ] && [ ! -L /etc/sysctl.d ]
 [ "$(stat -c %u -- /etc/sysctl.d)" = 0 ]
 bbr_dir_mode=$(stat -c %a -- /etc/sysctl.d)
 (( (8#$bbr_dir_mode & 022) == 0 ))
-if ! command -v sysctl >/dev/null || ! command -v modprobe >/dev/null; then
-  [ -f /etc/os-release ]
-  . /etc/os-release
-  case "$ID" in debian|ubuntu) ;; *) exit 1 ;; esac
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update > "$work/bbr-packages.log" 2>&1
-  apt-get install -y --no-install-recommends procps kmod >> "$work/bbr-packages.log" 2>&1
-fi
-modprobe tcp_bbr 2> "$work/bbr-modprobe.log" || [ -d /sys/module/tcp_bbr ]
-[ -d /sys/module/tcp_bbr ]
 bbr_conf=/etc/sysctl.d/zz-msboost-bbr.conf
 [ ! -L "$bbr_conf" ]
 if [ -e "$bbr_conf" ]; then
-  [ -f "$bbr_conf" ]
-  [ "$(stat -c %u -- "$bbr_conf")" = 0 ]
+  [ -f "$bbr_conf" ] && [ "$(stat -c '%u:%h' -- "$bbr_conf")" = 0:1 ]
+  bbr_mode=$(stat -c %a -- "$bbr_conf")
+  (( (8#$bbr_mode & 022) == 0 ))
 fi
-cat > "$work/zz-msboost-bbr.conf" <<'MSBOOST_BBR_CONF'
+msboost_bbr_rollback() {
+  local key value failed=0
+  while IFS='=' read -r key value; do
+    sysctl -w "$key=$value" >> "$work/bbr-rollback.log" 2>&1 || failed=1
+  done < "$work/bbr-before"
+  return "$failed"
+}
+msboost_bbr_apply() {
+  if ! command -v sysctl >/dev/null || ! command -v modprobe >/dev/null; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update > "$work/bbr-packages.log" 2>&1 &&
+      apt-get install -y --no-install-recommends procps kmod >> "$work/bbr-packages.log" 2>&1 || return 1
+  fi
+  modprobe tcp_bbr 2> "$work/bbr-modprobe.log" || [ -d /sys/module/tcp_bbr ] || return 1
+  [ -d /sys/module/tcp_bbr ] || return 1
+  cat > "$work/bbr-candidate" <<'MSBOOST_BBR_CONF' || return 1
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
@@ -44,26 +46,43 @@ net.core.netdev_max_backlog=10000
 net.ipv4.conf.all.rp_filter=2
 net.ipv4.conf.default.rp_filter=2
 MSBOOST_BBR_CONF
-chmod 0644 "$work/zz-msboost-bbr.conf"
-if [ ! -f "$bbr_conf" ] || ! cmp -s "$work/zz-msboost-bbr.conf" "$bbr_conf"; then
-  install -o root -g root -m 0644 "$work/zz-msboost-bbr.conf" "$bbr_conf"
+  : > "$work/bbr-before" || return 1
+  : > "$work/bbr-supported" || return 1
+  local key value previous
+  while IFS='=' read -r key value; do
+    if previous=$(sysctl -n "$key" 2>/dev/null); then
+      printf '%s=%s\n' "$key" "$previous" >> "$work/bbr-before" || return 1
+      printf '%s=%s\n' "$key" "$value" >> "$work/bbr-supported" || return 1
+    elif [[ "$key" == net.core.default_qdisc || "$key" == net.ipv4.tcp_congestion_control ]]; then
+      return 1
+    fi
+  done < "$work/bbr-candidate"
+  if ! sysctl -p "$work/bbr-supported" > "$work/bbr-sysctl.log" 2>&1; then
+    msboost_bbr_rollback || return 2
+    return 1
+  fi
+  while IFS='=' read -r key value; do
+    if [[ "$(sysctl -n "$key" 2>/dev/null)" != "$value" ]]; then
+      msboost_bbr_rollback || return 2
+      return 1
+    fi
+  done < "$work/bbr-supported"
+  local candidate
+  candidate=$(mktemp /etc/sysctl.d/.msboost-bbr.XXXXXXXX) || { msboost_bbr_rollback || return 2; return 1; }
+  if ! install -o root -g root -m 0644 "$work/bbr-supported" "$candidate" || ! mv -T -- "$candidate" "$bbr_conf"; then
+    rm -f -- "$candidate"
+    msboost_bbr_rollback || return 2
+    return 1
+  fi
+}
+bbr_status=enabled
+if msboost_bbr_apply; then
+  :
+else
+  bbr_code=$?
+  bbr_status=unavailable
+  if [[ $bbr_code == 2 ]]; then bbr_status=review_required; fi
 fi
-# v0.3.0 used a 99-* file. Remove only an exact copy of our old configuration;
-# an operator-modified file is left untouched and the new drop-in wins at boot.
-legacy_bbr_conf=/etc/sysctl.d/99-msboost-bbr.conf
-if [ ! -L "$legacy_bbr_conf" ] && [ -f "$legacy_bbr_conf" ] &&
-   [ "$(stat -c %u -- "$legacy_bbr_conf")" = 0 ] &&
-   cmp -s "$work/zz-msboost-bbr.conf" "$legacy_bbr_conf"; then
-  rm -f -- "$legacy_bbr_conf"
-fi
-sysctl -p "$bbr_conf" > "$work/bbr-sysctl.log"
-sysctl --system >> "$work/bbr-sysctl.log" 2>&1
-# procps replays /etc/sysctl.conf after sysctl.d, and provider images may set
-# the same keys there. Reapply our dedicated file after that replay; the zz-*
-# name also wins over Debian's 99-sysctl.conf on the next systemd boot.
-sysctl -p "$bbr_conf" >> "$work/bbr-sysctl.log" 2>&1
-while IFS='=' read -r bbr_key bbr_value; do
-  [ "$(sysctl -n "$bbr_key")" = "$bbr_value" ]
-done < "$bbr_conf"
+printf 'MSBOOST_BBR=%s\n' "$bbr_status"
 msboost_phase=install
 `

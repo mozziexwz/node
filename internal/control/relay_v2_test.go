@@ -214,8 +214,8 @@ func TestRelayV2MixedLeaseAndStopProof(t *testing.T) {
 		if err := relayCleanup(s, now+relayLeaseMS+1); err != nil {
 			return err
 		}
-		if _, ok := LoadDoc[UserRule](s, "user_rules", f.user.ID+":route"); ok {
-			t.Fatal("v1 expired lease plus exact v2 stop failed to release")
+		if _, ok := LoadDoc[UserRule](s, "user_rules", f.user.ID+":route"); !ok {
+			t.Fatal("historical lease expiry cannot substitute for whole-chain stop proof")
 		}
 		return nil
 	}); err != nil {

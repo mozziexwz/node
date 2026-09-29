@@ -62,7 +62,10 @@ test("only complete keep_last ACK advertises confirmed offline retention; v2 nev
   }
   assert.doesNotMatch(confirmed.policyText, /45 秒|租约/);
   assert.equal(relayStatus({ offlinePolicy: "lease" }).mode, "unconfirmed");
-  assert.doesNotMatch(relayStatus({ offlinePolicy: "lease" }).policyText, /45 秒|租约/);
+  assert.doesNotMatch(
+    relayStatus({ offlinePolicy: "lease" }).policyText,
+    /45 秒|租约/,
+  );
   assert.equal(
     relayStatus({ segments: [{ protocolVersion: 2 }] }).mode,
     "mixed",
@@ -105,7 +108,10 @@ test("pending stop retains resources; recovery overrides optimistic confirmation
     relaySegmentStopText({ ...segment, stopConfirmed: false }),
     "等待停止确认",
   );
-  assert.equal(relaySegmentStopText({ protocolVersion: 1 }), "等待节点连接确认");
+  assert.equal(
+    relaySegmentStopText({ protocolVersion: 1 }),
+    "等待节点连接确认",
+  );
 });
 test("accounting overview stays hidden only when there are no periods and no anomaly", () => {
   assert.equal(relayAccountingVisible(null), false);
@@ -304,7 +310,8 @@ test(
               routeName: "完整保留线路",
               status: "success",
               latencyMs: 33,
-              message: "由出口节点连接该客户 MSBOOST 的 TCP 端口并计时；不包含入口及中间节点，也不代表游戏实际延迟。",
+              message:
+                "由出口节点连接该客户 MSBOOST 的 TCP 端口并计时；不包含入口及中间节点，也不代表游戏实际延迟。",
             },
           });
         if (request.method() !== "GET") {
@@ -392,11 +399,9 @@ test(
           const { page, requests, errors } = await fixture("member");
           try {
             const card = (name) =>
-              page
-                .locator(".route-card")
-                .filter({
-                  has: page.getByRole("heading", { name, exact: true }),
-                });
+              page.locator(".route-card").filter({
+                has: page.getByRole("heading", { name, exact: true }),
+              });
             const keep = card("完整保留线路"),
               recovery = card("恢复核对线路");
             await expect(keep).toContainText("已用上行流量：450.00 MB");
@@ -405,7 +410,9 @@ test(
             await expect(keep).not.toContainText("离线保留");
             await expect(keep).not.toContainText("45 秒");
             await expect(keep).toContainText("线路离线");
-            await keep.getByRole("button", { name: "诊断", exact: true }).click();
+            await keep
+              .getByRole("button", { name: "诊断", exact: true })
+              .click();
             const diagnosis = page.getByRole("dialog");
             await expect(diagnosis).toContainText(
               "出口节点(完整保留线路)->客户 MSBOOST",
@@ -518,16 +525,12 @@ test(
             await expect(
               page.getByText(/Token 失效不代表旧业务已停止/),
             ).toBeVisible();
-            await expect(
-              page.getByText(/恢复节点管理连接向导/),
-            ).toBeVisible();
-            await page
-              .getByLabel("选择加密备份")
-              .setInputFiles({
-                name: "synthetic.msb",
-                mimeType: "application/octet-stream",
-                buffer: Buffer.from("not a real backup"),
-              });
+            await expect(page.getByText(/恢复节点管理连接向导/)).toBeVisible();
+            await page.getByLabel("选择加密备份").setInputFiles({
+              name: "synthetic.msb",
+              mimeType: "application/octet-stream",
+              buffer: Buffer.from("not a real backup"),
+            });
             await page
               .getByRole("button", { name: "只预检，不恢复", exact: true })
               .click();
@@ -588,20 +591,27 @@ test(
                 exact: true,
               }),
             ).toHaveCount(0);
-            await expect(protectedNode.getByText("升级 / 检查连接")).toBeVisible();
+            await expect(
+              protectedNode.getByText("升级 / 检查连接"),
+            ).toBeVisible();
             await protectedNode
               .getByRole("button", { name: "升级 / 检查连接" })
               .click();
+            await expect(page.getByRole("dialog")).toContainText(
+              "日常升级会保留原身份和配置",
+            );
             await expect(
-              page.getByRole("dialog"),
-            ).toContainText("日常升级会保留原身份和配置");
-            await expect(
-              page.getByRole("dialog").getByRole("link", { name: "节点维护帮助" }),
+              page
+                .getByRole("dialog")
+                .getByRole("link", { name: "节点维护帮助" }),
             ).toHaveAttribute(
               "href",
               `https://github.com/mozziexwz/node/blob/${releaseVersion}/docs/relay-recovery.md`,
             );
-            await page.getByRole("dialog").getByRole("button", { name: "关闭窗口" }).click();
+            await page
+              .getByRole("dialog")
+              .getByRole("button", { name: "关闭窗口" })
+              .click();
             let warning = "";
             page.once("dialog", async (dialog) => {
               warning = dialog.message();
@@ -612,8 +622,8 @@ test(
               .filter({ hasText: "未注册空节点" })
               .getByRole("button", { name: "部署 / 重装", exact: true })
               .click();
-            assert.match(warning, /仅撤销管理凭据不保证旧转发停止/);
-            assert.match(warning, /keep_last.*独立受信核对或隔离/);
+            assert.match(warning, /上一次未使用的令牌会失效/);
+            assert.match(warning, /已有业务请先检查连接，不要重复安装/);
             assert.ok(requests.every((request) => request.method === "GET"));
             assert.deepEqual(errors, []);
           } finally {

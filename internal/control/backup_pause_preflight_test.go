@@ -286,7 +286,7 @@ func TestBackupPausePreflightRawCorruptionAndBusyOperations(t *testing.T) {
 	}
 }
 
-func TestBackupPausePreflightLegacyTerminalStopOnly(t *testing.T) {
+func TestBackupPausePreflightDoesNotTrustHistoricalLeaseStop(t *testing.T) {
 	s, now, ruleKey := backupPauseFixture(t)
 	for _, collection := range []string{"relay_v2_control", "relay_v2_catalogs", "relay_v2_commands", "relay_v2_command_history"} {
 		delete(s.Docs, collection)
@@ -304,8 +304,8 @@ func TestBackupPausePreflightLegacyTerminalStopOnly(t *testing.T) {
 		backupPauseSave(t, s, "relay_agents", agent.ID, agent)
 	}
 	backupPauseSave(t, s, "user_rules", ruleKey, rule)
-	if report := backupPausePreflight(s, now); !report.CanPauseControl {
-		t.Fatalf("proven terminal v1 stop blocked: %+v", report)
+	if report := backupPausePreflight(s, now); report.CanPauseControl {
+		t.Fatalf("historical unbound stop accepted: %+v", report)
 	}
 	rule.Segments[0].LastLease = now + 1
 	backupPauseSave(t, s, "user_rules", ruleKey, rule)

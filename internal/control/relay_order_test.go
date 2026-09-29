@@ -71,7 +71,7 @@ func TestRelayRoutesStableIdentityOrder(t *testing.T) {
 				if !slices.Equal(ids, audience.want) {
 					t.Fatalf("unstable order at refresh %d for %s: got %v, want %v", refresh, audience.path, ids, audience.want)
 				}
-				if body.RateScope != "per_rule_per_direction" || body.LeaseSeconds != relayLeaseMS/1000 {
+				if body.RateScope != "per_rule_per_direction" || body.LeaseSeconds != 0 {
 					t.Fatal("listing changed runtime/commerce response semantics")
 				}
 			}

@@ -188,7 +188,7 @@ func TestRestoreRetainsRuleIdentityAndRejectsExpiredDownload(t *testing.T) {
 	}
 	err = a.Store.View(func(s *State) error {
 		valid, ok := LoadDoc[UserRule](s, "user_rules", u.ID+":route")
-		if !ok || valid.SealedConfig == "" || valid.State != "paused" || len(valid.Segments) != 0 {
+		if !ok || valid.SealedConfig == "" || valid.State != "paused" || len(valid.Segments) != 1 || valid.ReconcileState != "recovery_required" {
 			t.Error("valid config was deleted or runtime not isolated")
 		}
 		if expired, ok := LoadDoc[UserRule](s, "user_rules", "expired:route"); !ok || expired.State != "paused" {
@@ -436,14 +436,14 @@ func TestBackupDeletionDoesNotCountDecryptableButUnrestorableCopies(t *testing.T
 
 func TestRestorePreflightIgnoresHeartbeatsAndMeteringButBindsTopology(t *testing.T) {
 	s := newState()
-	_ = SaveDoc(s, "relay_agents", "node", RelayAgent{ID: "node", Name: "same definition", LastSeen: 1, TokenHash: "token"})
+	_ = SaveDoc(s, "relay_agents", "node", RelayAgent{ID: "node", Name: "same definition", LastSeen: 1, BootID: "stable instance", TokenHash: "token"})
 	_ = SaveDoc(s, "executors", "executor", map[string]any{"id": "executor", "lastSeenAt": 1, "status": "active"})
 	_ = SaveDoc(s, "user_rules", "user:route", UserRule{ID: "rule", UserID: "user", RouteID: "route", Version: 7, TrafficBytes: 10})
 	before, err := restoreScopeFingerprint(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = SaveDoc(s, "relay_agents", "node", RelayAgent{ID: "node", Name: "same definition", LastSeen: 9999, Online: true, BootID: "next epoch", TokenHash: "token"})
+	_ = SaveDoc(s, "relay_agents", "node", RelayAgent{ID: "node", Name: "same definition", LastSeen: 9999, Online: true, BootID: "stable instance", TokenHash: "token"})
 	_ = SaveDoc(s, "executors", "executor", map[string]any{"id": "executor", "lastSeenAt": 9999, "status": "active"})
 	_ = SaveDoc(s, "user_rules", "user:route", UserRule{ID: "rule", UserID: "user", RouteID: "route", Version: 7, TrafficBytes: 9999, Segments: []RelaySegment{{AckAt: 9999, LastLease: 9999}}})
 	after, err := restoreScopeFingerprint(s)

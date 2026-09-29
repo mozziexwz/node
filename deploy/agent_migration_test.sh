@@ -352,5 +352,5 @@ grep -Fq 'relay_policy_arg=" --offline-policy $offline_policy"' "$installer" || 
 [[ $(grep -c '^    relay_fresh_reset_preflight_at /var/lib/msboost-relay ' "$installer") == 2 ]] || test_fail 'fresh reset not rechecked immediately before mutation'
 [[ $(grep -c '^    relay_in_place_upgrade_preflight_at /var/lib/msboost-relay ' "$installer") == 2 ]] || test_fail 'identity-preserving upgrade not rechecked immediately before mutation'
 grep -Fq 'mv -T -- "$relay_reset_state" "$backup/relay-state"' "$installer" || test_fail 'old v2 state not privately archived'
-grep -Fq 'if relay_registration_ready_at "$relay_state_dir" "$offline_policy"; then registered=1; break; fi' "$installer" || test_fail 'installer can falsely claim online before fresh v2 sync'
+grep -Fq 'if "$binary" --capability relay-health --state-dir "$relay_state_dir" --server "$server" --health-invocation "$relay_current_invocation"' "$installer" || test_fail 'installer can falsely claim online before current-process v2 sync'
 printf '%s\n' 'PASS: Agent migration parser/bootstrap, unsupported feature refusal, global v2 evidence, shared installation lock, strict unit rollback and no v1 resurrection'

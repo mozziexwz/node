@@ -10,15 +10,15 @@ import (
 func (e *Engine) cleanup(ctx context.Context, job Job, result Result) Result {
 	opts := job.Request.Cleanup
 	script := "set -Eeuo pipefail\numask 077\n" + diagnosticPrelude + "msboost_phase=cleanup\ncommand -v python3 >/dev/null || { printf 'MSBOOST_ERROR_CODE=missing_dependency\\n'; exit 1; }\n" +
-		encodedAssignment("cleanup_scope", opts.Scope) + encodedAssignment("cleanup_digest", opts.Digest) + encodedAssignment("cleanup_action", job.Request.Kind) +
-		"python3 - \"$cleanup_scope\" \"$cleanup_digest\" \"$cleanup_action\" <<'MSBOOST_CLEANUP_PY'\n" + cleanupPython + "\nMSBOOST_CLEANUP_PY\n"
+		encodedAssignment("cleanup_scope", opts.Scope) + encodedAssignment("cleanup_digest", opts.Digest) + encodedAssignment("cleanup_action", job.Request.Kind) + encodedAssignment("cleanup_task", opts.ManagedTaskID) +
+		"python3 - \"$cleanup_scope\" \"$cleanup_digest\" \"$cleanup_action\" \"$cleanup_task\" <<'MSBOOST_CLEANUP_PY'\n" + cleanupPython + "\nMSBOOST_CLEANUP_PY\n"
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	if err != nil {
 		return failRemote(result, "cleanup", out, err)
 	}
 	raw, err := base64.StdEncoding.DecodeString(marker(out, "MSBOOST_CLEANUP"))
 	var report CleanupReport
-	if err != nil || json.Unmarshal(raw, &report) != nil || !ValidCleanupReport(&report, opts.Scope, job.Request.Kind == "cleanup") {
+	if err != nil || json.Unmarshal(raw, &report) != nil || !ValidCleanupReport(&report, opts.Scope, job.Request.Kind == "cleanup") || report.ManagedTaskID != opts.ManagedTaskID {
 		return failRemote(result, "cleanup", nil, diagnosticError("cleanup_failed"))
 	}
 	result.State, result.Phase, result.Cleanup = "succeeded", "complete", &report
@@ -30,8 +30,14 @@ func ValidCleanupReport(report *CleanupReport, scope string, removed bool) bool 
 	if report == nil || report.Scope != scope || report.Removed != removed || !validSHA(report.Digest) || len(report.Items) > 2000 {
 		return false
 	}
+	if report.ManagedTaskID != "" && (scope != "relay" || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`).MatchString(report.ManagedTaskID)) {
+		return false
+	}
 	for _, item := range report.Items {
 		if !validCleanupItem(scope, item) {
+			return false
+		}
+		if report.ManagedTaskID != "" && (scope != "relay" || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`).MatchString(report.ManagedTaskID) || item.Kind != "firewall" && item.Path != "/etc/msboost-free/"+report.ManagedTaskID && item.Path != "/etc/systemd/system/msboost-free-"+report.ManagedTaskID+".service") {
 			return false
 		}
 	}
@@ -61,7 +67,8 @@ func validCleanupItem(scope string, item CleanupItem) bool {
 
 const cleanupPython = `
 import base64,fcntl,hashlib,json,os,pwd,re,shutil,stat,subprocess,sys
-scope,expected,action=sys.argv[1:]
+scope,expected,action=sys.argv[1:4]
+selected=sys.argv[4] if len(sys.argv)>4 else ''
 managed_uid=-1;managed_gid=-1
 class Rejected(Exception): pass
 def reject(): raise Rejected()
@@ -161,6 +168,7 @@ def check_unit(unit,path,required):
     units.append(unit)
 try:
     if os.geteuid()!=0 or scope not in ['msboost','relay'] or action not in ['cleanup','cleanup-preview']: reject()
+    if selected and (scope!='relay' or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',selected)): reject()
     locks=[]
     for path in ['/run/msboost-installer.lock','/run/msboost-customer-cleanup.lock']:
         validate(path)
@@ -197,6 +205,7 @@ try:
         for name in os.listdir('/etc/systemd/system'):
             if name.startswith('msboost-free-') and name.endswith('.service'): candidates.add(name[len('msboost-free-'):-len('.service')])
         for task in sorted(candidates):
+            if selected and task!=selected: continue
             if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',task): reject()
             conf='/etc/msboost-free/'+task
             unit='msboost-free-'+task+'.service';unitpath='/etc/systemd/system/'+unit
@@ -250,6 +259,7 @@ try:
             add(conf,'directory');add(unitpath,'file')
     for mode,zone,port in firewalls: items.append({'path':mode+':'+zone+':'+port+'/tcp','kind':'firewall'})
     digest=hashlib.sha256(json.dumps([scope,records,firewalls],sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    if selected: digest=hashlib.sha256((digest+':'+selected).encode()).hexdigest()
     if action=='cleanup':
         if expected!=digest:
             print('MSBOOST_ERROR_CODE=cleanup_changed',flush=True);sys.exit(1)
@@ -266,6 +276,7 @@ try:
             elif os.path.exists(path): os.unlink(path)
         run(['systemctl','daemon-reload'])
     report={'scope':scope,'digest':digest,'items':items,'removed':action=='cleanup'}
+    if selected: report['managedTaskId']=selected
     print('MSBOOST_CLEANUP='+base64.b64encode(json.dumps(report,separators=(',',':')).encode()).decode(),flush=True)
 except Rejected:
     print('MSBOOST_ERROR_CODE=ownership_failed',flush=True);sys.exit(1)

@@ -460,7 +460,7 @@ func (a *App) finalizeRelayRecovery(confirmation string, now int64) error {
 			}
 		}
 		for _, agent := range ListDocs[RelayAgent](s, "relay_agents") {
-			if !restoreAgentNeedsRecovery(s, agent) {
+			if !restoreAgentNeedsRecovery(s, agent) || !relayAgentRecoveryRequired(s, agent) && agent.EnrollmentEpoch == control.Epoch {
 				continue
 			}
 			var p relayRecoveryPrepared
@@ -637,7 +637,7 @@ func (a *App) validateRelayRecoveryFinalization(s *State) error {
 		}
 	}
 	for id, agent := range agents {
-		if !restoreAgentNeedsRecovery(s, agent) {
+		if !restoreAgentNeedsRecovery(s, agent) || !relayAgentRecoveryRequired(s, agent) && agent.EnrollmentEpoch == control.Epoch {
 			continue
 		}
 		p, ok := prepared[id]

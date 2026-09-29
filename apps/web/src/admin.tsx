@@ -233,6 +233,7 @@ const schemas: Record<string, Resource> = {
       ["name", "名称"],
       ["address", "公网 IP"],
       ["online", "管理连接"],
+      ["lifecycle", "节点状态"],
       ["enabled", "启用"],
     ],
   },
@@ -255,8 +256,11 @@ function show(value: any, key: string) {
   return String(value);
 }
 export function ResourcePage({ kind }: { kind: string }) {
+  const [showArchived, setShowArchived] = useState(false);
   const s = schemas[kind],
-    { data, error, reload } = useData(s.url);
+    { data, error, reload } = useData(
+      s.url + (kind === "agents" && showArchived ? "?includeArchived=1" : ""),
+    );
   const [editing, setEditing] = useState<RecordData | null>(null),
     [values, setValues] = useState<RecordData>({}),
     [message, setMessage] = useState(""),
@@ -264,10 +268,10 @@ export function ResourcePage({ kind }: { kind: string }) {
     [token, setToken] = useState<RecordData | null>(null),
     [blockedAgent, setBlockedAgent] = useState<RecordData | null>(null),
     [deletedAgent, setDeletedAgent] = useState<RecordData | null>(null);
-  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.0.1/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
+  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.1.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
   const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;
   const relayUninstallCommand = (id: string) =>
-    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.0.1/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
+    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.1.0/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
   async function freshResetAgent(row: RecordData) {
     if (
       !confirm(
@@ -324,6 +328,13 @@ export function ResourcePage({ kind }: { kind: string }) {
         </Button>
       </Header>
       <ErrorNotice error={error || message} />
+      {kind === "agents" && (
+        <Check
+          checked={showArchived}
+          onChange={(e) => setShowArchived(e.target.checked)}
+          label="显示已封存节点（仍保留端口和业务记录）"
+        />
+      )}
       {success && <Notice>{success}</Notice>}
       {kind === "plans" && (
         <Notice>
@@ -357,7 +368,36 @@ export function ResourcePage({ kind }: { kind: string }) {
           rows={rows.map((row) => [
             ...s.columns.map(([key]) => show(row[key], key)),
             <div className="actions">
-              <Button onClick={() => open(row)}>编辑</Button>
+              <Button disabled={!!row.archived} onClick={() => open(row)}>
+                编辑
+              </Button>
+              {kind === "agents" && (
+                <Button
+                  onClick={async () => {
+                    if (
+                      !confirm(
+                        row.archived
+                          ? "恢复显示此节点？不会自动恢复管理凭据或启用转发。"
+                          : `封存“${row.name}”？管理凭据将失效，关联隧道停止接纳新配置。远端转发可能继续，端口和历史仍保留；这不是停止或删除。`,
+                      )
+                    )
+                      return;
+                    try {
+                      const result = await post(`${s.url}/${row.id}/archive`, {
+                        archived: !row.archived,
+                        confirm: "KEEP_REMOTE_STATE_AND_RESERVATIONS",
+                      });
+                      setSuccess(result.message);
+                      setMessage("");
+                      reload();
+                    } catch (e) {
+                      setMessage((e as Error).message);
+                    }
+                  }}
+                >
+                  {row.archived ? "恢复显示" : "封存"}
+                </Button>
+              )}
               {kind === "plans" && (
                 <Button
                   onClick={async () => {
@@ -392,7 +432,7 @@ export function ResourcePage({ kind }: { kind: string }) {
                       !confirm(
                         kind === "executors"
                           ? "生成新的安装令牌？旧令牌将立即失效，已有执行机需要重新安装。"
-                          : "生成新的节点注册令牌？仅撤销管理凭据不保证旧转发停止；keep_last 节点可能继续运行，需独立受信核对或隔离旧节点。确认后仅在目标节点上运行安装脚本。",
+                          : "为待安装节点生成新的安装令牌？上一次未使用的令牌会失效。请只在对应 VPS 上安装；已有业务请先检查连接，不要重复安装。",
                       )
                     )
                       return;
@@ -410,20 +450,26 @@ export function ResourcePage({ kind }: { kind: string }) {
                   部署 / 重装
                 </Button>
               )}
-              {kind === "agents" && row.enrollmentAllowed !== true && (
-                <>
-                  <Button onClick={() => setBlockedAgent(row)}>
-                    {row.reconcileState === "recovery_required" ? "恢复管理连接" : "升级 / 检查连接"}
-                  </Button>
-                </>
-              )}
+              {kind === "agents" &&
+                !row.archived &&
+                row.enrollmentAllowed !== true && (
+                  <>
+                    <Button onClick={() => setBlockedAgent(row)}>
+                      {row.reconcileState === "recovery_required"
+                        ? "恢复管理连接"
+                        : "升级 / 检查连接"}
+                    </Button>
+                  </>
+                )}
               {!s.noDelete && (
                 <Button
                   onClick={async () => {
                     if (
                       !confirm(
                         kind === "agents"
-                          ? `删除节点“${row.name}”？有关联业务或缺少终态证明时服务端会拒绝。成功仅使面板旧身份失效，不会远程停止 VPS 上的 Agent；随后须在该 VPS 执行清理命令，旧连接会中断。`
+                          ? row.canCancelRegistration
+                            ? `取消“${row.name}”这次失败注册？系统会重新核对没有下发业务，再使此身份失效；不会清空 VPS。`
+                            : `删除节点“${row.name}”？有关联业务或尚未确认停止时，需要先处理关联配置。删除管理记录不会自动卸载 VPS 上的程序。`
                           : `删除“${row.name || row.email}”？有关联业务的记录会被保护。`,
                       )
                     )
@@ -437,7 +483,9 @@ export function ResourcePage({ kind }: { kind: string }) {
                     }
                   }}
                 >
-                  删除
+                  {kind === "agents" && row.canCancelRegistration
+                    ? "取消失败注册"
+                    : "删除"}
                 </Button>
               )}
             </div>,
@@ -595,21 +643,77 @@ export function ResourcePage({ kind }: { kind: string }) {
         </Modal>
       )}
       {blockedAgent && kind === "agents" && (
-        <Modal title={`节点维护：${blockedAgent.name}`} onClose={() => setBlockedAgent(null)}>
+        <Modal
+          title={`节点维护：${blockedAgent.name}`}
+          onClose={() => setBlockedAgent(null)}
+        >
           <ErrorNotice error={message} />
-          {blockedAgent.reconcileState === "recovery_required" ? <>
-            <Notice>网站恢复后需要重新连接这个节点。请在面板服务器运行下面命令，向导会核对节点并自动传送恢复材料，无需编辑文件。</Notice>
-            <pre className="code-panel mt16">msboost relay-reconnect</pre>
-            <p>按提示选择节点、输入节点 SSH 信息，并确认旧面板已停用。配置一致的转发可保留；有差异时向导会列出影响，再由你选择处理。</p>
-          </> : <>
-            <Notice>此节点已经安装。日常升级会保留原身份和配置，不需要新的安装令牌。</Notice>
-            <p className="mt16">在此节点 VPS 的 root 终端运行下方命令升级。服务会重启，现有连接可能短暂中断，请选择维护时间。</p>
-            <pre className="code-panel mt16">{`${agentBootstrapCommand} --upgrade-in-place --acknowledge-relay-restart`}</pre>
-            <Button onClick={() => void copyText(`${agentBootstrapCommand} --upgrade-in-place --acknowledge-relay-restart`).catch((e) => setMessage(e.message))}>复制保留配置的升级命令</Button>
-            <p className="mt16">检查管理连接（不重启服务）：</p>
-            <pre className="code-panel">{`${agentBootstrapCommand} --diagnose`}</pre>
-            <Button onClick={() => void copyText(`${agentBootstrapCommand} --diagnose`).catch((e) => setMessage(e.message))}>复制检查命令</Button>
-          </>}
+          {blockedAgent.actionHint && (
+            <Notice>{blockedAgent.actionHint}</Notice>
+          )}
+          {blockedAgent.canCancelRegistration ? (
+            <>
+              <Button
+                onClick={async () => {
+                  if (!confirm("确认取消这次未完成的注册？不会清空 VPS。"))
+                    return;
+                  try {
+                    await api(`${s.url}/${blockedAgent.id}`, {
+                      method: "DELETE",
+                    });
+                    setBlockedAgent(null);
+                    reload();
+                  } catch (e) {
+                    setMessage((e as Error).message);
+                  }
+                }}
+              >
+                取消失败注册
+              </Button>
+            </>
+          ) : blockedAgent.reconcileState === "recovery_required" ? (
+            <>
+              <Notice>
+                网站恢复后需要重新连接这个节点。请在面板服务器运行下面命令，向导会核对节点并自动传送恢复材料，无需编辑文件。
+              </Notice>
+              <pre className="code-panel mt16">msboost relay-reconnect</pre>
+              <p>
+                按提示选择节点、输入节点 SSH
+                信息，并确认旧面板已停用。配置一致的转发可保留；有差异时向导会列出影响，再由你选择处理。
+              </p>
+            </>
+          ) : (
+            <>
+              <Notice>
+                此节点已经安装。日常升级会保留原身份和配置，不需要新的安装令牌。
+              </Notice>
+              <p className="mt16">
+                在此节点 VPS 的 root
+                终端运行下方命令升级。服务会重启，现有连接可能短暂中断，请选择维护时间。
+              </p>
+              <pre className="code-panel mt16">{`${agentBootstrapCommand} --upgrade-in-place --acknowledge-relay-restart`}</pre>
+              <Button
+                onClick={() =>
+                  void copyText(
+                    `${agentBootstrapCommand} --upgrade-in-place --acknowledge-relay-restart`,
+                  ).catch((e) => setMessage(e.message))
+                }
+              >
+                复制保留配置的升级命令
+              </Button>
+              <p className="mt16">检查管理连接（不重启服务）：</p>
+              <pre className="code-panel">{`${agentBootstrapCommand} --diagnose`}</pre>
+              <Button
+                onClick={() =>
+                  void copyText(`${agentBootstrapCommand} --diagnose`).catch(
+                    (e) => setMessage(e.message),
+                  )
+                }
+              >
+                复制检查命令
+              </Button>
+            </>
+          )}
           <p className="mt16">
             需要清除原配置重新部署时，先在下方处理关联线路和用户转发，再申请重新部署。
           </p>
@@ -617,14 +721,22 @@ export function ResourcePage({ kind }: { kind: string }) {
             重新部署会中断此节点现有连接。管理连接离线时，节点仍可能继续转发。
           </p>
           <div className="actions mt16">
-            <Button primary onClick={() => void freshResetAgent(blockedAgent)}>
+            <Button
+              primary
+              disabled={blockedAgent.reconcileState === "recovery_required"}
+              onClick={() => void freshResetAgent(blockedAgent)}
+            >
               申请重新部署
             </Button>
-            <a className="btn" href="#routes">管理关联隧道</a>
-            <a className="btn" href="#rules">管理用户中转</a>
+            <a className="btn" href="#routes">
+              管理关联隧道
+            </a>
+            <a className="btn" href="#rules">
+              管理用户中转
+            </a>
             <a
               className="btn"
-              href="https://github.com/mozziexwz/node/blob/v2.0.1/docs/relay-recovery.md"
+              href="https://github.com/mozziexwz/node/blob/v2.1.0/docs/relay-recovery.md"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -636,16 +748,26 @@ export function ResourcePage({ kind }: { kind: string }) {
       {deletedAgent && kind === "agents" && (
         <Modal title="节点已从控制面退役" onClose={() => setDeletedAgent(null)}>
           <Notice tone="orange">
-            已撤销“{deletedAgent.name}”的旧管理身份；这不等于原 VPS 上的进程已停止。
-            请在确认旧业务可中断后，到该节点 VPS 的 root 终端运行下方命令。
-            命令只接受与此节点 ID、控制面地址及本项目受管标记一致的安装；不删除其他服务。
+            已撤销“{deletedAgent.name}”的旧管理身份；这不等于原 VPS
+            上的进程已停止。 请在确认旧业务可中断后，到该节点 VPS 的 root
+            终端运行下方命令。 命令只接受与此节点
+            ID、控制面地址及本项目受管标记一致的安装；不删除其他服务。
           </Notice>
-          <pre className="code-panel mt16">{relayUninstallCommand(deletedAgent.id)}</pre>
-          <Button onClick={() => void copyText(relayUninstallCommand(deletedAgent.id)).catch((e) => setMessage(e.message))}>
+          <pre className="code-panel mt16">
+            {relayUninstallCommand(deletedAgent.id)}
+          </pre>
+          <Button
+            onClick={() =>
+              void copyText(relayUninstallCommand(deletedAgent.id)).catch((e) =>
+                setMessage(e.message),
+              )
+            }
+          >
             复制本机 Agent 清理命令
           </Button>
           <p className="muted mt16">
-            需要重新使用这台 VPS 时，先完成清理，再新增节点并使用新节点令牌安装。
+            需要重新使用这台 VPS
+            时，先完成清理，再新增节点并使用新节点令牌安装。
             如果清理脚本检测到本机仍有未停止转发或路径归属不明，会拒绝删除。
           </p>
         </Modal>
@@ -663,34 +785,43 @@ export function ResourcePage({ kind }: { kind: string }) {
             <Notice tone="orange">
               {token.freshReset
                 ? `旧节点 ${token.oldAgentId} 已退役，原管理凭据失效；新节点 ${token.agent?.id} 已创建。请在 15 分钟内于原 VPS 完成全新重装。`
-                : token.reinstall ? "已生成新的节点注册令牌。" : "若目标 VPS 曾安装中转 Agent，"}
-              已安装节点的日常更新请返回列表使用“升级 / 检查连接”。只有明确要清除原节点配置时才使用全新重装；网站灾难恢复后使用“恢复管理连接”。
+                : token.reinstall
+                  ? "已生成新的节点注册令牌。"
+                  : "若目标 VPS 曾安装中转 Agent，"}
+              已安装节点的日常更新请返回列表使用“升级 /
+              检查连接”。只有明确要清除原节点配置时才使用全新重装；网站灾难恢复后使用“恢复管理连接”。
             </Notice>
           )}
-          {!token.freshReset && <>
-            <p className="mt16">
-              {kind === "agents" ? "首次部署到空白 VPS：" : "安装执行机："}
-            </p>
-            <pre className="code-panel mt16">{agentBootstrapCommand}</pre>
-          </>}
+          {!token.freshReset && (
+            <>
+              <p className="mt16">
+                {kind === "agents" ? "首次部署到空白 VPS：" : "安装执行机："}
+              </p>
+              <pre className="code-panel mt16">{agentBootstrapCommand}</pre>
+            </>
+          )}
           {location.protocol !== "https:" && (
             <Notice tone="orange">
               此站点尚未配置 HTTPS。请先使用域名和 TLS
               部署网站，再复制安装命令；Agent 不接受公网明文 HTTP。
             </Notice>
           )}
-          {!token.freshReset && <Button
-            onClick={() =>
-              void copyText(agentBootstrapCommand).catch((e) =>
-                setMessage(e.message),
-              )
-            }
-          >
-            复制首次安装命令
-          </Button>}
+          {!token.freshReset && (
+            <Button
+              onClick={() =>
+                void copyText(agentBootstrapCommand).catch((e) =>
+                  setMessage(e.message),
+                )
+              }
+            >
+              复制首次安装命令
+            </Button>
+          )}
           {kind === "agents" && (
             <>
-              <p className="mt16">已有节点全新重装（旧转发与现有连接将中断）：</p>
+              <p className="mt16">
+                已有节点全新重装（旧转发与现有连接将中断）：
+              </p>
               <pre className="code-panel mt16">{relayFreshResetCommand}</pre>
               <Button
                 onClick={() =>
@@ -1139,20 +1270,17 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           <AsyncForm
             label="发送测试邮件并保存"
             onSubmit={async (f) => {
-              await post(
-                "/api/admin/smtp/test",
-                {
-                  smtpConfig: {
-                    host: f.get("host"),
-                    port: Number(f.get("port")),
-                    username: f.get("username"),
-                    sender: f.get("sender"),
-                    name: f.get("name"),
-                    secret: f.get("secret"),
-                    encryption: f.get("encryption"),
-                  },
+              await post("/api/admin/smtp/test", {
+                smtpConfig: {
+                  host: f.get("host"),
+                  port: Number(f.get("port")),
+                  username: f.get("username"),
+                  sender: f.get("sender"),
+                  name: f.get("name"),
+                  secret: f.get("secret"),
+                  encryption: f.get("encryption"),
                 },
-              );
+              });
               reload();
               onRefresh();
             }}
@@ -1211,7 +1339,8 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
             </div>
             <Notice>
               使用 Spaceship 别名邮箱作为 From 前，请先在 Spaceship
-              邮箱服务端配置并允许该别名发件。提交后将向当前管理员邮箱发送测试邮件；SMTP 服务器接受后才会保存配置。请再核对收件箱实际显示的 From。
+              邮箱服务端配置并允许该别名发件。提交后将向当前管理员邮箱发送测试邮件；SMTP
+              服务器接受后才会保存配置。请再核对收件箱实际显示的 From。
             </Notice>
           </AsyncForm>
         ) : tab === "limits" ? (
@@ -1558,9 +1687,7 @@ export function AdminRules() {
                   ? `最近全链路已确认 ${selected.appliedRateMbps} Mbps 配置，不代表实时业务探测结果。`
                   : "尚未确认全链路生效。"}
               </p>
-              <p className="mt8">
-                状态：{status(selected)}
-              </p>
+              <p className="mt8">状态：{status(selected)}</p>
               <RelayStatusDetail rule={selected} />
               <Table
                 headers={[

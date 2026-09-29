@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,28 +27,34 @@ type PortRange struct {
 	End   int `json:"end"`
 }
 type RelayAgent struct {
-	ID                 string      `json:"id"`
-	Name               string      `json:"name"`
-	Address            string      `json:"address"`
-	Addresses          []string    `json:"addresses,omitempty"`
-	Enabled            bool        `json:"enabled"`
-	RequireFront       bool        `json:"requireFront"`
-	PortRanges         []PortRange `json:"portRanges"`
-	Capability         string      `json:"capability"`
-	EnrollmentHash     string      `json:"enrollmentHash,omitempty"`
-	EnrollmentExpires  int64       `json:"enrollmentExpires,omitempty"`
-	TokenHash          string      `json:"tokenHash,omitempty"`
-	LastSeen           int64       `json:"lastSeen"`
-	Version            string      `json:"version"`
-	BootID             string      `json:"bootId,omitempty"`
-	Online             bool        `json:"online"`
-	ProtocolVersion    int         `json:"protocolVersion,omitempty"`
-	OfflinePolicy      string      `json:"offlinePolicy,omitempty"`
-	Capabilities       []string    `json:"capabilities,omitempty"`
-	KeepLastConfirmed  bool        `json:"keepLastConfirmed,omitempty"`
-	ReconcileState     string      `json:"reconcileState,omitempty"`
-	ControlStatus      string      `json:"controlStatus,omitempty"`
-	AccountingDegraded bool        `json:"accountingDegraded,omitempty"`
+	ID                    string      `json:"id"`
+	Name                  string      `json:"name"`
+	Address               string      `json:"address"`
+	Addresses             []string    `json:"addresses,omitempty"`
+	Enabled               bool        `json:"enabled"`
+	Archived              bool        `json:"archived,omitempty"`
+	RequireFront          bool        `json:"requireFront"`
+	PortRanges            []PortRange `json:"portRanges"`
+	Capability            string      `json:"capability"`
+	EnrollmentHash        string      `json:"enrollmentHash,omitempty"`
+	EnrollmentExpires     int64       `json:"enrollmentExpires,omitempty"`
+	TokenHash             string      `json:"tokenHash,omitempty"`
+	LastSeen              int64       `json:"lastSeen"`
+	Version               string      `json:"version"`
+	BootID                string      `json:"bootId,omitempty"`
+	Online                bool        `json:"online"`
+	ProtocolVersion       int         `json:"protocolVersion,omitempty"`
+	OfflinePolicy         string      `json:"offlinePolicy,omitempty"`
+	Capabilities          []string    `json:"capabilities,omitempty"`
+	KeepLastConfirmed     bool        `json:"keepLastConfirmed,omitempty"`
+	ReconcileState        string      `json:"reconcileState,omitempty"`
+	ControlStatus         string      `json:"controlStatus,omitempty"`
+	AccountingDegraded    bool        `json:"accountingDegraded,omitempty"`
+	EnrollmentEpoch       string      `json:"enrollmentEpoch,omitempty"`
+	EnrollmentAttemptID   string      `json:"enrollmentAttemptId,omitempty"`
+	EnrollmentRetryHash   string      `json:"enrollmentRetryHash,omitempty"`
+	EnrollmentRetryUntil  int64       `json:"enrollmentRetryUntil,omitempty"`
+	EnrollmentSealedToken string      `json:"enrollmentSealedToken,omitempty"`
 }
 type RouteStage struct {
 	AgentIDs  []string `json:"agentIds"`
@@ -64,8 +71,10 @@ type Route struct {
 	Exit                      RouteStage   `json:"exit"`
 	RequireFront              bool         `json:"requireFront"`
 	Enabled                   bool         `json:"enabled"`
+	AdmissionsClosed          bool         `json:"admissionsClosed"`
 	Version                   int64        `json:"version"`
 	Online                    bool         `json:"online"`
+	Availability              string       `json:"availability,omitempty"`
 	RateMbps                  int64        `json:"rateMbps"`
 	Type                      string       `json:"type"`
 	TrafficMode               string       `json:"trafficMode"`
@@ -115,6 +124,7 @@ type UserRule struct {
 	DeleteAfter               int64          `json:"deleteAfter,omitempty"`
 	HasFront                  bool           `json:"hasFront"`
 	FrontTaskID               string         `json:"frontTaskId,omitempty"`
+	FrontStatus               string         `json:"frontStatus,omitempty"`
 	RequestID                 string         `json:"requestId"`
 	TrafficBytes              int64          `json:"trafficBytes"`
 	InputBytes                int64          `json:"inputBytes"`
@@ -168,9 +178,9 @@ type RelayRuleView struct {
 func relaySegmentReady(s *State, seg RelaySegment, now int64) bool {
 	agent, ok := LoadDoc[RelayAgent](s, "relay_agents", seg.AgentID)
 	if seg.ProtocolVersion == relayruntime.ProtocolV2 {
-		return ok && seg.AckState == "ready" && seg.LastCommandAction == "upsert" && seg.ConfigGeneration > 0 && seg.AppliedGeneration == seg.ConfigGeneration && seg.IssuedRateMbps == seg.Runtime.RateMbps && seg.IssuedEntitlementVersion == seg.Runtime.EntitlementVersion && !seg.StopConfirmed && agent.Enabled && agent.LastSeen > now-relayLeaseMS && agent.ReconcileState != "recovery_required"
+		return ok && seg.AckState == "ready" && seg.LastCommandAction == "upsert" && seg.ConfigGeneration > 0 && seg.AppliedGeneration == seg.ConfigGeneration && seg.IssuedRateMbps == seg.Runtime.RateMbps && seg.IssuedEntitlementVersion == seg.Runtime.EntitlementVersion && !seg.StopConfirmed && agent.Enabled && agent.LastSeen > now-relayLeaseMS && !relayAgentRecoveryRequired(s, agent)
 	}
-	return ok && seg.AckState == "ready" && seg.LastLease > now && agent.Enabled && agent.LastSeen > now-relayLeaseMS
+	return false
 }
 
 func relayRuleView(s *State, rule UserRule, admin bool, now int64) RelayRuleView {
@@ -339,7 +349,7 @@ func relayEffective(s *State, route Route) (bool, bool) {
 	now := time.Now().UnixMilli()
 	for _, id := range relayRouteAgents(route) {
 		agent, ok := LoadDoc[RelayAgent](s, "relay_agents", id)
-		if !ok || !agent.Enabled || agent.LastSeen < now-relayLeaseMS {
+		if !ok || !agent.Enabled || agent.LastSeen < now-relayLeaseMS || relayAgentRecoveryRequired(s, agent) {
 			online = false
 		}
 	}
@@ -456,10 +466,25 @@ func relayReservePort(s *State, agent RelayAgent) (int, error) {
 
 func relayReservePortWithReader(s *State, agent RelayAgent, random io.Reader) (int, error) {
 	used := map[int]bool{}
+	shared := func(id string) bool {
+		if id == agent.ID {
+			return true
+		}
+		other, ok := LoadDoc[RelayAgent](s, "relay_agents", id)
+		if !ok {
+			return false
+		}
+		for _, address := range relayNodeAddresses(agent) {
+			if relayNodeHasAddress(other, address) {
+				return true
+			}
+		}
+		return false
+	}
 	now := time.Now().UnixMilli()
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {
 		for _, seg := range rule.Segments {
-			if seg.AgentID == agent.ID && (relayRuleUsesV2(s, rule) || relayRecoveryRequired(s, rule) || rule.DeleteAfter == 0 || rule.DeleteAfter > now) {
+			if shared(seg.AgentID) {
 				used[seg.Runtime.ListenPort] = true
 			}
 		}
@@ -472,7 +497,7 @@ func relayReservePortWithReader(s *State, agent RelayAgent, random io.Reader) (i
 			continue
 		}
 		for _, seg := range rule.Segments {
-			if seg.AgentID == agent.ID {
+			if shared(seg.AgentID) {
 				used[seg.Runtime.ListenPort] = true
 			}
 		}
@@ -545,12 +570,9 @@ func relayRevoke(rule *UserRule, now int64, deleteConfig bool) {
 	if deleteConfig {
 		rule.SealedConfig = ""
 	}
-	rule.DeleteAfter = now + relayLeaseMS
-	for _, seg := range rule.Segments {
-		if seg.LastLease > rule.DeleteAfter {
-			rule.DeleteAfter = seg.LastLease
-		}
-	}
+	// The timestamp only schedules reconsideration. Exact node stop ACKs,
+	// not a historical lease deadline, decide whether resources are released.
+	rule.DeleteAfter = now
 }
 
 func (a *App) RegisterRelay(mux *http.ServeMux) {
@@ -569,6 +591,7 @@ func (a *App) RegisterRelay(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/admin/relay-agents/{id}", a.relayDeleteAgent)
 	mux.HandleFunc("POST /api/admin/relay-agents/{id}/enrollment", a.relayRenewEnrollment)
 	mux.HandleFunc("POST /api/admin/relay-agents/{id}/fresh-reset", a.relayFreshResetAgent)
+	mux.HandleFunc("POST /api/admin/relay-agents/{id}/archive", a.relayArchiveAgent)
 	mux.HandleFunc("GET /api/admin/routes", a.relayRoutes)
 	mux.HandleFunc("POST /api/admin/routes", a.relaySaveRoute)
 	mux.HandleFunc("PUT /api/admin/routes/{id}", a.relaySaveRoute)
@@ -581,6 +604,7 @@ func (a *App) RegisterRelay(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/admin/user-rules/{id}", a.relayEditRule)
 	mux.HandleFunc("DELETE /api/admin/user-rules/{id}", a.relayDeleteRule)
 	mux.HandleFunc("POST /api/relay-agent/register", a.relayRegisterAgent)
+	mux.HandleFunc("POST /api/relay-agent/enrollment-check", a.relayEnrollmentCheck)
 	mux.HandleFunc("POST /api/relay-agent/sync", func(w http.ResponseWriter, r *http.Request) {
 		Fail(w, http.StatusGone, "此节点程序已不再受支持，请升级为 keep_last 节点后连接")
 	})
@@ -616,6 +640,20 @@ func (a *App) relayRoutes(w http.ResponseWriter, r *http.Request) {
 			route.Level = routeLevel(route.Level)
 			if admin || route.Enabled && userCanUseRoute(user, route) {
 				route.RequireFront, route.Online = relayEffective(s, route)
+				route.Availability = "unavailable"
+				available := 0
+				ids := relayRouteAgents(route)
+				for _, id := range ids {
+					agent, ok := LoadDoc[RelayAgent](s, "relay_agents", id)
+					if ok && agent.Enabled && agent.LastSeen > time.Now().UnixMilli()-relayLeaseMS && !relayAgentRecoveryRequired(s, agent) {
+						available++
+					}
+				}
+				if route.Online {
+					route.Availability = "ready"
+				} else if available > 0 {
+					route.Availability = "partial"
+				}
 				if !admin {
 					route.RateMbps = relayRate(user, route)
 					route.Hops = nil
@@ -633,7 +671,7 @@ func (a *App) relayRoutes(w http.ResponseWriter, r *http.Request) {
 		commerceError(w, 500, err)
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"routes": out, "userRateMbps": userRate, "rateScope": "per_rule_per_direction", "protocols": []string{"tcp", "tls"}, "strategies": []string{"round", "rand", "fifo"}, "leaseSeconds": relayLeaseMS / 1000})
+	WriteJSON(w, 200, map[string]any{"routes": out, "userRateMbps": userRate, "rateScope": "per_rule_per_direction", "protocols": []string{"tcp", "tls"}, "strategies": []string{"round", "rand", "fifo"}})
 }
 func (a *App) relayAgents(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.Admin(r); err != nil {
@@ -642,22 +680,46 @@ func (a *App) relayAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	type relayAgentAdminView struct {
 		RelayAgent
+		Lifecycle               string `json:"lifecycle"`
+		CanCancelRegistration   bool   `json:"canCancelRegistration"`
+		ActionHint              string `json:"actionHint"`
 		EnrollmentAllowed       bool   `json:"enrollmentAllowed"`
 		EnrollmentBlockedReason string `json:"enrollmentBlockedReason,omitempty"`
 	}
 	out := []relayAgentAdminView{}
 	err := a.Store.View(func(s *State) error {
 		for _, agent := range ListDocs[RelayAgent](s, "relay_agents") {
+			if agent.Archived && r.URL.Query().Get("includeArchived") != "1" {
+				continue
+			}
 			blockedReason := relayEnrollmentBlockReason(s, agent)
+			_, canCancel := relayRejectedBootstrap(s, agent)
+			lifecycle, hint := "待安装", "使用安装令牌在此节点 VPS 完成安装。"
+			switch {
+			case agent.Archived:
+				lifecycle, hint = "已封存", "管理凭据已撤销，但远端转发可能继续；占用和业务记录仍保留。恢复显示后可重新关联。"
+			case canCancel:
+				lifecycle, hint = "首次注册未完成", "此身份从未接收转发配置，可取消失败注册后重新添加节点。"
+			case relayAgentRecoveryRequired(s, agent):
+				lifecycle, hint = "需要重新关联", "节点与面板状态需要核对，请使用恢复管理连接；原业务是否运行需另行检查。"
+			case agent.LastSeen > time.Now().UnixMilli()-relayLeaseMS:
+				lifecycle, hint = "管理连接正常", "管理连接正常；具体转发状态请查看用户中转。"
+			case agent.ProtocolVersion >= 2:
+				lifecycle, hint = "管理连接中断", "原转发可能继续运行，请先检查连接，不要重复全新安装。"
+			case agent.TokenHash != "":
+				lifecycle, hint = "注册后等待连接", "注册已受理，正在等待节点完成配置同步。"
+			}
 			agent.RequireFront = false
 			agent.TokenHash = ""
 			agent.EnrollmentHash = ""
+			agent.EnrollmentEpoch = ""
+			clearRelayEnrollmentRetry(&agent)
 			agent.Online = agent.Enabled && agent.LastSeen > time.Now().UnixMilli()-relayLeaseMS
 			agent.ControlStatus = "offline"
 			if agent.LastSeen > time.Now().UnixMilli()-relayLeaseMS {
 				agent.ControlStatus = "online"
 			}
-			out = append(out, relayAgentAdminView{RelayAgent: agent, EnrollmentAllowed: blockedReason == "", EnrollmentBlockedReason: blockedReason})
+			out = append(out, relayAgentAdminView{RelayAgent: agent, Lifecycle: lifecycle, CanCancelRegistration: canCancel, ActionHint: hint, EnrollmentAllowed: blockedReason == "", EnrollmentBlockedReason: blockedReason})
 		}
 		return nil
 	})
@@ -697,6 +759,16 @@ func (a *App) relaySaveAgent(w http.ResponseWriter, r *http.Request) {
 	in.ID = r.PathValue("id")
 	enrollment := ""
 	err := a.Store.Update(func(s *State) error {
+		for _, other := range ListDocs[RelayAgent](s, "relay_agents") {
+			if other.ID == in.ID {
+				continue
+			}
+			// An extra IP may be an explicitly configured shared upstream VIP,
+			// but a primary management address cannot name two relay identities.
+			if relayNodeHasAddress(other, in.Address) || relayNodeHasAddress(in, other.Address) {
+				return errors.New("此公网 IP 已登记为节点“" + other.Name + "”，请检查原节点，不要重复创建身份")
+			}
+		}
 		if in.ID != "" {
 			if _, retired := s.Docs[relayRetirementCollection][in.ID]; retired {
 				return errRelayRetirement
@@ -705,8 +777,12 @@ func (a *App) relaySaveAgent(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return errors.New("Agent不存在")
 			}
-			if old.ReconcileState == "recovery_required" {
-				return errors.New("节点处于恢复核对，禁止修改或重新分配资源")
+			if old.Archived {
+				return errors.New("此节点已封存，请先恢复显示；恢复显示不自动恢复管理连接")
+			}
+			in.Archived = old.Archived
+			if old.ReconcileState == "recovery_required" && (in.Enabled != old.Enabled || !reflect.DeepEqual(in.PortRanges, old.PortRanges) || !reflect.DeepEqual(relayNodeAddresses(in), relayNodeAddresses(old))) {
+				return errors.New("此节点需要重新关联，目前只允许修改名称；公网地址、启用状态和端口须先核对")
 			}
 			for _, rule := range ListDocs[UserRule](s, "user_rules") {
 				for _, seg := range rule.Segments {
@@ -721,6 +797,8 @@ func (a *App) relaySaveAgent(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			in.TokenHash = old.TokenHash
+			in.EnrollmentEpoch = old.EnrollmentEpoch
+			in.EnrollmentAttemptID, in.EnrollmentRetryHash, in.EnrollmentRetryUntil, in.EnrollmentSealedToken = old.EnrollmentAttemptID, old.EnrollmentRetryHash, old.EnrollmentRetryUntil, old.EnrollmentSealedToken
 			in.EnrollmentHash = old.EnrollmentHash
 			in.EnrollmentExpires = old.EnrollmentExpires
 			in.LastSeen = old.LastSeen
@@ -730,10 +808,21 @@ func (a *App) relaySaveAgent(w http.ResponseWriter, r *http.Request) {
 			in.KeepLastConfirmed, in.ReconcileState, in.ControlStatus, in.AccountingDegraded = old.KeepLastConfirmed, old.ReconcileState, old.ControlStatus, old.AccountingDegraded
 		} else {
 			in.ID = commerceID()
+			in.Archived = false
+			clearRelayEnrollmentRetry(&in)
+			control, found := LoadDoc[RelayV2Control](s, "relay_v2_control", "default")
+			if !found {
+				control = RelayV2Control{Epoch: commerceID()}
+				if err := SaveDoc(s, "relay_v2_control", "default", control); err != nil {
+					return err
+				}
+			}
+			in.EnrollmentEpoch = control.Epoch
 			enrollment = commerceID() + commerceID()
 			in.EnrollmentHash = commerceHash(enrollment)
 			in.EnrollmentExpires = time.Now().Add(15 * time.Minute).UnixMilli()
 			in.LastSeen = 0
+			in.BootID, in.Version = "", ""
 			in.TokenHash = ""
 			in.ProtocolVersion, in.OfflinePolicy, in.Capabilities = 0, "", nil
 			in.KeepLastConfirmed, in.ReconcileState, in.ControlStatus, in.AccountingDegraded = false, "", "", false
@@ -748,6 +837,7 @@ func (a *App) relaySaveAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	in.TokenHash = ""
 	in.EnrollmentHash = ""
+	clearRelayEnrollmentRetry(&in)
 	WriteJSON(w, 200, map[string]any{"agent": in, "enrollmentToken": enrollment, "installArgs": a.relayInstallationInstructions()})
 }
 
@@ -769,7 +859,9 @@ func (a *App) relayDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	err := a.Store.Update(func(s *State) error {
 		if agent, ok := LoadDoc[RelayAgent](s, "relay_agents", r.PathValue("id")); ok && agent.ReconcileState == "recovery_required" {
-			return errors.New("节点处于恢复核对，禁止删除")
+			if _, cancelled := relayRejectedBootstrap(s, agent); !cancelled {
+				return errors.New("此节点可能仍在转发；请先恢复管理连接并停止关联配置，再删除")
+			}
 		}
 		associations := []string{}
 		for _, route := range ListDocs[Route](s, "routes") {
@@ -826,9 +918,25 @@ func (a *App) relaySaveRoute(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return errors.New("线路不存在")
 			}
+			if err := normalizeRelayRoute(s, &old); err != nil {
+				return err
+			}
+			// Display/admission controls do not change a listener. Rate and
+			// enable changes are applied by the existing confirmed-command path.
+			comparable := func(r Route) Route {
+				r.Name, r.Enabled, r.AdmissionsClosed, r.RateMbps = "", false, false, 0
+				r.Version, r.Order, r.Online, r.Availability = 0, 0, false, ""
+				return r
+			}
 			for _, rule := range ListDocs[UserRule](s, "user_rules") {
 				if rule.RouteID == route.ID {
-					return errors.New("线路仍有用户规则，请先在用户中转处理：" + relayRuleAssociation(s, rule))
+					if !reflect.DeepEqual(comparable(old), comparable(route)) {
+						return errors.New("此变更涉及拓扑、入口或计费规则，请先处理关联用户配置；名称、接纳开关、运行开关和限速可单独修改：" + relayRuleAssociation(s, rule))
+					}
+					rule.RouteName = route.Name
+					if err := SaveDoc(s, "user_rules", rule.UserID+":"+rule.RouteID, rule); err != nil {
+						return err
+					}
 				}
 			}
 			route.Version = old.Version + 1
@@ -931,7 +1039,8 @@ func (a *App) relayPurgeRouteRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Confirm bool `json:"confirm"`
+		Confirm         bool `json:"confirm"`
+		CloseAdmissions bool `json:"closeAdmissions"`
 	}
 	if err = Decode(r, &in); err != nil || !in.Confirm {
 		commerceError(w, 400, errors.New("请明确确认撤销该线路的全部用户配置"))
@@ -939,8 +1048,15 @@ func (a *App) relayPurgeRouteRules(w http.ResponseWriter, r *http.Request) {
 	}
 	count, keepLast := 0, false
 	err = a.Store.Update(func(s *State) error {
-		if _, ok := LoadDoc[Route](s, "routes", r.PathValue("id")); !ok {
+		route, ok := LoadDoc[Route](s, "routes", r.PathValue("id"))
+		if !ok {
 			return errors.New("线路不存在")
+		}
+		if in.CloseAdmissions {
+			route.AdmissionsClosed = true
+			if err := SaveDoc(s, "routes", route.ID, route); err != nil {
+				return err
+			}
 		}
 		for _, rule := range ListDocs[UserRule](s, "user_rules") {
 			if rule.RouteID == r.PathValue("id") && relayRecoveryRequired(s, rule) {
@@ -968,9 +1084,9 @@ func (a *App) relayPurgeRouteRules(w http.ResponseWriter, r *http.Request) {
 		commerceError(w, 409, err)
 		return
 	}
-	message := "已发起全部配置撤销；资源将在租约结束后释放"
+	message := "已记录撤销请求；请等待节点确认停止后释放资源"
 	if keepLast {
-		message = "已向全部节点下发停止意图；收到 v2 停止确认前继续保留端口和墓碑记录"
+		message = "已记录全部配置的停止请求；各节点确认停止后释放端口，离线节点需先恢复连接"
 	}
 	WriteJSON(w, 202, map[string]any{"ok": true, "count": count, "state": "revoking", "stopStatus": "pending", "message": message})
 }
@@ -1106,8 +1222,9 @@ func (a *App) relayCreateRule(w http.ResponseWriter, r *http.Request) {
 	created := false
 	err = a.Store.Update(func(s *State) error {
 		user := s.Users[u.ID]
-		if control, ok := LoadDoc[RelayV2Control](s, "relay_v2_control", "default"); ok && control.RecoveryRequired {
-			return errors.New("控制面处于恢复核对，禁止新增线路配置")
+		if old, ok := LoadDoc[UserRule](s, "user_rules", u.ID+":"+r.PathValue("route")); ok && old.RequestID == in.RequestID && old.TargetHash == targetHash {
+			out = old
+			return nil
 		}
 		if boolSetting(s, "maintenance") {
 			return errors.New("站点维护期间暂停新线路配置")
@@ -1121,6 +1238,15 @@ func (a *App) relayCreateRule(w http.ResponseWriter, r *http.Request) {
 		route, ok := LoadDoc[Route](s, "routes", r.PathValue("route"))
 		if !ok || !route.Enabled {
 			return errors.New("线路不可用")
+		}
+		for _, id := range relayRouteAgents(route) {
+			agent, found := LoadDoc[RelayAgent](s, "relay_agents", id)
+			if !found || relayAgentRecoveryRequired(s, agent) {
+				return errors.New("此线路的节点需要重新关联，暂不能新增配置")
+			}
+		}
+		if route.AdmissionsClosed {
+			return errors.New("此线路暂不接纳新配置；已有配置不受此开关影响")
 		}
 		if !userCanUseRoute(user, route) {
 			return errors.New("当前权益等级不足，无法配置此线路")
@@ -1250,52 +1376,7 @@ func (a *App) relayCreateRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if created && in.Front != nil {
-		key := u.ID + ":" + out.RouteID
-		err = a.relayFrontReady(r.Context(), key)
-		var hop executor.Hop
-		if err == nil {
-			value, _ := relayFrontProvisioners.Load(a)
-			hop, err = value.(frontProvisioner)(r.Context(), u.ID, *in.Front, out.EntryAddress, out.EntryPort)
-		}
-		if err == nil && (hop.FromHost != in.Front.Host || hop.FromPort < 1 || hop.FromPort > 65535 || hop.ToHost != out.EntryAddress || hop.ToPort != out.EntryPort) {
-			err = errors.New("前置执行返回的链路与已分配入口不匹配")
-		}
-		if err == nil {
-			var raw []byte
-			raw, err = executor.RewriteClientConfig(in.Config, hop.FromHost, hop.FromPort)
-			if err == nil {
-				var sealed string
-				sealed, err = a.Seal(raw)
-				if err == nil {
-					err = a.Store.Update(func(s *State) error {
-						current, ok := LoadDoc[UserRule](s, "user_rules", key)
-						currentRoute, routeOK := LoadDoc[Route](s, "routes", current.RouteID)
-						if !ok || current.ID != out.ID || current.State != "awaiting_front" || !relayEntitled(s.Users[u.ID], time.Now().UnixMilli()) || !routeOK || !userCanUseRoute(s.Users[u.ID], currentRoute) {
-							return errors.New("配置期间本站授权已改变，前置规则不再生效")
-						}
-						current.SealedConfig = sealed
-						current.HasFront = true
-						current.EntryAddress = hop.FromHost
-						current.EntryPort = hop.FromPort
-						current.State = "pending"
-						out = current
-						return SaveDoc(s, "user_rules", key, current)
-					})
-				}
-			}
-		}
-		if err != nil {
-			_ = a.Store.Update(func(s *State) error {
-				current, ok := LoadDoc[UserRule](s, "user_rules", key)
-				if ok && current.ID == out.ID {
-					relayRevoke(&current, time.Now().UnixMilli(), true)
-					return SaveDoc(s, "user_rules", key, current)
-				}
-				return nil
-			})
-			commerceError(w, 502, err)
-			return
-		}
+		a.startRelayFront(out, *in.Front, append([]byte(nil), in.Config...))
 	}
 	WriteJSON(w, 202, relayPublicRule(out))
 }
@@ -1407,7 +1488,7 @@ func (a *App) relayDeleteRule(w http.ResponseWriter, r *http.Request) {
 	if keepLast {
 		WriteJSON(w, 202, map[string]any{"state": "revoking", "stopStatus": "pending", "message": "撤销命令待节点确认；确认前继续保留端口和旧目标"})
 	} else {
-		WriteJSON(w, 202, map[string]any{"state": "revoking", "maximumLeaseSeconds": relayLeaseMS / 1000})
+		WriteJSON(w, 202, map[string]any{"state": "revoking", "stopStatus": "pending", "message": "配置需要核查停止状态，不能按等待秒数释放端口；请联系管理员检查节点"})
 	}
 }
 func (a *App) relayDownload(w http.ResponseWriter, r *http.Request) {
@@ -1457,6 +1538,15 @@ func (a *App) relayDiagnose(w http.ResponseWriter, r *http.Request) {
 	var rule UserRule
 	runtimeReady, agentCapable := false, false
 	exitAgentID := ""
+	exitIndex, exitCount := 0, 1
+	if raw := r.URL.Query().Get("exit"); raw != "" {
+		value, e := strconv.Atoi(raw)
+		if e != nil || value < 0 || value > 7 {
+			commerceError(w, 400, errors.New("出口编号无效"))
+			return
+		}
+		exitIndex = value
+	}
 	now := time.Now().UnixMilli()
 	err = a.Store.View(func(s *State) error {
 		var ok bool
@@ -1470,8 +1560,24 @@ func (a *App) relayDiagnose(w http.ResponseWriter, r *http.Request) {
 		}
 		view := relayRuleView(s, rule, false, now)
 		runtimeReady = view.SyncState == "active" && view.TotalSegments > 0 && view.ReadySegments == view.TotalSegments
-		if len(rule.Segments) > 0 {
-			exitAgentID = rule.Segments[len(rule.Segments)-1].AgentID
+		exitIDs := route.Exit.AgentIDs
+		if route.Type == "port_forward" || len(exitIDs) == 0 {
+			exitIDs = []string{route.EntryAgentID}
+		}
+		exitCount = len(exitIDs)
+		if exitIndex >= exitCount {
+			return errors.New("出口编号不属于此线路")
+		}
+		exitAgentID = exitIDs[exitIndex]
+		foundExit := false
+		for _, segment := range rule.Segments {
+			if segment.AgentID == exitAgentID {
+				rule.Segments = []RelaySegment{segment}
+				foundExit = true
+				break
+			}
+		}
+		if foundExit {
 			agent, ok := LoadDoc[RelayAgent](s, "relay_agents", exitAgentID)
 			agentCapable = ok && relayTargetProbeCapable(agent, now)
 		}
@@ -1482,8 +1588,11 @@ func (a *App) relayDiagnose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := fmt.Sprintf("出口节点(%s)->客户 MSBOOST", rule.RouteName)
+	if exitCount > 1 {
+		path = fmt.Sprintf("出口 %d/%d（%s）→ 客户 MSBOOST", exitIndex+1, exitCount, rule.RouteName)
+	}
 	failure := func(message string) {
-		WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "failed", "latencyMs": nil, "scope": "exit_target_tcp", "error": message})
+		WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "failed", "latencyMs": nil, "scope": "exit_target_tcp", "exitIndex": exitIndex, "exitCount": exitCount, "checkedAt": time.Now().UnixMilli(), "error": message})
 	}
 	if !runtimeReady {
 		failure("线路节点尚未全部确认在线，无法诊断出口到客户 MSBOOST")
@@ -1527,6 +1636,14 @@ func (a *App) relayDiagnose(w http.ResponseWriter, r *http.Request) {
 	_ = a.Store.View(func(s *State) error {
 		current, ok := LoadDoc[UserRule](s, "user_rules", u.ID+":"+rule.RouteID)
 		route, routeOK := LoadDoc[Route](s, "routes", rule.RouteID)
+		segments := current.Segments
+		current.Segments = nil
+		for _, segment := range segments {
+			if segment.AgentID == exitAgentID {
+				current.Segments = []RelaySegment{segment}
+				break
+			}
+		}
 		currentTarget, targetErr := relayDiagnosticTarget(current)
 		valid = ok && routeOK && route.Enabled && current.ID == rule.ID && current.State == "active" && currentTarget == target && targetErr == nil && relayEntitled(s.Users[u.ID], time.Now().UnixMilli()) && userCanUseRoute(s.Users[u.ID], route)
 		return nil
@@ -1535,7 +1652,7 @@ func (a *App) relayDiagnose(w http.ResponseWriter, r *http.Request) {
 		failure("诊断期间线路配置发生变化，请重新诊断")
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "success", "latencyMs": report.LatencyMS, "scope": "exit_target_tcp", "latencyScope": "exit_target_connect", "message": "由出口节点连接该客户 MSBOOST 的 TCP 端口并计时；不包含入口及中间节点，也不代表游戏实际延迟。", "error": ""})
+	WriteJSON(w, 200, map[string]any{"routeName": rule.RouteName, "path": path, "status": "success", "latencyMs": report.LatencyMS, "scope": "exit_target_tcp", "latencyScope": "exit_target_connect", "exitIndex": exitIndex, "exitCount": exitCount, "checkedAt": time.Now().UnixMilli(), "message": "由所选出口连接客户 MSBOOST 的 TCP 端口并计时；不包含其他出口、入口及中间节点，也不代表游戏实际延迟。", "error": ""})
 }
 
 // relayDiagnosticTarget returns only an immutable, provision-time resolved
@@ -1604,7 +1721,7 @@ func (a *App) relayResetTarget(w http.ResponseWriter, r *http.Request) {
 	if keepLast {
 		WriteJSON(w, 202, map[string]any{"state": "revoking", "stopStatus": "pending", "message": "全部节点确认撤销前保留旧目标，无法按等待秒数保证完成"})
 	} else {
-		WriteJSON(w, 202, map[string]any{"state": "revoking", "retryAfter": until})
+		WriteJSON(w, 202, map[string]any{"state": "revoking", "stopStatus": "pending", "message": "旧目标保留至全部配置确认停止；历史或未知记录须由管理员核查"})
 	}
 }
 func (a *App) relayTraffic(w http.ResponseWriter, r *http.Request) {
@@ -1663,6 +1780,10 @@ func relayCleanup(s *State, now int64) error {
 			}
 		}
 		if rule.State == "awaiting_front" && rule.CreatedAt+5*60*1000 <= now {
+			rule.FrontStatus = "not_deployed"
+			if rule.FrontTaskID != "" {
+				rule.FrontStatus = "check_customer_vps"
+			}
 			relayRevoke(&rule, now, true)
 		}
 		if rule.State != "revoking" && rule.State != "paused" && rule.State != "failed" && rule.State != "awaiting_front" {
@@ -1674,7 +1795,7 @@ func relayCleanup(s *State, now int64) error {
 				rule.State = "pending"
 			}
 		}
-		if rule.State == "revoking" && rule.DeleteAfter <= now && (!relayRuleUsesV2(s, rule) || relayRuleRevoked(rule, now)) {
+		if rule.State == "revoking" && rule.DeleteAfter <= now && relayRuleRevoked(rule, now) {
 			archived := relaySanitizedRule(rule)
 			archived.SealedConfig = ""
 			archived.State = "revoked"

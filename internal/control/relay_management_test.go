@@ -115,8 +115,8 @@ func TestRelayRateChangeAllRulesAllHopsRequireCurrentACK(t *testing.T) {
 	entry.Acks = []relayruntime.Ack{{ID: "ruleroute0", Version: 2, State: "ready"}}
 	relayTestSync(t, mux, entryToken, entry)
 	for _, rule := range managementRules(t, mux, user, "/api/user/rules") {
-		if rule.RouteID == "route0" && (rule.AppliedRateMbps != 20 || rule.ReadySegments != 2) {
-			t.Fatalf("rule0 not confirmed: %+v", rule)
+		if rule.RouteID == "route0" && (rule.AppliedRateMbps != 0 || rule.ReadySegments != 0) {
+			t.Fatalf("historical ACK falsely confirmed current readiness: %+v", rule)
 		}
 		if rule.RouteID == "route1" && rule.AppliedRateMbps != 0 {
 			t.Fatal("rule1 claimed active before its own ACK")
@@ -132,17 +132,13 @@ func TestRelayRateChangeAllRulesAllHopsRequireCurrentACK(t *testing.T) {
 	entry.Acks = []relayruntime.Ack{{ID: "ruleroute1", Version: 2, State: "ready"}}
 	relayTestSync(t, mux, entryToken, entry)
 	for _, rule := range managementRules(t, mux, user, "/api/user/rules") {
-		want := int64(20)
-		if rule.RouteID == "route1" {
-			want = 3
-		}
-		if rule.SyncState != "active" || rule.AppliedRateMbps != want {
-			t.Fatalf("all ACKs did not activate per-rule rate: %+v", rule)
+		if rule.SyncState == "active" || rule.AppliedRateMbps != 0 {
+			t.Fatalf("historical lease ACK activated a current rule view: %+v", rule)
 		}
 	}
 }
 
-func TestRelayAdminManagementAuthorizationSanitizationAndLeaseArchive(t *testing.T) {
+func TestRelayAdminManagementAuthorizationSanitizationAndRetainsUnknownHistory(t *testing.T) {
 	a, mux, user, admin, entryToken, _ := relayManagementFixture(t)
 	path := "/api/admin/user-rules/ruleroute0"
 	for _, method := range []string{"GET", "PATCH", "DELETE"} {
@@ -165,7 +161,7 @@ func TestRelayAdminManagementAuthorizationSanitizationAndLeaseArchive(t *testing
 			t.Fatalf("secret exposed: %s", secret)
 		}
 	}
-	if got := managementRules(t, mux, admin, "/api/admin/user-rules?q=buyer%40example.com&routeId=route0&state=active"); len(got) != 1 {
+	if got := managementRules(t, mux, admin, "/api/admin/user-rules?q=buyer%40example.com&routeId=route0&state=pending"); len(got) != 1 {
 		t.Fatalf("filters: %+v", got)
 	}
 	if got := managementRules(t, mux, admin, "/api/admin/user-rules?q=missing"); len(got) != 0 {
@@ -212,12 +208,11 @@ func TestRelayAdminManagementAuthorizationSanitizationAndLeaseArchive(t *testing
 		t.Fatal(err)
 	}
 	if err := a.Store.View(func(s *State) error {
-		if _, ok := LoadDoc[UserRule](s, "user_rules", user.ID+":route0"); ok {
-			t.Fatal("rule not cleaned after deadline")
+		if _, ok := LoadDoc[UserRule](s, "user_rules", user.ID+":route0"); !ok {
+			t.Fatal("historical lease deadline incorrectly released runtime")
 		}
-		rule, ok := LoadDoc[UserRule](s, "relay_rule_archive", "ruleroute0")
-		if !ok || rule.State != "revoked" || rule.SealedConfig != "" {
-			t.Fatal("audit archive missing")
+		if _, ok := LoadDoc[UserRule](s, "relay_rule_archive", "ruleroute0"); ok {
+			t.Fatal("unknown historical rule falsely archived as stopped")
 		}
 		audited := map[string]bool{}
 		for _, event := range ListDocs[map[string]any](s, "commerce_audit") {

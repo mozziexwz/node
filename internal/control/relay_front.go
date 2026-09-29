@@ -42,6 +42,84 @@ type frontProvisioner func(context.Context, string, executor.SSH, string, int) (
 
 var relayFrontProvisioners sync.Map
 
+// A browser disconnect must not cancel an already accepted deployment. The
+// persisted rule is its operation ID; credentials stay only in this bounded
+// worker's memory and are never replayed after a panel restart.
+func (a *App) startRelayFront(rule UserRule, ssh executor.SSH, config []byte) {
+	a.relayWorkMu.Lock()
+	if a.relayWorkClosed {
+		a.relayWorkMu.Unlock()
+		clear(config)
+		return
+	}
+	a.relayWorkWG.Add(1)
+	a.relayWorkMu.Unlock()
+	go func() {
+		defer a.relayWorkWG.Done()
+		defer clear(config)
+		ctx, cancel := context.WithTimeout(a.relayWorkCtx, 5*time.Minute)
+		defer cancel()
+		key := rule.UserID + ":" + rule.RouteID
+		err := a.relayFrontReady(ctx, key)
+		attempted := false
+		var hop executor.Hop
+		if err == nil {
+			if value, ok := relayFrontProvisioners.Load(a); ok {
+				attempted = true
+				hop, err = value.(frontProvisioner)(ctx, rule.UserID, ssh, rule.EntryAddress, rule.EntryPort)
+			} else {
+				err = errors.New("front executor unavailable")
+			}
+		}
+		ssh.Password = ""
+		if err == nil && (hop.FromHost != ssh.Host || hop.FromPort < 1 || hop.FromPort > 65535 || hop.ToHost != rule.EntryAddress || hop.ToPort != rule.EntryPort) {
+			err = errors.New("front result mismatch")
+		}
+		if err == nil {
+			var raw []byte
+			raw, err = executor.RewriteClientConfig(config, hop.FromHost, hop.FromPort)
+			if err == nil {
+				var sealed string
+				sealed, err = a.Seal(raw)
+				clear(raw)
+				if err == nil {
+					err = a.Store.Update(func(s *State) error {
+						current, ok := LoadDoc[UserRule](s, "user_rules", key)
+						route, routeOK := LoadDoc[Route](s, "routes", current.RouteID)
+						if !ok || current.ID != rule.ID || current.State != "awaiting_front" || !routeOK || !route.Enabled || relayRecoveryRequired(s, current) || !relayEntitled(s.Users[rule.UserID], time.Now().UnixMilli()) || !userCanUseRoute(s.Users[rule.UserID], route) {
+							return errors.New("front authorization changed")
+						}
+						current.SealedConfig, current.HasFront = sealed, true
+						current.EntryAddress, current.EntryPort = hop.FromHost, hop.FromPort
+						current.State, current.FrontStatus = "pending", "ready"
+						return SaveDoc(s, "user_rules", key, current)
+					})
+				}
+			}
+		}
+		if err != nil {
+			_ = a.Store.Update(func(s *State) error {
+				current, ok := LoadDoc[UserRule](s, "user_rules", key)
+				if !ok || current.ID != rule.ID || current.FrontStatus == "cleaned" {
+					return nil
+				}
+				relayRevoke(&current, time.Now().UnixMilli(), true)
+				current.FrontStatus = "not_deployed"
+				if attempted && current.FrontTaskID != "" {
+					current.FrontStatus = "check_customer_vps"
+					if task, found := LoadDoc[Task](s, "tasks", current.FrontTaskID); found && task.Kind == "front" && task.State == "failed" {
+						switch task.Phase {
+						case "validate", "preflight", "target", "ssh_connect", "ssh_host_key", "ssh_auth", "ssh_handshake", "ssh_session":
+							current.FrontStatus = "not_deployed"
+						}
+					}
+				}
+				return SaveDoc(s, "user_rules", key, current)
+			})
+		}
+	}()
+}
+
 func (a *App) SetFrontProvisioner(fn func(context.Context, string, executor.SSH, string, int) (executor.Hop, error)) {
 	relayFrontProvisioners.Store(a, frontProvisioner(fn))
 }
@@ -59,7 +137,7 @@ func (a *App) relayFrontReady(ctx context.Context, key string) error {
 			}
 			ready = len(rule.Segments) > 0
 			for _, seg := range rule.Segments {
-				ready = ready && seg.AckState == "ready" && seg.LastLease > time.Now().UnixMilli()
+				ready = ready && seg.ProtocolVersion == 2 && relaySegmentReady(s, seg, time.Now().UnixMilli())
 			}
 			return nil
 		})

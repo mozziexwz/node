@@ -17,6 +17,7 @@ import (
 // number. A v0.3.x executor must never receive a new relay/front task after
 // the control plane starts requiring the mandatory SOCKS guard.
 const FreeRelayGuardCapability = "free_relay_socks_guard"
+const ScopedCleanupCapability = "scoped_relay_cleanup"
 const executorCapabilitiesHeader = "X-MSBOOST-Executor-Capabilities"
 
 // Run polls authenticated envelopes. It never persists SSH credentials or logs
@@ -48,6 +49,7 @@ func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
 			request.Header.Set("Authorization", "Bearer "+token)
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
+			request.Header.Set("X-MSBOOST-Scoped-Cleanup", "1")
 			response, err := client.Do(request)
 			if err == nil {
 				response.Body.Close()
@@ -58,6 +60,7 @@ func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/executor/next", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
+		req.Header.Set("X-MSBOOST-Scoped-Cleanup", "1")
 		resp, err := client.Do(req)
 		if err != nil {
 			if !waitContext(ctx, 3*time.Second) {

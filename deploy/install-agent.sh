@@ -166,7 +166,7 @@ relay_fresh_state_manifest_at() (
     name=${entry##*/}
     [[ ! -L $entry ]] || return 1
     case $name in
-      relay-token.json|relay-v2-state.json|relay-v2.lock|traffic-v2-journal.json|traffic-journal.json)
+      relay-token.json|relay-enrollment.json|relay-v2-state.json|relay-health.json|relay-v2.lock|traffic-v2-journal.json|traffic-journal.json)
         [[ -f $entry && $(stat -c %h -- "$entry") == 1 ]] || return 1 ;;
       recovery.sock) [[ -S $entry ]] || return 1 ;;
       rule-*.json)
@@ -446,7 +446,11 @@ GOST_ARM64_URL=https://github.com/go-gost/gost/releases/download/v3.3.0/gost_3.3
 GOST_ARM64_SHA256=d03699e3f385d4ff5dad68046712adfcc7515325a064d2ab046e0bece30f8f8f
 PINS
 else
-  if (( ! upgrade_in_place )); then printf 'MSBOOST_RELAY_ENROLLMENT_TOKEN=%s\n' "$token" >> "$stage/environment"; fi
+  if (( ! upgrade_in_place )); then
+    step '核对面板是否允许本次注册（尚未停止原服务）'
+    MSBOOST_RELAY_ENROLLMENT_TOKEN="$token" "$stage/msboost-agent" --capability relay-enrollment-check --server "$server" || fail '面板预检未通过，未开始替换服务。'
+    printf 'MSBOOST_RELAY_ENROLLMENT_TOKEN=%s\n' "$token" >> "$stage/environment"
+  fi
 fi
 unset token
 relay_policy_arg=''
@@ -536,16 +540,21 @@ systemctl daemon-reload
 systemctl enable "$unit" >/dev/null
 step '启动服务并检查本机运行状态'
 systemctl restart "$unit"
+relay_current_invocation=$(systemctl show "$unit" -p InvocationID --value)
 sleep 3
 systemctl is-active --quiet "$unit" || fail 'Agent 未保持运行，将尝试回滚；请随后检查服务日志。'
 if [[ $capability == relay ]]; then
   registered=0
   for attempt in $(seq 1 30); do
     systemctl is-active --quiet "$unit" || fail '中转 Agent 在注册期间退出，将尝试回滚。'
-    if relay_registration_ready_at "$relay_state_dir" "$offline_policy"; then registered=1; break; fi
+    relay_current_invocation=$(systemctl show "$unit" -p InvocationID --value)
+    if "$binary" --capability relay-health --state-dir "$relay_state_dir" --server "$server" --health-invocation "$relay_current_invocation" 2> "$stage/health-error"; then registered=1; break; fi
     sleep 1
   done
-  (( registered )) || fail '中转 Agent 未完成注册及真实 v2 控制同步：可能是令牌失效、WAF 阻断、网络故障或恢复核对。进程 active 不代表面板在线；已停止本次安装并尝试恢复旧状态，请检查服务日志。'
+  if (( ! registered )); then
+    "$binary" --capability relay-health --state-dir "$relay_state_dir" --server "$server" --health-invocation "$relay_current_invocation" || true
+    fail '本次进程未完成认证同步，安装未通过验收。将尝试恢复本机文件；面板身份是否有效仍须核查，不要重复执行全新重装。'
+  fi
   if (( upgrade_in_place )); then
     upgraded_id=$(grep -oE '"agentId":"[A-Za-z0-9_.:-]+"' "$relay_upgrade_state/relay-v2-state.json" | head -n 1) || true
     [[ -n $upgraded_id && $upgraded_id == "$relay_upgrade_identity" ]] || fail '原地升级后 Relay 身份发生变化；已停止新服务并尝试回滚，请检查私有备份和后台状态。'

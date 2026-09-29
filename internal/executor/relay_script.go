@@ -173,20 +173,34 @@ relay_fail service_failed
 `
 
 const relayCleanupScript = `
+[[ "$task_id" =~ ^[A-Za-z0-9_-]{1,100}$ ]]
 confdir="/etc/msboost-free/${task_id}"
-systemctl disable --now "msboost-free-${task_id}.service" >/dev/null 2>&1 || true
+unit="msboost-free-${task_id}.service"
+[ ! -L /etc/msboost-free ] && [ ! -L "$confdir" ]
+[ ! -L "/etc/systemd/system/$unit" ]
+[ ! -L /run/msboost-customer-cleanup.lock ]
+exec 8>/run/msboost-customer-cleanup.lock
+flock -n 8
+if [ -e "/etc/systemd/system/$unit" ]; then
+  systemctl disable --now "$unit" >/dev/null 2>&1
+  [ "$(systemctl show "$unit" -p ActiveState --value)" = inactive ] || [ "$(systemctl show "$unit" -p ActiveState --value)" = failed ]
+  [ "$(systemctl show "$unit" -p MainPID --value)" = 0 ]
+fi
 if [ -f "$confdir/ufw-owned" ]; then
+  [ ! -L "$confdir/ufw-owned" ]
   read -r port < "$confdir/ufw-owned"
-  if [[ "$port" =~ ^[0-9]+$ ]]; then ufw --force delete allow "$port/tcp" >/dev/null 2>&1 || true; fi
+  [[ "$port" =~ ^[0-9]+$ ]]
+  ufw --force delete allow "$port/tcp" >/dev/null 2>&1
 fi
 for mode in runtime permanent; do
   if [ -f "$confdir/firewalld-${mode}-owned" ]; then
+    [ ! -L "$confdir/firewalld-${mode}-owned" ]
     read -r zone port < "$confdir/firewalld-${mode}-owned"
     if [[ "$zone" =~ ^[A-Za-z0-9_.-]+$ && "$port" =~ ^[0-9]+$ ]]; then
       args=()
       if [ "$mode" = permanent ]; then args+=(--permanent); fi
-      firewall-cmd "${args[@]}" --zone="$zone" --remove-port="$port/tcp" >/dev/null 2>&1 || true
-    fi
+      firewall-cmd "${args[@]}" --zone="$zone" --remove-port="$port/tcp" >/dev/null 2>&1
+    else exit 1; fi
   fi
 done
 rm -f -- "/etc/systemd/system/msboost-free-${task_id}.service"

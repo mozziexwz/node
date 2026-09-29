@@ -827,11 +827,13 @@ func prepareRestoredRelay(s *State, now int64, disaster bool) error {
 	if err != nil {
 		return err
 	}
-	recovery := disaster || restoreRelayNeedsRecovery(s)
+	// An empty disaster snapshot has no remote runtime to reconcile. Merely
+	// restoring a website must not poison its first newly enrolled relay.
+	recovery := restoreRelayNeedsRecovery(s)
 	protectedAgents := map[string]bool{}
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {
 		key := rule.UserID + ":" + rule.RouteID
-		if restoreRuleNeedsRecovery(s, rule) || disaster && len(rule.Segments) > 0 {
+		if restoreRuleNeedsRecovery(s, rule) || len(rule.Segments) > 0 {
 			// The snapshot cannot prove that an offline process has stopped. Keep
 			// its complete resource identity, including pending revocation intent.
 			// This is a reconciliation lock, NOT permission to take over the node.
@@ -841,9 +843,8 @@ func prepareRestoredRelay(s *State, now int64, disaster bool) error {
 			}
 			recovery = true
 		} else {
-			// Compatibility: current, positively v1-only safe restores still use
-			// the old expired-lease isolation path. Full restores never infer this
-			// for a populated segment merely from an old v1 snapshot.
+			// Definitions without remote segments can remain paused. Historical
+			// populated records above are retained for explicit reconciliation.
 			rule.State = "paused"
 			rule.Segments = nil
 			rule.DeleteAfter = 0
@@ -897,7 +898,7 @@ func prepareRestoredRelay(s *State, now int64, disaster bool) error {
 			return err
 		}
 	}
-	return nil
+	return relayClearEmptyRestoreLatch(s)
 }
 func (b *BackupService) retention(w http.ResponseWriter, r *http.Request) {
 	if !b.admin(w, r) {

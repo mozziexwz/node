@@ -312,10 +312,14 @@ func executorHasFreeRelayGuard(record ExecutorRecord) bool {
 }
 
 func executorCapabilitiesFromRequest(r *http.Request) []string {
+	out := []string{}
 	if r.Header.Get("X-MSBOOST-Executor-Capabilities") == executor.FreeRelayGuardCapability {
-		return []string{executor.FreeRelayGuardCapability}
+		out = append(out, executor.FreeRelayGuardCapability)
 	}
-	return nil
+	if r.Header.Get("X-MSBOOST-Scoped-Cleanup") == "1" {
+		out = append(out, executor.ScopedCleanupCapability)
+	}
+	return out
 }
 
 func (t *TaskService) hasExecutorFor(s *State, kind string) bool {
@@ -423,6 +427,22 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 			return errors.New("请先检查并确认每台 SSH 服务器的真实指纹，指纹检查有效期为 30 分钟")
 		}
 		if request.Cleanup != nil {
+			if request.Cleanup.ManagedTaskID != "" {
+				available := false
+				for _, record := range ListDocs[ExecutorRecord](s, "executors") {
+					if record.Status != "active" || record.LastSeenAt <= now.Add(-90*time.Second).UnixMilli() {
+						continue
+					}
+					for _, capability := range record.Capabilities {
+						if capability == executor.ScopedCleanupCapability {
+							available = true
+						}
+					}
+				}
+				if !available {
+					return errors.New("请先升级在线执行机后使用按任务清理；旧执行机不会接收此操作")
+				}
+			}
 			tool := "deploy"
 			if request.Cleanup.Scope == "relay" {
 				tool = "relay"
@@ -432,7 +452,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 			}
 			if request.Kind == "cleanup" {
 				preview, ok := LoadDoc[Task](s, "tasks", request.Cleanup.PreviewID)
-				if !ok || preview.UserID != u.ID || preview.Kind != "cleanup-preview" || preview.State != "succeeded" || preview.Host != job.Host || preview.SSHPort != job.SSHPort || preview.SSHFingerprint != job.SSHFingerprint || preview.UpdatedAt < now.Add(-10*time.Minute).UnixMilli() || preview.Cleanup == nil || preview.Cleanup.Scope != request.Cleanup.Scope || preview.Cleanup.Digest != request.Cleanup.Digest {
+				if !ok || preview.UserID != u.ID || preview.Kind != "cleanup-preview" || preview.State != "succeeded" || preview.Host != job.Host || preview.SSHPort != job.SSHPort || preview.SSHFingerprint != job.SSHFingerprint || preview.UpdatedAt < now.Add(-10*time.Minute).UnixMilli() || preview.Cleanup == nil || preview.Cleanup.Scope != request.Cleanup.Scope || preview.Cleanup.Digest != request.Cleanup.Digest || preview.Cleanup.ManagedTaskID != request.Cleanup.ManagedTaskID {
 					return errors.New("清理预览已失效或与当前服务器不一致，请重新预览")
 				}
 				if _, used := LoadDoc[taskIdempotency](s, "cleanup_consumed", preview.ID); used {
@@ -741,6 +761,9 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 		t.mu.Lock()
 		var next *taskEnvelope
 		for _, e := range t.envelopes {
+			if e.Job.Request.Cleanup != nil && e.Job.Request.Cleanup.ManagedTaskID != "" && r.Header.Get("X-MSBOOST-Scoped-Cleanup") != "1" {
+				continue
+			}
 			if e.AgentID == "" && time.Now().UnixMilli() < e.Job.Deadline && ((e.Job.Request.Kind != "relay" && e.Job.Request.Kind != "front") || r.Header.Get("X-MSBOOST-Executor-Capabilities") == executor.FreeRelayGuardCapability) && (next == nil || e.QueuedAt.Before(next.QueuedAt)) {
 				next = e
 			}
@@ -849,7 +872,7 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if envelope.Job.Request.Kind == "cleanup" || envelope.Job.Request.Kind == "cleanup-preview" {
-		if out.State == "succeeded" && !executor.ValidCleanupReport(out.Cleanup, envelope.Job.Request.Cleanup.Scope, envelope.Job.Request.Kind == "cleanup") {
+		if out.State == "succeeded" && (!executor.ValidCleanupReport(out.Cleanup, envelope.Job.Request.Cleanup.Scope, envelope.Job.Request.Kind == "cleanup") || out.Cleanup.ManagedTaskID != envelope.Job.Request.Cleanup.ManagedTaskID) {
 			Fail(w, 400, "清理结果范围校验失败")
 			return
 		}
@@ -881,6 +904,19 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 			job.Message = "清理预览已完成，尚未删除任何服务或文件；请核对清单并再次确认。"
 			if out.Cleanup.Removed {
 				job.Message = "清单内受管服务、文件和本项目创建的防火墙规则已清理。备份、系统账户、依赖及共享二进制缓存仍保留。"
+				if out.Cleanup.Scope == "relay" && out.Cleanup.ManagedTaskID != "" {
+					for _, rule := range ListDocs[UserRule](s, "user_rules") {
+						front, found := LoadDoc[Task](s, "tasks", rule.FrontTaskID)
+						if !found || rule.UserID != job.UserID || rule.FrontTaskID+"p" != out.Cleanup.ManagedTaskID || front.Kind != "front" || front.Host != job.Host || front.SSHPort != job.SSHPort || front.SSHFingerprint != job.SSHFingerprint || front.UpdatedAt > job.CreatedAt {
+							continue
+						}
+						rule.FrontStatus = "cleaned"
+						relayRevoke(&rule, time.Now().UnixMilli(), true)
+						if err := SaveDoc(s, "user_rules", rule.UserID+":"+rule.RouteID, rule); err != nil {
+							return err
+						}
+					}
+				}
 			}
 		}
 		job.UpdatedAt = time.Now().UnixMilli()
@@ -925,7 +961,12 @@ func cleanTaskHealth(in *executor.Health) *executor.Health {
 			return "unknown"
 		}
 	}
-	return &executor.Health{Service: clean(in.Service), LocalSelfTest: clean(in.LocalSelfTest), PublicTCP: clean(in.PublicTCP), Game: clean(in.Game)}
+	bbr := "unknown"
+	switch in.BBR {
+	case "enabled", "unavailable", "partial", "review_required":
+		bbr = in.BBR
+	}
+	return &executor.Health{Service: clean(in.Service), LocalSelfTest: clean(in.LocalSelfTest), PublicTCP: clean(in.PublicTCP), Game: clean(in.Game), BBR: bbr}
 }
 
 func (t *TaskService) listExecutors(w http.ResponseWriter, r *http.Request) {

@@ -240,7 +240,10 @@ export function RouteBuilder() {
                 ? "未启用"
                 : route.online
                   ? "节点在线"
-                  : "节点离线"}
+                  : route.availability === "partial"
+                    ? "部分节点可连接"
+                    : "节点不可连接"}
+              {route.admissionsClosed ? " · 不接纳新配置" : ""}
             </Badge>,
             <div className="actions">
               <Button
@@ -285,13 +288,14 @@ export function RouteBuilder() {
                 onClick={async () => {
                   if (
                     !confirm(
-                      `确定一键删除隧道“${route.name}”的全部客户中转规则？此操作会停止并移除所有客户在该隧道上的配置，且不可撤销。`,
+                      `下线隧道“${route.name}”？将先停止接纳新配置，再请求撤销全部客户中转。节点确认停止后才释放端口；此操作会影响现有连接。`,
                     )
                   )
                     return;
                   try {
                     await post(`/api/admin/routes/${route.id}/purge-rules`, {
                       confirm: true,
+                      closeAdmissions: true,
                     });
                     reload();
                     setMessage("");
@@ -300,7 +304,7 @@ export function RouteBuilder() {
                   }
                 }}
               >
-                删除全部客户规则
+                下线并撤销全部配置
               </Button>
               <Button
                 onClick={async () => {
@@ -357,6 +361,7 @@ export function RouteBuilder() {
                   editing.type === "tunnel" ? editing.exit : { agentIds: [] },
                 requireFront: editing.requireFront,
                 enabled: editing.enabled,
+                admissionsClosed: !!editing.admissionsClosed,
                 rateMbps: Number(editing.rateMbps),
                 level: Math.max(1, Math.min(3, Number(editing.level) || 1)),
               };
@@ -562,12 +567,18 @@ export function RouteBuilder() {
               className="mt16"
               checked={editing.enabled}
               onChange={(e) => change({ enabled: e.target.checked })}
-              label="启用隧道"
+              label="运行隧道（关闭会请求停止现有转发）"
+            />
+            <Check
+              className="mt16"
+              checked={!!editing.admissionsClosed}
+              onChange={(e) => change({ admissionsClosed: e.target.checked })}
+              label="停止接纳新配置（已有转发与续权益不受影响）"
             />
             <Notice tone="orange">
               只有真实节点心跳与监听 ACK 才会激活转发。TLS
               仅用于节点之间；不改变客户 MSBOOST
-              目标认证。已有用户规则时需先迁移再编辑。
+              目标认证。名称和接纳开关不影响现有连接；运行开关及限速修改可能影响业务。已有用户配置时，拓扑和计费设置须先处理关联。
             </Notice>
           </AsyncForm>
         </Modal>

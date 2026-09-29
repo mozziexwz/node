@@ -378,6 +378,7 @@ func isolateRestoredState(s *State, disaster bool) error {
 	for _, agent := range ListDocs[RelayAgent](s, "relay_agents") {
 		agent.Enabled, agent.Online = false, false
 		agent.TokenHash, agent.EnrollmentHash = "", ""
+		clearRelayEnrollmentRetry(&agent)
 		if agent.ReconcileState != "recovery_required" {
 			agent.BootID = ""
 		} else {

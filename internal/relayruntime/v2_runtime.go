@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -543,6 +544,10 @@ func runV2(ctx context.Context, cfg Config, agentID, token string) error {
 		if s.v2.controlStatus != status {
 			log.Printf("relay v2 control status: %s; existing forwarding retained", status)
 			s.v2.controlStatus = status
+		}
+		health := RelayHealth{AgentID: s.v2.disk.AgentID, InstanceID: instanceID, InvocationID: os.Getenv("INVOCATION_ID"), ServerURL: s.cfg.ServerURL, Status: status, ObservedAt: time.Now().UnixMilli()}
+		if err := writeV2PrivateJSON(filepath.Join(cfg.StateDir, relayHealthFile), health); err != nil {
+			log.Print("relay health checkpoint unavailable; forwarding state retained")
 		}
 		s.mu.Unlock()
 		wait := 5 * time.Second

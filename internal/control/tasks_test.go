@@ -324,6 +324,45 @@ func TestOldExecutorCannotCreateOrClaimNewRelayTask(t *testing.T) {
 	}
 }
 
+func TestOldExecutorCannotClaimScopedCleanup(t *testing.T) {
+	a, service, user := taskFixture(t)
+	token := strings.Repeat("s", 48)
+	sum := sha256.Sum256([]byte(token))
+	if err := a.Store.Update(func(s *State) error {
+		record, _ := LoadDoc[ExecutorRecord](s, "executors", "executor-test")
+		record.TokenHash = hex.EncodeToString(sum[:])
+		record.Capabilities = []string{executor.ScopedCleanupCapability}
+		return SaveDoc(s, "executors", record.ID, record)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := executor.Request{Kind: "cleanup-preview", SSH: taskSSHFixture(), Cleanup: &executor.CleanupOptions{Scope: "relay", ManagedTaskID: "only-this-taskp"}}
+	w := httptest.NewRecorder()
+	service.create(w, taskRequest(t, user, "POST", "/api/tasks", "scoped-cleanup-test", request))
+	if w.Code != 202 {
+		t.Fatal(w.Body.String())
+	}
+	var created Task
+	json.Unmarshal(w.Body.Bytes(), &created)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	old := httptest.NewRequest("GET", "/api/executor/next", nil).WithContext(ctx)
+	old.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	service.next(w, old)
+	if service.envelopes[created.ID].AgentID != "" {
+		t.Fatal("old executor accepted scoped cleanup")
+	}
+	next := httptest.NewRequest("GET", "/api/executor/next", nil)
+	next.Header.Set("Authorization", "Bearer "+token)
+	next.Header.Set("X-MSBOOST-Scoped-Cleanup", "1")
+	w = httptest.NewRecorder()
+	service.next(w, next)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "only-this-taskp") {
+		t.Fatalf("scoped executor rejected: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestLegacyExecutorStillClaimsNonRelayJobs(t *testing.T) {
 	for _, kind := range []string{"deploy", "dd"} {
 		t.Run(kind, func(t *testing.T) {

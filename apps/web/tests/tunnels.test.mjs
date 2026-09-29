@@ -131,12 +131,13 @@ test(
         secondRow.getByRole("button", { name: "下移 美国线路" }),
       ).toBeDisabled();
       page.once("dialog", (dialog) => {
-        assert.match(dialog.message(), /全部客户中转规则/);
-        assert.match(dialog.message(), /不可撤销/);
+        assert.match(dialog.message(), /先停止接纳新配置/);
+        assert.match(dialog.message(), /撤销全部客户中转/);
+        assert.match(dialog.message(), /影响现有连接/);
         void dialog.accept();
       });
       await row
-        .getByRole("button", { name: "删除全部客户规则", exact: true })
+        .getByRole("button", { name: "下线并撤销全部配置", exact: true })
         .click();
       await expect
         .poll(
@@ -148,7 +149,7 @@ test(
         {
           path: "/api/admin/routes/route-jp/purge-rules",
           method: "POST",
-          body: { confirm: true },
+          body: { confirm: true, closeAdmissions: true },
         },
       ]);
       await row.getByRole("button", { name: "下移 日本线路" }).click();
@@ -166,6 +167,11 @@ test(
       await row.getByRole("button", { name: "编辑", exact: true }).click();
       const dialog = page.getByRole("dialog");
       await expect(dialog.getByLabel("权益等级")).toHaveValue("2");
+      const admission = dialog.getByLabel(
+        "停止接纳新配置（已有转发与续权益不受影响）",
+      );
+      await expect(admission).not.toBeChecked();
+      await admission.check();
       await dialog.getByLabel("权益等级").selectOption("3");
       await dialog
         .getByRole("button", { name: "保存隧道", exact: true })
@@ -176,6 +182,7 @@ test(
       const update = writes.find((item) => item.method === "PUT");
       assert.equal(update.path, "/api/admin/routes/route-jp");
       assert.equal(update.body.level, 3);
+      assert.equal(update.body.admissionsClosed, true);
       assert.deepEqual(errors, []);
     } finally {
       await browser.close();

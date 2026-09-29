@@ -34,20 +34,22 @@ type Request struct {
 	Cleanup       *CleanupOptions `json:"cleanup,omitempty"`
 }
 type CleanupOptions struct {
-	Scope     string `json:"scope"`
-	PreviewID string `json:"previewId,omitempty"`
-	Digest    string `json:"digest,omitempty"`
-	Confirm   bool   `json:"confirm"`
+	ManagedTaskID string `json:"managedTaskId,omitempty"`
+	Scope         string `json:"scope"`
+	PreviewID     string `json:"previewId,omitempty"`
+	Digest        string `json:"digest,omitempty"`
+	Confirm       bool   `json:"confirm"`
 }
 type CleanupItem struct {
 	Path string `json:"path"`
 	Kind string `json:"kind"`
 }
 type CleanupReport struct {
-	Scope   string        `json:"scope"`
-	Digest  string        `json:"digest"`
-	Items   []CleanupItem `json:"items"`
-	Removed bool          `json:"removed"`
+	ManagedTaskID string        `json:"managedTaskId,omitempty"`
+	Scope         string        `json:"scope"`
+	Digest        string        `json:"digest"`
+	Items         []CleanupItem `json:"items"`
+	Removed       bool          `json:"removed"`
 }
 type Target struct {
 	Host string `json:"host"`
@@ -71,6 +73,7 @@ type Hop struct {
 	ToPort   int    `json:"toPort"`
 }
 type Health struct {
+	BBR           string `json:"bbr,omitempty"`
 	Service       string `json:"service"`
 	LocalSelfTest string `json:"localSelfTest"`
 	PublicTCP     string `json:"publicTCP"`

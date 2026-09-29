@@ -151,6 +151,7 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	script += "MSBOOST_FORCE_FRESH=1 bash \"$work/installer.sh\" \"$node_user\" \"$node_pass\" >\"$work/private.log\" 2>&1\n"
 	script += "msboost_phase=service\nsystemctl is-active --quiet msboost.service\nmsboost_phase=config\nprintf 'MSBOOST_CONFIG='\nbase64 -w0 /root/直连.json\nprintf '\\n'\n"
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
+	r.Health = &Health{BBR: marker(out, "MSBOOST_BBR")}
 	if err != nil {
 		return failRemote(r, "install", out, err)
 	}
@@ -169,7 +170,7 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	r.Phase = "complete"
 	r.Message = "服务运行及本地代理自测通过；公网 TCP 单独检查，游戏连通性尚未验证"
 	r.Config = data
-	r.Health = &Health{Service: "running", LocalSelfTest: "passed", PublicTCP: e.TCPProbe(ctx, info.TargetHost, info.TargetPort), Game: "not_tested"}
+	r.Health = &Health{Service: "running", LocalSelfTest: "passed", PublicTCP: e.TCPProbe(ctx, info.TargetHost, info.TargetPort), Game: "not_tested", BBR: marker(out, "MSBOOST_BBR")}
 	return r
 }
 func probeTCP(ctx context.Context, host string, port int) string {
@@ -256,17 +257,25 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 			return checked
 		}
 	}
-	port, err := e.installRelay(ctx, job.Request.SSH, target, info.TargetPort, job.ID+"r", 625000)
+	port, bbr, err := e.installRelay(ctx, job.Request.SSH, target, info.TargetPort, job.ID+"r", 625000)
+	r.Health = &Health{BBR: bbr}
 	if err != nil {
 		return failRemote(r, "relay", nil, err)
 	}
 	r.Hops = []Hop{{FromHost: job.Request.SSH.Host, FromPort: port, ToHost: info.TargetHost, ToPort: info.TargetPort}}
 	entryHost, entryPort := job.Request.SSH.Host, port
 	if job.Request.Front != nil {
-		frontPort, err := e.installRelay(ctx, *job.Request.Front, job.Request.SSH.Host, port, job.ID+"f", 625000)
+		frontPort, frontBBR, err := e.installRelay(ctx, *job.Request.Front, job.Request.SSH.Host, port, job.ID+"f", 625000)
 		if err != nil {
-			e.cleanupRelay(ctx, job.Request.SSH, job.ID+"r")
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if cleanupErr := e.cleanupRelay(cleanupCtx, job.Request.SSH, job.ID+"r"); cleanupErr != nil {
+				return failRemote(r, "cleanup", nil, diagnosticError("cleanup_failed"))
+			}
 			return failRemote(r, "front", nil, err)
+		}
+		if frontBBR != bbr {
+			bbr = "partial"
 		}
 		r.Hops = append(r.Hops, Hop{FromHost: job.Request.Front.Host, FromPort: frontPort, ToHost: job.Request.SSH.Host, ToPort: port})
 		entryHost = job.Request.Front.Host
@@ -288,7 +297,7 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 	r.State = "succeeded"
 	r.Phase = "complete"
 	r.Message = "TCP 中转服务已真实绑定端口；每端口上下行各 5 Mbps，游戏连接尚未验证"
-	r.Health = &Health{Service: "running", LocalSelfTest: "target_tcp_reachable", PublicTCP: e.TCPProbe(ctx, entryHost, entryPort), Game: "not_tested"}
+	r.Health = &Health{Service: "running", LocalSelfTest: "target_tcp_reachable", PublicTCP: e.TCPProbe(ctx, entryHost, entryPort), Game: "not_tested", BBR: bbr}
 	return r
 }
 func (e *Engine) front(ctx context.Context, job Job, r Result) Result {
@@ -303,23 +312,27 @@ func (e *Engine) front(ctx context.Context, job Job, r Result) Result {
 	if err != nil {
 		return failed(r, "target", err.Error())
 	}
-	port, err := e.installRelay(ctx, job.Request.SSH, host, target.Port, job.ID+"p", 0)
+	if checked, ok := e.preflightDebian(ctx, job.Request.SSH, r); !ok {
+		return checked
+	}
+	port, bbr, err := e.installRelay(ctx, job.Request.SSH, host, target.Port, job.ID+"p", 0)
+	r.Health = &Health{BBR: bbr}
 	if err != nil {
 		return failRemote(r, "front", nil, err)
 	}
 	r.State = "succeeded"
 	r.Hops = []Hop{{FromHost: job.Request.SSH.Host, FromPort: port, ToHost: target.Host, ToPort: target.Port}}
-	r.Health = &Health{Service: "running", LocalSelfTest: "target_tcp_reachable", PublicTCP: e.TCPProbe(ctx, job.Request.SSH.Host, port), Game: "not_tested"}
+	r.Health = &Health{Service: "running", LocalSelfTest: "target_tcp_reachable", PublicTCP: e.TCPProbe(ctx, job.Request.SSH.Host, port), Game: "not_tested", BBR: bbr}
 	return r
 }
 func validSHA(s string) bool { b, e := hex.DecodeString(s); return e == nil && len(b) == 32 }
-func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetPort int, id string, rateBytes int) (int, error) {
+func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetPort int, id string, rateBytes int) (int, string, error) {
 	if len(id) > 100 || strings.ContainsAny(id, "/\\. \n\r'\"") {
-		return 0, errors.New("任务标识无效")
+		return 0, "", errors.New("任务标识无效")
 	}
 	archOut, err := e.Remote.Run(ctx, s, "uname -m\n")
 	if err != nil {
-		return 0, remoteDiagnostic(err, archOut, "preflight")
+		return 0, "", remoteDiagnostic(err, archOut, "preflight")
 	}
 	url, digest := e.GostAMD64URL, e.GostAMD64SHA256
 	switch strings.TrimSpace(string(archOut)) {
@@ -327,25 +340,26 @@ func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetP
 	case "aarch64", "arm64":
 		url, digest = e.GostARM64URL, e.GostARM64SHA256
 	default:
-		return 0, diagnosticError("unsupported_system")
+		return 0, "", diagnosticError("unsupported_system")
 	}
 	if !strings.HasPrefix(url, "https://github.com/go-gost/gost/releases/download/v") || !validSHA(digest) {
-		return 0, diagnosticError("executor_configuration")
+		return 0, "", diagnosticError("executor_configuration")
 	}
 	script := "set -Eeuo pipefail\numask 077\n" + diagnosticPrelude + encodedAssignment("gost_url", url) + encodedAssignment("gost_sha", digest) + encodedAssignment("task_id", id) + encodedAssignment("target_host", target) + encodedAssignment("target_port", strconv.Itoa(targetPort)) + encodedAssignment("rate_bytes", strconv.Itoa(rateBytes)) + relayInstallScript
 	out, err := e.Remote.Run(ctx, s, script)
 	if err != nil {
-		return 0, remoteDiagnostic(err, out, "relay")
+		return 0, marker(out, "MSBOOST_BBR"), remoteDiagnostic(err, out, "relay")
 	}
 	port, err := strconv.Atoi(marker(out, "MSBOOST_RELAY_PORT"))
 	if err != nil || port < 20000 || port > 59999 {
-		return 0, errors.New("未获得真实绑定的中转端口")
+		return 0, marker(out, "MSBOOST_BBR"), errors.New("未获得真实绑定的中转端口")
 	}
-	return port, nil
+	return port, marker(out, "MSBOOST_BBR"), nil
 }
-func (e *Engine) cleanupRelay(ctx context.Context, s SSH, id string) {
+func (e *Engine) cleanupRelay(ctx context.Context, s SSH, id string) error {
 	if len(id) > 100 || strings.ContainsAny(id, "/\\. \n\r'\"") {
-		return
+		return errors.New("invalid managed cleanup identity")
 	}
-	_, _ = e.Remote.Run(ctx, s, "set -e\n"+encodedAssignment("task_id", id)+relayCleanupScript)
+	_, err := e.Remote.Run(ctx, s, "set -e\n"+encodedAssignment("task_id", id)+relayCleanupScript)
+	return err
 }

@@ -59,23 +59,25 @@ func relayRecoveryRequired(s *State, rule UserRule) bool {
 	if rule.ReconcileState == "recovery_required" {
 		return true
 	}
-	control, _ := LoadDoc[RelayV2Control](s, "relay_v2_control", "default")
-	if control.RecoveryRequired && relayRuleUsesV2(s, rule) {
-		return true
-	}
 	for _, seg := range rule.Segments {
 		agent, _ := LoadDoc[RelayAgent](s, "relay_agents", seg.AgentID)
-		if agent.ReconcileState == "recovery_required" {
+		if agent.ReconcileState == "recovery_required" || relayRuleUsesV2(s, rule) && relayAgentRecoveryRequired(s, agent) {
 			return true
 		}
 	}
 	return false
 }
+
+func relayAgentRecoveryRequired(s *State, agent RelayAgent) bool {
+	control, _ := LoadDoc[RelayV2Control](s, "relay_v2_control", "default")
+	return agent.ReconcileState == "recovery_required" || control.RecoveryRequired && (agent.EnrollmentEpoch == "" || agent.EnrollmentEpoch != control.Epoch)
+}
 func relaySegmentStopped(seg RelaySegment, now int64) bool {
 	if seg.ProtocolVersion == relayruntime.ProtocolV2 {
 		return seg.StopConfirmed && (seg.LastCommandAction == "pause" || seg.LastCommandAction == "revoke") && seg.AppliedGeneration == seg.ConfigGeneration && seg.AckState == "stopped"
 	}
-	return seg.AckState == "stopped" || seg.LastLease <= now
+	// Historical lease timestamps are evidence only, never proof of stop.
+	return false
 }
 func relayRuleStopped(rule UserRule, now int64) bool {
 	for _, seg := range rule.Segments {
@@ -86,6 +88,9 @@ func relayRuleStopped(rule UserRule, now int64) bool {
 	return true
 }
 func relayRuleRevoked(rule UserRule, now int64) bool {
+	if rule.FrontStatus == "check_customer_vps" {
+		return false
+	}
 	for _, seg := range rule.Segments {
 		if !relaySegmentStopped(seg, now) || seg.ProtocolVersion == relayruntime.ProtocolV2 && seg.LastCommandAction != "revoke" {
 			return false
@@ -94,12 +99,8 @@ func relayRuleRevoked(rule UserRule, now int64) bool {
 	return true
 }
 func relayUserV2Pending(s *State, userID string, now int64) bool {
-	control, _ := LoadDoc[RelayV2Control](s, "relay_v2_control", "default")
-	if control.RecoveryRequired {
-		return true
-	}
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {
-		if rule.UserID == userID && (relayRecoveryRequired(s, rule) || relayRuleUsesV2(s, rule) && !relayRuleRevoked(rule, now)) {
+		if rule.UserID == userID && (relayRecoveryRequired(s, rule) || !relayRuleRevoked(rule, now)) {
 			return true
 		}
 	}
@@ -419,7 +420,7 @@ func (a *App) relaySyncAgentV2(w http.ResponseWriter, r *http.Request) {
 		}
 		out.ControlEpoch, out.Revision = control.Epoch, catalog.Revision
 		bootstrap := in.ControlEpoch == "" && catalog.Revision == 0 && !agent.KeepLastConfirmed && len(in.Acks) == 0 && in.AppliedRevision == 0
-		conflict := control.RecoveryRequired || agent.ReconcileState == "recovery_required" || catalog.ReconcileState == "recovery_required" || catalog.ControlEpoch != control.Epoch || (!bootstrap && in.ControlEpoch != control.Epoch) || in.AppliedRevision > catalog.Revision
+		conflict := relayAgentRecoveryRequired(s, agent) || catalog.ReconcileState == "recovery_required" || catalog.ControlEpoch != control.Epoch || (!bootstrap && in.ControlEpoch != control.Epoch) || in.AppliedRevision > catalog.Revision
 		newInstance := catalog.InstanceID != "" && catalog.InstanceID != in.AgentInstanceID
 		_, retired := s.Docs["relay_v2_retired_instances"][agent.ID+":"+in.AgentInstanceID]
 		if retired {
@@ -435,6 +436,7 @@ func (a *App) relaySyncAgentV2(w http.ResponseWriter, r *http.Request) {
 		}
 		agent.ProtocolVersion, agent.OfflinePolicy, agent.Capabilities = relayruntime.ProtocolV2, relayruntime.KeepLast, append([]string(nil), in.Capabilities...)
 		if !conflict && freshObservation {
+			clearRelayEnrollmentRetry(&agent)
 			if newInstance {
 				if err := SaveDoc(s, "relay_v2_retired_instances", agent.ID+":"+catalog.InstanceID, true); err != nil {
 					return err

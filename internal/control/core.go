@@ -42,6 +42,11 @@ type App struct {
 	trustedProxies   []*net.IPNet
 	passwordRecovery *passwordRecovery
 	relayDiagnostics relayDiagnosticBroker
+	relayWorkMu      sync.Mutex
+	relayWorkWG      sync.WaitGroup
+	relayWorkCtx     context.Context
+	relayWorkCancel  context.CancelFunc
+	relayWorkClosed  bool
 }
 
 func New(c Config) (*App, error) {
@@ -89,6 +94,7 @@ func New(c Config) (*App, error) {
 		return nil, err
 	}
 	a := &App{Store: store, Config: c, aead: aead, rates: map[string][]int64{}, trustedProxies: trusted}
+	a.relayWorkCtx, a.relayWorkCancel = context.WithCancel(context.Background())
 	a.mailSender = sendSMTP
 	if err = a.initialize(); err != nil {
 		store.Close()
@@ -145,6 +151,14 @@ func masterKey(c Config) ([]byte, error) {
 }
 
 func (a *App) Close() error {
+	a.relayWorkMu.Lock()
+	a.relayWorkClosed = true
+	if a.relayWorkCancel != nil {
+		a.relayWorkCancel()
+	}
+	a.relayWorkMu.Unlock()
+	a.relayWorkWG.Wait()
+	relayFrontProvisioners.Delete(a)
 	if a.passwordRecovery != nil {
 		a.passwordRecovery.close()
 	}

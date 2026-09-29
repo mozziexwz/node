@@ -350,11 +350,16 @@ const phases: Record<string, string> = {
   cleanup: "清理",
 };
 const healthLabels: Record<string, string> = {
+  bbr: "BBR 网络优化",
   service: "服务运行",
   localSelfTest: "本地自测",
   publicTCP: "公网 TCP 可达性",
 };
 const healthValues: Record<string, string> = {
+  enabled: "已启用",
+  unavailable: "未启用（不影响基础服务）",
+  partial: "部分服务器未启用",
+  review_required: "优化失败，部分参数需核查",
   running: "运行中",
   passed: "通过",
   reachable: "可达",
@@ -500,10 +505,12 @@ export function TaskDetail({
       {Array.isArray(current.hops) && current.hops.length > 0 && (
         <Table
           headers={["中转顺序", "连接路径"]}
-          rows={[...current.hops].reverse().map((hop: RecordData, index) => [
-            `第 ${index + 1} 段`,
-            `${hop.fromHost}:${hop.fromPort} → ${hop.toHost}:${hop.toPort}`,
-          ])}
+          rows={[...current.hops]
+            .reverse()
+            .map((hop: RecordData, index) => [
+              `第 ${index + 1} 段`,
+              `${hop.fromHost}:${hop.fromPort} → ${hop.toHost}:${hop.toPort}`,
+            ])}
         />
       )}
       {config != null && (
@@ -522,6 +529,15 @@ export function TaskDetail({
           </Button>
         </div>
       )}
+      {current.kind === "front" &&
+        !["queued", "running"].includes(current.state) && (
+          <CleanupPanel
+            scope="relay"
+            user={{ id: owner }}
+            managedTaskId={`${current.id}p`}
+            initialHost={current.host}
+          />
+        )}
       <ErrorNotice error={error} />
     </Modal>
   );
@@ -677,7 +693,8 @@ export function ToolPage({
                 {kind === "deploy" && (
                   <>
                     <Notice tone="orange">
-                      每次均全新部署受管 MSBOOST 组件，重新生成认证和端口；不会重装操作系统。原配置部署成功后将失效。
+                      每次均全新部署受管 MSBOOST
+                      组件，重新生成认证和端口；不会重装操作系统。原配置部署成功后将失效。
                     </Notice>
                     <Notice tone="orange">
                       本功能仅限游戏用途，禁止用于翻墙、公共代理、违法活动或其他与游戏无关的用途。(MSBOOST
@@ -778,7 +795,8 @@ export function ToolPage({
                       </div>
                     </fieldset>
                     <Notice tone="red">
-                      DD系统会清除服务器原有系统和数据，操作前请先备份或确保无重要数据。操作提交后请等待15分钟以上，再执行部署 MSBOOST。
+                      DD系统会清除服务器原有系统和数据，操作前请先备份或确保无重要数据。操作提交后请等待15分钟以上，再执行部署
+                      MSBOOST。
                     </Notice>
                     <Check
                       checked={erase}
@@ -790,7 +808,9 @@ export function ToolPage({
                 )}
                 <ErrorNotice error={error} />
                 {(kind === "deploy" || kind === "relay") && (
-                  <Notice tone="orange">仅支持 Debian 系统部署（Debian 11 或以上版本）。</Notice>
+                  <Notice tone="orange">
+                    仅支持 Debian 系统部署（Debian 11 或以上版本）。
+                  </Notice>
                 )}
                 <div className="form-actions">
                   <Button type="submit" primary disabled={busy}>
@@ -851,11 +871,15 @@ export function ToolPage({
 function CleanupPanel({
   scope,
   user,
+  managedTaskId = "",
+  initialHost = "",
 }: {
   scope: "msboost" | "relay";
   user: RecordData;
+  managedTaskId?: string;
+  initialHost?: string;
 }) {
-  const [ssh, setSSH] = useState(newSSH),
+  const [ssh, setSSH] = useState(() => ({ ...newSSH(), host: initialHost })),
     [preview, setPreview] = useState<RecordData | null>(null),
     [task, setTask] = useState<RecordData | null>(null),
     [busy, setBusy] = useState(false),
@@ -866,7 +890,7 @@ function CleanupPanel({
     preview?.state === "succeeded" &&
     !!preview.cleanup?.digest &&
     Array.isArray(preview.cleanup?.items) &&
-    preview.cleanup.items.length > 0;
+    (preview.cleanup.items.length > 0 || !!managedTaskId);
   useEffect(() => {
     if (!preview || !["queued", "running"].includes(preview.state)) return;
     let alive = true;
@@ -903,6 +927,7 @@ function CleanupPanel({
           ssh: connection,
           cleanup: {
             scope,
+            ...(managedTaskId ? { managedTaskId } : {}),
             ...(remove
               ? {
                   previewId: checkedPreview!.id,
@@ -928,9 +953,19 @@ function CleanupPanel({
   return (
     <details className="card mt24" data-testid="cleanup-panel">
       <summary>
-        {scope === "msboost" ? "卸载 MSBOOST" : "清理中转服务器配置"}
+        {managedTaskId
+          ? "核查 / 清理本次前置机安装"
+          : scope === "msboost"
+            ? "卸载 MSBOOST"
+            : "清理中转服务器配置"}
       </summary>
       <Notice tone="red">清理会停止相关服务并删除清单内配置。</Notice>
+      {managedTaskId && (
+        <Notice>
+          只检查本次任务的前置机组件，不清理其他中转。请重新输入这台 VPS 的 SSH
+          信息；空清单也需确认，确认成功后才释放待核查的线路。
+        </Notice>
+      )}
       <form
         onSubmit={(e) => {
           e.preventDefault();

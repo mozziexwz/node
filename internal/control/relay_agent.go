@@ -30,6 +30,7 @@ func (a *App) relayRenewEnrollment(w http.ResponseWriter, r *http.Request) {
 			return errors.New(reason)
 		}
 		agent.EnrollmentHash = commerceHash(token)
+		clearRelayEnrollmentRetry(&agent)
 		agent.EnrollmentExpires = expires
 		agent.TokenHash = ""
 		agent.LastSeen = 0
@@ -92,6 +93,9 @@ func (a *App) relayFreshResetAgent(w http.ResponseWriter, r *http.Request) {
 			Enabled:    true, Capability: "relay",
 			EnrollmentHash: commerceHash(token), EnrollmentExpires: expires,
 		}
+		if control, ok := LoadDoc[RelayV2Control](s, "relay_v2_control", "default"); ok {
+			replacement.EnrollmentEpoch = control.Epoch
+		}
 		if err := SaveDoc(s, "relay_agents", newID, replacement); err != nil {
 			return err
 		}
@@ -113,6 +117,9 @@ func (a *App) relayFreshResetAgent(w http.ResponseWriter, r *http.Request) {
 // referenced node needs the separately authenticated recovery workflow; simply
 // replacing its bearer token can strand a healthy keep_last relay.
 func relayEnrollmentBlockReason(s *State, agent RelayAgent) string {
+	if agent.Archived {
+		return "此节点已封存，请先恢复显示并核查原业务；不会自动恢复旧凭据"
+	}
 	if restoreAgentNeedsRecovery(s, agent) {
 		if agent.ReconcileState == "recovery_required" {
 			return "备份恢复后需要重新连接此节点，请使用恢复管理连接向导"
@@ -128,7 +135,7 @@ func relayEnrollmentBlockReason(s *State, agent RelayAgent) string {
 	for _, route := range routes {
 		for _, id := range relayRouteAgents(route) {
 			if id == agent.ID {
-				return "节点正在用于线路，请使用保留配置的升级；重新部署前需先停用关联线路"
+				return "节点仍被隧道“" + route.Name + "”引用（包括已停用的隧道）；日常升级请保留配置，重新部署前须解除该隧道的节点关联"
 			}
 		}
 	}
@@ -145,6 +152,7 @@ func relayEnrollmentBlockReason(s *State, agent RelayAgent) string {
 func (a *App) relayRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		EnrollmentToken string `json:"enrollmentToken"`
+		RequestID       string `json:"requestId,omitempty"`
 	}
 	if err := Decode(r, &in); err != nil {
 		commerceError(w, 400, err)
@@ -154,6 +162,10 @@ func (a *App) relayRegisterAgent(w http.ResponseWriter, r *http.Request) {
 		commerceError(w, 401, errors.New("注册令牌无效"))
 		return
 	}
+	if in.RequestID != "" && !relayV2Identifier(in.RequestID) {
+		Fail(w, 400, "安装请求编号无效")
+		return
+	}
 	token := commerceID() + commerceID()
 	id := ""
 	err := a.Store.Update(func(s *State) error {
@@ -161,8 +173,31 @@ func (a *App) relayRegisterAgent(w http.ResponseWriter, r *http.Request) {
 			if _, retired := s.Docs[relayRetirementCollection][agent.ID]; retired {
 				continue
 			}
+			if in.RequestID != "" && agent.Enabled && agent.LastSeen == 0 && agent.EnrollmentAttemptID == in.RequestID && agent.EnrollmentRetryHash == commerceHash(in.EnrollmentToken) && agent.EnrollmentRetryUntil > time.Now().UnixMilli() {
+				if relayAgentRecoveryRequired(s, agent) {
+					return errors.New("此节点需要重新关联，注册未执行")
+				}
+				plain, err := a.Open(agent.EnrollmentSealedToken)
+				if err != nil || commerceHash(string(plain)) != agent.TokenHash {
+					return errors.New("注册恢复记录需要核查")
+				}
+				token, id = string(plain), agent.ID
+				clear(plain)
+				return nil
+			}
 			if agent.EnrollmentHash == commerceHash(in.EnrollmentToken) && agent.EnrollmentExpires > time.Now().UnixMilli() && agent.Enabled {
+				if relayAgentRecoveryRequired(s, agent) {
+					return errors.New("此节点需要重新关联，注册未执行")
+				}
 				agent.TokenHash = commerceHash(token)
+				if in.RequestID != "" {
+					sealed, err := a.Seal([]byte(token))
+					if err != nil {
+						return err
+					}
+					agent.EnrollmentAttemptID, agent.EnrollmentRetryHash = in.RequestID, agent.EnrollmentHash
+					agent.EnrollmentRetryUntil, agent.EnrollmentSealedToken = agent.EnrollmentExpires, sealed
+				}
 				agent.EnrollmentHash = ""
 				agent.EnrollmentExpires = 0
 				id = agent.ID
@@ -177,6 +212,10 @@ func (a *App) relayRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSON(w, 200, map[string]any{"agentId": id, "token": token, "capability": "relay"})
 }
+
+func clearRelayEnrollmentRetry(agent *RelayAgent) {
+	agent.EnrollmentAttemptID, agent.EnrollmentRetryHash, agent.EnrollmentRetryUntil, agent.EnrollmentSealedToken = "", "", 0, ""
+}
 func (a *App) relayAgentIdentity(s *State, r *http.Request) (RelayAgent, error) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if token == r.Header.Get("Authorization") || len(token) < 40 || len(token) > 200 {
@@ -187,7 +226,7 @@ func (a *App) relayAgentIdentity(s *State, r *http.Request) (RelayAgent, error) 
 		if _, retired := s.Docs[relayRetirementCollection][agent.ID]; retired {
 			continue
 		}
-		if agent.TokenHash == hash && agent.Capability == "relay" {
+		if agent.TokenHash == hash && agent.Capability == "relay" && !agent.Archived {
 			return agent, nil
 		}
 	}
