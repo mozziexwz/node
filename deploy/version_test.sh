@@ -13,6 +13,9 @@ version_check_tree() {
   local -a admin_urls=()
   [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || return 1
   base=${tag#v}
+  # Publication extracts this exact heading; catch formatting errors before
+  # building images or beginning the real endurance tests.
+  grep -Fq -- "## $tag " "$repo/docs/release-notes.md" || return 1
   version_check_line "readonly INITIAL_VERSION=$tag" "$repo/install.sh" || return 1
   version_check_line "version=$tag" "$repo/agent.sh" || return 1
   grep -Fq -- "[--version $tag]" "$repo/install.sh" || return 1

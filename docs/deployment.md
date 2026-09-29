@@ -1,18 +1,18 @@
 # MSBOOST v2.0 部署与运维
 
-控制面支持 Debian 12/13（amd64/arm64）。**v2.0.0 是全新部署版本，不支持从旧 Docker Caddy 安装升级或迁移。** 有旧安装时先另行保存重要数据，使用旧版本管理器清理本站，再安装新版；新安装会生成新的管理员密码与主密钥。客户 VPS 工具和独立 Agent 不随控制面安装被清理。
+控制面支持 Debian 12/13（amd64/arm64）。**v2.0.1 是全新部署版本，不支持从旧 Docker Caddy 安装升级或迁移。** 有旧安装时先另行保存重要数据，使用旧版本管理器清理本站，再安装新版；新安装会生成新的管理员密码与主密钥。客户 VPS 工具和独立 Agent 不随控制面安装被清理。
 
 ## 安装
 
 域名解析到 VPS，开放 TCP 80/443。使用 Cloudflare 时设置 Full (strict)，确保源站可以签发证书。安装器从官方源安装 Docker 和 Caddy；Docker Engine 需要 28 或更新版本，防止旧版回环端口发布的网络隔离问题。已有 Docker 不会被静默升级；已有自定义 Caddy/API 服务不会被自动接管。
 
 ```sh
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.0.0/install.sh -o /root/msboost-install.sh
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.0.1/install.sh -o /root/msboost-install.sh
 # 审核脚本与正式 Release 资产后执行。
 bash /root/msboost-install.sh install --domain panel.example.com --email 12345678@qq.com
 ```
 
-安装优先拉取 GHCR 预构建镜像；失败时下载并校验同版本 Release 预构建归档，不静默本机编译。两种来源都失败则保留现场并停止。应用镜像与 PostgreSQL 记录不可变身份；正式资产以 [Release](https://github.com/mozziexwz/node/releases/tag/v2.0.0) 为准。
+安装优先拉取 GHCR 预构建镜像；失败时下载并校验同版本 Release 预构建归档，不静默本机编译。两种来源都失败则保留现场并停止。应用镜像与 PostgreSQL 记录不可变身份；正式资产以 [Release](https://github.com/mozziexwz/node/releases/tag/v2.0.1) 为准。
 
 首次管理员密码保存在 root-only `/opt/msboost/.env`。不要分享该文件或完整 `docker compose config` 输出。应用和数据库仍由 Compose 管理，只有 Caddy 改成官方系统服务。
 
@@ -57,7 +57,7 @@ MSBOOST 本站扩展放在 `/etc/caddy/msboost-custom/自定义英文名.caddy`�
 ```sh
 msboost status
 msboost logs
-msboost upgrade --version v2.0.0
+msboost upgrade --version v2.0.1
 msboost repair
 msboost disaster-backup
 msboost disaster-status
