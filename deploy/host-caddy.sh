@@ -38,6 +38,10 @@ caddy_validate() {
 
 caddy_ensure() {
   local key temp fresh=0
+  if ! command -v ss >/dev/null; then
+    apt-get update || return
+    DEBIAN_FRONTEND=noninteractive apt-get install -y iproute2 || return
+  fi
   if ! command -v caddy >/dev/null; then
     [[ ! -e /etc/systemd/system/caddy.service && ! -L /etc/systemd/system/caddy.service ]] || { die '发现自定义 Caddy unit，未安装或覆盖'; return 1; }
     [[ -z $(ss -H -ltn '( sport = :80 or sport = :443 )') ]] || { die '80/443 被其他服务占用，请先处理；不会停止该服务'; return 1; }
@@ -144,6 +148,7 @@ caddy_remove_custom() {
   caddy_safe_path "$CADDY_CUSTOM" || return
   [[ ! -e $CADDY_CUSTOM ]] && return 0
   [[ -f $CADDY_CUSTOM/.msboost-owner && ! -L $CADDY_CUSTOM/.msboost-owner && $(<"$CADDY_CUSTOM/.msboost-owner") == "$CADDY_OWNER" ]] || return 1
+  [[ -z $(find "$CADDY_CUSTOM" -mindepth 1 -maxdepth 1 -type d -print) ]] || { die 'MSBOOST 扩展目录包含子目录，请先核对；不递归清理未知内容。'; return 1; }
   [[ $CADDY_CUSTOM == /etc/caddy/msboost-custom && $(realpath -e "$CADDY_CUSTOM") == /etc/caddy/msboost-custom ]] || return 1
   rm -rf -- /etc/caddy/msboost-custom
 }
@@ -155,6 +160,7 @@ caddy_export() {
   local file
   while IFS= read -r -d '' file; do
     [[ -f $file && ! -L $file && ( ${file##*/} == .msboost-owner || ${file##*/} =~ ^[a-zA-Z0-9_-]+\.caddy$ ) ]] || { die 'MSBOOST 扩展目录仅允许普通 *.caddy 文件'; return 1; }
+    caddy_safe_path "$file" || return
   done < <(find "$CADDY_CUSTOM" -mindepth 1 -maxdepth 1 -print0)
   tar -cf "$1" -C "$CADDY_ROOT" msboost-custom || return
 }
