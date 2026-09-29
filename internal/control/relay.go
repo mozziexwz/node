@@ -464,7 +464,7 @@ func relayReservePort(s *State, agent RelayAgent) (int, error) {
 	return relayReservePortWithReader(s, agent, cryptorand.Reader)
 }
 
-func relayReservePortWithReader(s *State, agent RelayAgent, random io.Reader) (int, error) {
+func relayReservePortWithReader(s *State, agent RelayAgent, random io.Reader, pending ...map[string]int) (int, error) {
 	used := map[int]bool{}
 	shared := func(id string) bool {
 		if id == agent.ID {
@@ -480,6 +480,15 @@ func relayReservePortWithReader(s *State, agent RelayAgent, random io.Reader) (i
 			}
 		}
 		return false
+	}
+	// Earlier segments in this same transaction are not persisted yet. Include
+	// their claims when distinct identities share an explicitly configured IP.
+	for _, claims := range pending {
+		for id, port := range claims {
+			if shared(id) {
+				used[port] = true
+			}
+		}
 	}
 	now := time.Now().UnixMilli()
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {
@@ -1314,7 +1323,7 @@ func (a *App) relayCreateRule(w http.ResponseWriter, r *http.Request) {
 		for _, stage := range stages {
 			for _, id := range stage.AgentIDs {
 				agent, _ := LoadDoc[RelayAgent](s, "relay_agents", id)
-				port, err := relayReservePort(s, agent)
+				port, err := relayReservePortWithReader(s, agent, cryptorand.Reader, portMap)
 				if err != nil {
 					return err
 				}

@@ -232,6 +232,9 @@ func TestRelayLifecycleOverlappingAddressPortPoolReserved(t *testing.T) {
 	second := RelayAgent{ID: "second", Address: "1.1.1.1", Addresses: []string{"9.9.9.9"}, PortRanges: first.PortRanges}
 	SaveDoc(s, "relay_agents", first.ID, first)
 	SaveDoc(s, "relay_agents", second.ID, second)
+	if _, err := relayReservePortWithReader(s, second, strings.NewReader(""), map[string]int{first.ID: 25000}); err == nil || err.Error() != "Agent端口池已耗尽" {
+		t.Fatal("same-operation shared bind address was not reserved before random selection")
+	}
 	rule := UserRule{ID: "rule", UserID: "u", RouteID: "r", Segments: []RelaySegment{{AgentID: first.ID}}}
 	rule.Segments[0].Runtime.ListenPort = 25000
 	SaveDoc(s, "user_rules", "u:r", rule)
