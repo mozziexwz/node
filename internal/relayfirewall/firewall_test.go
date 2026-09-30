@@ -9,11 +9,12 @@ import (
 )
 
 type fakeFirewall struct {
-	chain     bool
-	rules     []string
-	linked    bool
-	mutations int
-	foreign   string
+	chain       bool
+	rules       []string
+	linked      bool
+	legacyJumps int
+	mutations   int
+	foreign     string
 }
 
 func (f *fakeFirewall) run(_ context.Context, tool string, args ...string) (string, error) {
@@ -27,15 +28,26 @@ func (f *fakeFirewall) run(_ context.Context, tool string, args ...string) (stri
 		return "", errors.New("missing xtables lock")
 	}
 	args = args[2:]
+	parent, legacyParent := "ufw-after-input", "ufw-user-input"
+	if tool == "ip6tables" {
+		parent, legacyParent = "ufw6-after-input", "ufw6-user-input"
+	}
 	if args[0] == "-S" {
 		if len(args) == 1 {
 			if f.chain {
-				return "-P INPUT DROP\n-N " + Chain + "\n", nil
+				raw := "-P INPUT DROP\n-N " + Chain + "\n"
+				if f.linked {
+					raw += "-A " + parent + " " + strings.Join(jumpRule(), " ") + "\n"
+				}
+				for i := 0; i < f.legacyJumps; i++ {
+					raw += "-A " + legacyParent + " " + strings.Join(jumpRule(), " ") + "\n"
+				}
+				return raw, nil
 			}
 			return "-P INPUT DROP\n", nil
 		}
-		if args[1] == "ufw-user-input" {
-			return "-N ufw-user-input\n-A ufw-user-input -p tcp --dport 22 -j ACCEPT\n", nil
+		if args[1] == parent {
+			return "-N " + parent + "\n", nil
 		}
 		if args[1] == Chain && f.chain {
 			raw := "-N " + Chain + "\n"
@@ -53,7 +65,11 @@ func (f *fakeFirewall) run(_ context.Context, tool string, args ...string) (stri
 		return "", errors.New("missing jump")
 	}
 	f.mutations++
-	if args[1] == "ufw-user-input" {
+	if args[1] == legacyParent && args[0] == "-D" && f.legacyJumps > 0 {
+		f.legacyJumps--
+		return "", nil
+	}
+	if args[1] == parent {
 		f.linked = args[0] == "-A"
 		return "", nil
 	}
@@ -71,6 +87,23 @@ func (f *fakeFirewall) run(_ context.Context, tool string, args ...string) (stri
 		}
 	}
 	return "", errors.New("unexpected mutation")
+}
+
+func TestLegacyJumpsRelocatedOnlyAfterOwnershipCheck(t *testing.T) {
+	for _, tool := range []string{"iptables", "ip6tables"} {
+		for _, enabled := range []bool{true, false} {
+			f := &fakeFirewall{chain: true, legacyJumps: 2, rules: []string{strings.Join(portRule(40897), " "), "-m comment --comment " + Marker + " -j RETURN"}}
+			if err := ReconcileFamily(context.Background(), f.run, tool, []int{40897}, enabled); err != nil || f.legacyJumps != 0 || f.linked != enabled {
+				t.Fatal(tool, enabled, err, f)
+			}
+			f.legacyJumps = 1
+			f.foreign = "-A " + Chain + " -j ACCEPT\n"
+			writes := f.mutations
+			if err := ReconcileFamily(context.Background(), f.run, tool, nil, false); err == nil || f.legacyJumps != 1 || f.mutations != writes {
+				t.Fatal("foreign chain or reference modified", tool, err, f)
+			}
+		}
+	}
 }
 
 func TestFirewallLifecycleAndOwnership(t *testing.T) {

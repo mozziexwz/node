@@ -69,12 +69,13 @@ func sortedPorts(ports map[int]bool) []int {
 }
 
 // ReconcileFamily changes only this chain and its tagged jump at the END of
-// ufw-user-input. Explicit administrator deny rules therefore retain priority.
+// ufw-after-input. UFW user rules always run first, including administrator deny
+// rules appended AFTER reconciliation. Never put an ACCEPT jump in user-input.
 // Rechecking every cycle also repairs a UFW reload without restarting Relay.
 func ReconcileFamily(ctx context.Context, run Runner, tool string, desired []int, enabled bool) error {
-	parent := "ufw-user-input"
+	parent, legacyParent := "ufw-after-input", "ufw-user-input"
 	if tool == "ip6tables" {
-		parent = "ufw6-user-input"
+		parent, legacyParent = "ufw6-after-input", "ufw6-user-input"
 	}
 	wanted := map[int]bool{}
 	for _, port := range desired {
@@ -89,6 +90,16 @@ func ReconcileFamily(ctx context.Context, run Runner, tool string, desired []int
 		return err
 	}
 	hasChain := strings.Contains("\n"+raw+"\n", "\n-N "+Chain+"\n")
+	// Count only exact tagged jumps from the initial bounded snapshot. This
+	// also removes duplicate v2.2.0 jumps without touching foreign references.
+	jumpCounts := map[string]int{}
+	for _, line := range strings.Split(strings.ReplaceAll(raw, "\"", ""), "\n") {
+		for _, p := range []string{parent, legacyParent} {
+			if line == "-A "+p+" "+strings.Join(jumpRule(), " ") {
+				jumpCounts[p]++
+			}
+		}
+	}
 	if !hasChain && (!enabled || len(wanted) == 0) {
 		return nil
 	}
@@ -115,6 +126,14 @@ func ReconcileFamily(ctx context.Context, run Runner, tool string, desired []int
 	if !enabled {
 		wanted = map[int]bool{}
 	}
+	// Ownership was verified before touching either parent. Retire the old
+	// placement first so an administrator denial cannot be bypassed during an
+	// upgrade. A failed relocation fails closed and is retried next cycle.
+	for i := 0; i < jumpCounts[legacyParent]; i++ {
+		if _, err = ip(append([]string{"-D", legacyParent}, jumpRule()...)...); err != nil {
+			return err
+		}
+	}
 	// Remove stale permissions before adding new ones; never change policies,
 	// unrelated chains, UFW files, SSH rules, or administrator-owned permits.
 	for _, port := range sortedPorts(owned) {
@@ -140,7 +159,7 @@ func ReconcileFamily(ctx context.Context, run Runner, tool string, desired []int
 		}
 		return nil
 	}
-	if linked == nil {
+	for i := 0; i < jumpCounts[parent]; i++ {
 		if _, err = ip(append([]string{"-D", parent}, jump...)...); err != nil {
 			return err
 		}

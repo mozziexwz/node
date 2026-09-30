@@ -129,6 +129,14 @@ with socket.create_connection(('10.237.54.1',int(sys.argv[1])),2) as s:
 PY
 }
 probe
+# A new deny must work BEFORE the next helper cycle, and stay effective while
+# the helper continues reconciling. Removing our test deny restores the permit.
+ufw_private deny "$port/tcp"
+if probe 2> "$work/deny-probe.log"; then printf 'New UFW denial was bypassed\n' >&2; exit 1; fi
+sleep 2
+if probe 2>> "$work/deny-probe.log"; then printf 'Helper bypassed UFW denial\n' >&2; exit 1; fi
+ufw_private --force delete deny "$port/tcp"
+probe
 # Repeated administrator operations must serialize with the continuously
 # running helper, not race UFW's multi-command chain teardown/rebuild.
 for reload in $(seq 1 12); do
@@ -139,4 +147,4 @@ done
 systemctl stop msboost-relay.service
 sleep 3
 ! nsenter --net="/run/netns/$ns" -- iptables -C MSBOOST-RELAY -p tcp -m tcp --dport "$port" -m comment --comment msboost-relay-firewall-v1 -j ACCEPT
-printf 'REAL_UFW_SYSTEMD_DYNAMIC_USER_PASS port=%s reload_repaired=true stopped_port_removed=true\n' "$port"
+printf 'REAL_UFW_SYSTEMD_DYNAMIC_USER_PASS port=%s new_deny_priority=true reload_repaired=true stopped_port_removed=true\n' "$port"

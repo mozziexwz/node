@@ -241,11 +241,11 @@ func TestIsolatedUFWChain(t *testing.T) {
 	}
 	ctx := context.Background()
 	for _, tool := range []string{"iptables", "ip6tables"} {
-		parent := "ufw-user-input"
+		parent, userParent := "ufw-after-input", "ufw-user-input"
 		if tool == "ip6tables" {
-			parent = "ufw6-user-input"
+			parent, userParent = "ufw6-after-input", "ufw6-user-input"
 		}
-		setup := [][]string{{"-N", parent}, {"-P", "INPUT", "DROP"}, {"-A", "INPUT", "-j", parent}, {"-A", parent, "-p", "tcp", "--dport", "22", "-j", "ACCEPT"}}
+		setup := [][]string{{"-N", userParent}, {"-N", parent}, {"-P", "INPUT", "DROP"}, {"-A", "INPUT", "-j", userParent}, {"-A", "INPUT", "-j", parent}, {"-A", userParent, "-p", "tcp", "--dport", "22", "-j", "ACCEPT"}}
 		if os.Getenv("MSBOOST_FIREWALL_REAL_UFW") == "1" {
 			setup = nil
 		}
@@ -258,13 +258,27 @@ func TestIsolatedUFWChain(t *testing.T) {
 			if err := ReconcileFamily(ctx, runCommand, tool, ports, true); err != nil {
 				t.Fatal(err)
 			}
-			raw, err := runCommand(ctx, tool, "-S", parent)
+			raw, err := runCommand(ctx, tool, "-S", userParent)
 			if err != nil || !strings.Contains(raw, "--dport 22 -j ACCEPT") {
 				t.Fatal("SSH rule changed", raw, err)
 			}
 			for _, port := range ports {
 				if out, e := runCommand(ctx, tool, append([]string{"-C", Chain}, portRule(port)...)...); e != nil {
 					t.Fatal(strconv.Itoa(port), out, e)
+				}
+			}
+			if len(ports) > 0 {
+				// Simulate v2.2.0 placement, including duplicate owned jumps.
+				for i := 0; i < 2; i++ {
+					if _, err := runCommand(ctx, tool, append([]string{"-A", userParent}, jumpRule()...)...); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := ReconcileFamily(ctx, runCommand, tool, ports, true); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := runCommand(ctx, tool, append([]string{"-C", userParent}, jumpRule()...)...); err == nil {
+					t.Fatal("legacy jump retained")
 				}
 			}
 		}
@@ -330,6 +344,19 @@ func TestRealUFWTCPReachability(t *testing.T) {
 		}
 	}
 	probe(false)
+	if _, err = syncHost(ctx, []int{port}, false); err != nil {
+		t.Fatal(err)
+	}
+	probe(true)
+	// A newly appended administrator denial must take effect immediately,
+	// including before the helper's next polling cycle.
+	command("ufw", "deny", strconv.Itoa(port)+"/tcp")
+	probe(false)
+	if _, err = syncHost(ctx, []int{port}, false); err != nil {
+		t.Fatal(err)
+	}
+	probe(false)
+	command("ufw", "--force", "delete", "deny", strconv.Itoa(port)+"/tcp")
 	if _, err = syncHost(ctx, []int{port}, false); err != nil {
 		t.Fatal(err)
 	}
