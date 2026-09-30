@@ -252,7 +252,7 @@ test(
               ),
             ).toBeVisible();
             await expect(
-              page.getByText("仅支持 Debian 系统部署（Debian 11 或以上版本）。", { exact: true }),
+              page.getByText("仅支持 Debian 11、12、13，不支持其他发行版或版本。", { exact: true }),
             ).toBeVisible();
             await expect(
               page.getByRole("button", { name: "开始配置", exact: true }),
@@ -278,7 +278,7 @@ test(
               page.getByText("请先备份旧配置", { exact: false }),
             ).toHaveCount(0);
             await expect(
-              page.getByText("仅支持 Debian 系统部署（Debian 11 或以上版本）。", { exact: true }),
+              page.getByText("仅支持 Debian 11、12、13，不支持其他发行版或版本。", { exact: true }),
             ).toBeVisible();
             await navigate(page, "dd");
             await expect(page.getByRole("heading", { level: 1 })).toHaveText(

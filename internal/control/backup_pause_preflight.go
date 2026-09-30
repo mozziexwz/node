@@ -104,6 +104,9 @@ func backupPausePreflight(s *State, now int64) BackupPauseReport {
 		switch task.State {
 		case "succeeded", "failed", "cancelled":
 		default:
+			if operation, ok := LoadDoc[taskOperation](s, "task_operations", task.ID); ok && operation.Status == "resolved" {
+				continue
+			}
 			block("", "", "execution_busy", "存在未结束或结果不明的执行任务，不能安全停站")
 		}
 	}

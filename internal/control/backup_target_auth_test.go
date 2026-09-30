@@ -3,8 +3,11 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -345,7 +348,7 @@ type backupSSHServer struct {
 
 const backupFixturePassword = "only-for-local-ssh-sftp-test"
 
-func newBackupSSHServer(t *testing.T) *backupSSHServer {
+func newBackupSSHServer(t *testing.T, additionalHostKeys ...ssh.Signer) *backupSSHServer {
 	t.Helper()
 	_, hostSigner := backupTestKey(t)
 	clientKey, clientSigner := backupTestKey(t)
@@ -368,6 +371,9 @@ func newBackupSSHServer(t *testing.T) *backupSSHServer {
 		},
 	}
 	cfg.AddHostKey(hostSigner)
+	for _, signer := range additionalHostKeys {
+		cfg.AddHostKey(signer)
+	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -443,11 +449,11 @@ func (f *backupSSHServer) connect(t *testing.T) *sftp.Client {
 	return sf
 }
 
-func backupUploadFixture(t *testing.T) (*BackupService, *backupSSHServer, BackupTarget) {
+func backupUploadFixture(t *testing.T, additionalHostKeys ...ssh.Signer) (*BackupService, *backupSSHServer, BackupTarget) {
 	t.Helper()
 	a, _ := identityFixture(t, true)
 	b := NewBackupService(a)
-	server := newBackupSSHServer(t)
+	server := newBackupSSHServer(t, additionalHostKeys...)
 	sealed, err := a.Seal([]byte(backupFixturePassword))
 	if err != nil {
 		t.Fatal(err)
@@ -460,6 +466,52 @@ func backupUploadFixture(t *testing.T) (*BackupService, *backupSSHServer, Backup
 		return (&net.Dialer{}).DialContext(ctx, "tcp4", server.address)
 	}
 	return b, server, target
+}
+
+func TestBackupMultipleHostKeysUsesOnlyPinnedIdentity(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaSigner, err := ssh.NewSignerFromKey(rsaKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, server, target := backupUploadFixture(t, signer, rsaSigner)
+	// Both keys belong to this SSH server, but only the console-verified
+	// ED25519 key is trusted. The library otherwise prefers its ECDSA key.
+	if err := b.uploadTarget(context.Background(), target, "multi-key-test", []byte("test"), true); err != nil {
+		t.Fatal(err)
+	}
+	if server.passwordCalls.Load() != 1 {
+		t.Fatal("authentication must occur only after the pinned key matches")
+	}
+	target.Fingerprint = "SHA256:" + strings.Repeat("A", 43)
+	if err := b.uploadTarget(context.Background(), target, "wrong-key-test", []byte("test"), true); err == nil {
+		t.Fatal("untrusted host accepted")
+	}
+	if server.passwordCalls.Load() != 1 {
+		t.Fatal("password sent to an untrusted host")
+	}
+	target.Fingerprint = server.fingerprint
+	target.SealedPassword, err = b.app.Seal([]byte("incorrect-password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.uploadTarget(context.Background(), target, "wrong-password-test", []byte("test"), true); err == nil {
+		t.Fatal("wrong password accepted")
+	}
+	if server.passwordCalls.Load() != 2 {
+		t.Fatal("authentication failure retried across other host key types")
+	}
 }
 
 func TestBackupPasswordActualSSHAndSFTPTransfer(t *testing.T) {

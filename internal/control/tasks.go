@@ -45,6 +45,7 @@ type Task struct {
 	Cleanup         *executor.CleanupReport `json:"cleanup,omitempty"`
 	SSHFingerprint  string                  `json:"sshFingerprint,omitempty"`
 	SSHPort         int                     `json:"sshPort,omitempty"`
+	NeedsReview     bool                    `json:"needsReview,omitempty"`
 }
 
 // Internal idempotency metadata stays separate because Task is also a public response.
@@ -62,6 +63,7 @@ type ExecutorRecord struct {
 	IP           string   `json:"ip"`
 	Online       bool     `json:"online"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	Version      string   `json:"version,omitempty"`
 }
 type taskEnvelope struct {
 	Job       executor.Job
@@ -152,6 +154,7 @@ func (t *TaskService) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/tasks", t.create)
 	mux.HandleFunc("GET /api/tasks/{id}", t.get)
 	mux.HandleFunc("GET /api/tasks/{id}/config", t.download)
+	mux.HandleFunc("POST /api/tasks/{id}/reconcile", t.reconcile)
 	mux.HandleFunc("POST /api/fingerprints", t.fingerprint)
 	mux.HandleFunc("GET /api/admin/tasks", t.adminTasks)
 	mux.HandleFunc("GET /api/admin/executors", t.listExecutors)
@@ -159,27 +162,65 @@ func (t *TaskService) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/admin/executors/{id}", t.editExecutor)
 	mux.HandleFunc("POST /api/admin/executors/{id}/enrollment", t.renewExecutor)
 	mux.HandleFunc("DELETE /api/admin/executors/{id}", t.deleteExecutor)
+	mux.HandleFunc("POST /api/admin/executors/{id}/revoke", t.revokeExecutor)
 	mux.HandleFunc("GET /api/executor/next", t.next)
 	mux.HandleFunc("POST /api/executor/heartbeat", t.heartbeat)
 	mux.HandleFunc("POST /api/executor/result", t.result)
 }
 func (t *TaskService) Start(ctx context.Context) {
 	// A restart deliberately loses SSH/password/config envelopes, never replays them.
-	_ = t.app.Store.Update(func(s *State) error {
+	err := t.app.Store.Update(func(s *State) error {
 		for _, job := range ListDocs[Task](s, "tasks") {
+			if _, known := LoadDoc[taskOperation](s, "task_operations", job.ID); !known && (job.State == "interrupted" || job.State == "unknown" || job.State == "executed") && job.Kind != "fingerprint" {
+				job.NeedsReview = true
+				if err := SaveDoc(s, "task_operations", job.ID, taskOperation{ID: job.ID, Hosts: []string{taskHost(job.Host)}, Request: executor.Request{Kind: job.Kind, SSH: executor.SSH{Host: job.Host}}, Status: "review"}); err != nil {
+					return err
+				}
+				if err := SaveDoc(s, "tasks", job.ID, job); err != nil {
+					return err
+				}
+			}
 			if job.State == "queued" || job.State == "running" {
+				wasRunning := job.State == "running"
+				o, exists := LoadDoc[taskOperation](s, "task_operations", job.ID)
+				if !exists {
+					o = taskOperation{ID: job.ID, Hosts: []string{taskHost(job.Host)}, Request: executor.Request{Kind: job.Kind, SSH: executor.SSH{Host: job.Host}}}
+				}
+				o.Status = "resolved"
+				if wasRunning && job.Kind != "fingerprint" {
+					o.Status = "review"
+					job.NeedsReview = true
+				}
+				if err := SaveDoc(s, "task_operations", job.ID, o); err != nil {
+					return err
+				}
 				job.State = "interrupted"
 				if job.Kind == "dd" {
 					job.State = "unknown"
 				}
 				job.Phase = "server_restart"
-				job.Message = "执行状态因服务重启中断；一次性凭据已丢弃，请核实 VPS 状态后决定下一步"
+				job.Message = "面板已重启，一次性凭据已丢弃，任务不会重复执行"
+				if job.NeedsReview {
+					job.Message = "面板已重启，原执行机可能仍在操作 VPS，等待结果补报"
+					job.NextStep = "先检查 VPS；仅在确认原操作结束后解除占用"
+				}
 				job.UpdatedAt = time.Now().UnixMilli()
-				_ = SaveDoc(s, "tasks", job.ID, job)
+				if err := SaveDoc(s, "tasks", job.ID, job); err != nil {
+					return err
+				}
+			}
+		}
+		for _, agent := range ListDocs[ExecutorRecord](s, "executors") {
+			if err := finishExecutorDrain(s, agent.ID); err != nil {
+				return err
 			}
 		}
 		return nil
 	})
+	if err != nil {
+		t.initErr = err
+		return
+	}
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
@@ -216,11 +257,26 @@ func (t *TaskService) expire() {
 		if !e.ClaimedAt.IsZero() {
 			limit = 45 * time.Minute
 		}
-		if now.Sub(e.QueuedAt) > limit {
+		started := e.QueuedAt
+		if !e.ClaimedAt.IsZero() {
+			started = e.ClaimedAt
+		}
+		if now.Sub(started) > limit {
 			delete(t.envelopes, id)
 			_ = t.app.Store.Update(func(s *State) error {
 				v, ok := LoadDoc[Task](s, "tasks", id)
 				if ok && (v.State == "running" || v.State == "queued") {
+					o, exists := LoadDoc[taskOperation](s, "task_operations", id)
+					if exists {
+						o.Status = "resolved"
+						if !e.ClaimedAt.IsZero() && v.Kind != "fingerprint" {
+							o.Status = "review"
+							v.NeedsReview = true
+						}
+						if err := SaveDoc(s, "task_operations", id, o); err != nil {
+							return err
+						}
+					}
 					v.State = "interrupted"
 					if v.Kind == "dd" {
 						v.State = "unknown"
@@ -229,7 +285,10 @@ func (t *TaskService) expire() {
 					d := executor.PublicDiagnostic("executor_offline", "executor")
 					v.ErrorCode, v.Message, v.NextStep = d.Code, d.Message, d.NextStep
 					v.UpdatedAt = now.UnixMilli()
-					return SaveDoc(s, "tasks", id, v)
+					if err := SaveDoc(s, "tasks", id, v); err != nil {
+						return err
+					}
+					return finishExecutorDrain(s, e.AgentID)
 				}
 				return nil
 			})
@@ -399,6 +458,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	job := Task{ID: ID(), UserID: u.ID, Kind: request.Kind, Host: request.SSH.Host, Mode: request.Mode, State: "queued", Phase: "queued", Message: "等待执行机领取一次性任务", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli(), Remark: request.Remark, SSHFingerprint: request.SSH.Fingerprint, SSHPort: request.SSH.Port}
+	envelope := &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: request, Script: asset, Deadline: now.Add(45 * time.Minute).UnixMilli()}, UserID: u.ID, QueuedAt: now}
 	raw, _ := json.Marshal(request)
 	mac := hmac.New(sha256.New, t.digestKey)
 	_, _ = mac.Write(raw)
@@ -463,7 +523,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if t.targetBusy(request.SSH.Host) || (request.Front != nil && t.targetBusy(request.Front.Host)) {
+		if t.targetBusy(s, request.SSH.Host) || (request.Front != nil && t.targetBusy(s, request.Front.Host)) {
 			return errors.New("该服务器已有未结束任务，请先核实其结果")
 		}
 		if !t.hasExecutorFor(s, request.Kind) {
@@ -486,10 +546,13 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		if err := SaveDoc(s, "tasks", job.ID, job); err != nil {
 			return err
 		}
+		if err := saveTaskOperation(s, envelope); err != nil {
+			return err
+		}
 		return SaveDoc(s, "task_idempotency", idemID, taskIdempotency{TaskID: job.ID, Digest: digest})
 	})
 	if err == nil && !duplicate {
-		t.envelopes[job.ID] = &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: request, Script: asset, Deadline: now.Add(45 * time.Minute).UnixMilli()}, UserID: u.ID, QueuedAt: now}
+		t.envelopes[job.ID] = envelope
 	}
 	t.mu.Unlock()
 	if err != nil {
@@ -502,7 +565,16 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, 202, job)
 	}
 }
-func (t *TaskService) targetBusy(host string) bool {
+func (t *TaskService) targetBusy(s *State, host string) bool {
+	for _, o := range ListDocs[taskOperation](s, "task_operations") {
+		if operationBusy(o) {
+			for _, target := range o.Hosts {
+				if taskHost(host) == target {
+					return true
+				}
+			}
+		}
+	}
 	parsed, _ := netip.ParseAddr(host)
 	for _, e := range t.envelopes {
 		if e.Job.Request.Kind == "fingerprint" {
@@ -655,6 +727,7 @@ func (t *TaskService) fingerprint(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	job := Task{ID: ID(), UserID: u.ID, Host: input.Host, Kind: "fingerprint", State: "queued", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli()}
 	result := make(chan executor.Result, 1)
+	envelope := &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: executor.Request{Kind: "fingerprint", SSH: executor.SSH{Host: input.Host, Port: input.Port}}, Deadline: now.Add(25 * time.Second).UnixMilli()}, UserID: u.ID, QueuedAt: now, Result: result}
 	t.mu.Lock()
 	err = t.app.Store.Update(func(s *State) error {
 		if !t.hasExecutor(s) {
@@ -663,10 +736,13 @@ func (t *TaskService) fingerprint(w http.ResponseWriter, r *http.Request) {
 		if u.Role != "admin" && toolLimit(s, "fingerprint", u.ID, now.UnixMilli()).Remaining == 0 {
 			return errors.New("SSH 指纹检查达到次数限制")
 		}
-		return SaveDoc(s, "tasks", job.ID, job)
+		if err := SaveDoc(s, "tasks", job.ID, job); err != nil {
+			return err
+		}
+		return saveTaskOperation(s, envelope)
 	})
 	if err == nil {
-		t.envelopes[job.ID] = &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: executor.Request{Kind: "fingerprint", SSH: executor.SSH{Host: input.Host, Port: input.Port}}, Deadline: now.Add(25 * time.Second).UnixMilli()}, UserID: u.ID, QueuedAt: now, Result: result}
+		t.envelopes[job.ID] = envelope
 	}
 	t.mu.Unlock()
 	if err != nil {
@@ -703,7 +779,7 @@ func (t *TaskService) executorAuth(r *http.Request) (ExecutorRecord, error) {
 	hash := hex.EncodeToString(sum[:])
 	_ = t.app.Store.View(func(s *State) error {
 		for _, a := range ListDocs[ExecutorRecord](s, "executors") {
-			if a.Status == "active" && subtle.ConstantTimeCompare([]byte(hash), []byte(a.TokenHash)) == 1 {
+			if (a.Status == "active" || a.Status == "draining" || (a.Status == "disabled" && r.URL.Path == "/api/executor/result")) && a.TokenHash != "" && subtle.ConstantTimeCompare([]byte(hash), []byte(a.TokenHash)) == 1 {
 				found = a
 				break
 			}
@@ -721,14 +797,38 @@ func (t *TaskService) heartbeat(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 401, "执行机令牌无效")
 		return
 	}
+	var in struct {
+		TaskID        string `json:"taskId"`
+		Lease         string `json:"lease"`
+		WaitingResult bool   `json:"waitingResult"`
+	}
+	if r.ContentLength != 0 && Decode(r, &in) != nil {
+		Fail(w, 400, "心跳格式无效")
+		return
+	}
 	err = t.app.Store.Update(func(s *State) error {
 		current, ok := LoadDoc[ExecutorRecord](s, "executors", a.ID)
-		if !ok || current.Status != "active" {
+		if !ok || (current.Status != "active" && current.Status != "draining") {
 			return errors.New("令牌已撤销")
 		}
 		current.LastSeenAt = time.Now().UnixMilli()
 		current.IP = t.app.clientIP(r)
 		current.Capabilities = executorCapabilitiesFromRequest(r)
+		if v := r.Header.Get("X-MSBOOST-Agent-Version"); len(v) <= 64 && v != "" && !strings.ContainsAny(v, "\x00\r\n\t ") {
+			current.Version = v
+		}
+		if in.WaitingResult {
+			o, ok := LoadDoc[taskOperation](s, "task_operations", in.TaskID)
+			if ok && o.AgentID == a.ID && o.LeaseHash == taskHash([]byte(in.Lease)) && o.Status != "resolved" {
+				job, found := LoadDoc[Task](s, "tasks", in.TaskID)
+				if found {
+					job.Phase, job.Message = "waiting_result", "执行机报告操作已结束，正在补报结果；请勿重复部署"
+					if err := SaveDoc(s, "tasks", job.ID, job); err != nil {
+						return err
+					}
+				}
+			}
+		}
 		return SaveDoc(s, "executors", a.ID, current)
 	})
 	if err != nil {
@@ -743,12 +843,19 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 401, "执行机令牌无效")
 		return
 	}
+	if a.Status == "draining" {
+		w.WriteHeader(204)
+		return
+	}
 	_ = t.app.Store.Update(func(s *State) error {
 		current, ok := LoadDoc[ExecutorRecord](s, "executors", a.ID)
 		if ok {
 			current.LastSeenAt = time.Now().UnixMilli()
 			current.IP = t.app.clientIP(r)
 			current.Capabilities = executorCapabilitiesFromRequest(r)
+			if v := r.Header.Get("X-MSBOOST-Agent-Version"); len(v) <= 64 && v != "" && !strings.ContainsAny(v, "\x00\r\n\t ") {
+				current.Version = v
+			}
 			return SaveDoc(s, "executors", a.ID, current)
 		}
 		return nil
@@ -782,6 +889,17 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 				v.State = "running"
 				v.Phase = "executing"
 				v.UpdatedAt = time.Now().UnixMilli()
+				o, exists := LoadDoc[taskOperation](s, "task_operations", v.ID)
+				if !exists {
+					if err := saveTaskOperation(s, next); err != nil {
+						return err
+					}
+					o, _ = LoadDoc[taskOperation](s, "task_operations", v.ID)
+				}
+				o.AgentID, o.Status, o.UpdatedAt = a.ID, "claimed", v.UpdatedAt
+				if err := SaveDoc(s, "task_operations", v.ID, o); err != nil {
+					return err
+				}
 				return SaveDoc(s, "tasks", v.ID, v)
 			})
 			if err != nil {
@@ -830,9 +948,49 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	envelope, ok := t.envelopes[out.ID]
-	if !ok || envelope.AgentID != a.ID || subtle.ConstantTimeCompare([]byte(envelope.Job.Lease), []byte(out.Lease)) != 1 {
-		Fail(w, 409, "任务租约已失效，结果不可重放")
+	var operation taskOperation
+	var task Task
+	if err = t.app.Store.View(func(s *State) error {
+		operation, _ = LoadDoc[taskOperation](s, "task_operations", out.ID)
+		task, _ = LoadDoc[Task](s, "tasks", out.ID)
+		return nil
+	}); err != nil {
+		Fail(w, 503, "结果核对暂不可用，请稍后补报")
 		return
+	}
+	encoded, _ := json.Marshal(out)
+	receipt := taskHash(encoded)
+	if operation.ID != "" && operation.AgentID == a.ID && operation.LeaseHash == taskHash([]byte(out.Lease)) && operation.Receipt == receipt && operation.Receipt != "" {
+		// Replenish a lost memory handoff after an ACK/COMMIT restart gap, but
+		// never extend the original ten-minute sensitive-config retention.
+		expires := time.UnixMilli(task.UpdatedAt).Add(10 * time.Minute)
+		if len(out.Config) > 0 && task.State == "succeeded" && time.Now().Before(expires) {
+			t.configs[out.ID] = taskConfig{Data: append([]byte(nil), out.Config...), UserID: task.UserID, Expires: expires}
+		}
+		WriteJSON(w, 200, map[string]bool{"ok": true, "duplicate": true})
+		return
+	}
+	if operation.ID == "" && ok && envelope.AgentID == a.ID && envelope.Job.Lease == out.Lease {
+		// Old in-memory jobs can finish during a rolling upgrade, but cannot be replayed.
+		err = t.app.Store.Update(func(s *State) error {
+			if err := saveTaskOperation(s, envelope); err != nil {
+				return err
+			}
+			operation, _ = LoadDoc[taskOperation](s, "task_operations", out.ID)
+			operation.AgentID, operation.Status = a.ID, "claimed"
+			return SaveDoc(s, "task_operations", out.ID, operation)
+		})
+		if err != nil {
+			Fail(w, 503, "结果核对暂不可用")
+			return
+		}
+	}
+	if operation.AgentID != a.ID || operation.LeaseHash != taskHash([]byte(out.Lease)) || (operation.Status != "claimed" && operation.Status != "review") || task.ID == "" || a.Status == "disabled" {
+		Fail(w, 409, "任务已核对或授权失效；没有再次执行远程命令，请检查原任务记录")
+		return
+	}
+	if !ok {
+		envelope = &taskEnvelope{Job: executor.Job{ID: out.ID, Lease: out.Lease, Request: operation.Request}, UserID: task.UserID, AgentID: a.ID}
 	}
 	if out.State != "succeeded" && out.State != "failed" && out.State != "executed" && out.State != "unknown" {
 		Fail(w, 400, "结果状态无效")
@@ -885,11 +1043,17 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err = t.app.Store.Update(func(s *State) error {
+		current, exists := LoadDoc[taskOperation](s, "task_operations", out.ID)
+		if !exists || current.AgentID != a.ID || current.LeaseHash != operation.LeaseHash || current.Status == "resolved" {
+			return errors.New("任务核对状态已变化")
+		}
 		job, ok := LoadDoc[Task](s, "tasks", out.ID)
 		if !ok {
 			return errors.New("任务不存在")
 		}
 		job.State = out.State
+		job.NeedsReview = false
+		job.ErrorCode, job.NextStep = "", ""
 		job.Phase = "complete"
 		if executor.ValidPhase(out.Phase) {
 			job.Phase = out.Phase
@@ -931,7 +1095,21 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 				job.Hops = append(job.Hops, h)
 			}
 		}
-		return SaveDoc(s, "tasks", job.ID, job)
+		if err := SaveDoc(s, "tasks", job.ID, job); err != nil {
+			return err
+		}
+		current.Status, current.Receipt, current.UpdatedAt = "resolved", receipt, job.UpdatedAt
+		if job.Kind == "dd" && (out.State == "executed" || out.State == "unknown") {
+			current.Status, job.NeedsReview = "review", true
+			job.NextStep = "请等待重装结束并通过 VPS 控制台核实系统；确认原操作结束后解除占用，再部署 MSBOOST"
+			if err := SaveDoc(s, "tasks", job.ID, job); err != nil {
+				return err
+			}
+		}
+		if err := SaveDoc(s, "task_operations", job.ID, current); err != nil {
+			return err
+		}
+		return finishExecutorDrain(s, a.ID)
 	})
 	if err != nil {
 		Fail(w, 500, "结果保存失败")
@@ -978,7 +1156,7 @@ func (t *TaskService) listExecutors(w http.ResponseWriter, r *http.Request) {
 	_ = t.app.Store.View(func(s *State) error { rows = ListDocs[ExecutorRecord](s, "executors"); return nil })
 	for i := range rows {
 		rows[i].TokenHash = ""
-		rows[i].Online = rows[i].Status == "active" && rows[i].LastSeenAt > 0 && time.Now().UnixMilli()-rows[i].LastSeenAt < 90000
+		rows[i].Online = (rows[i].Status == "active" || rows[i].Status == "draining") && rows[i].LastSeenAt > 0 && time.Now().UnixMilli()-rows[i].LastSeenAt < 90000
 	}
 	WriteJSON(w, 200, map[string]any{"executors": rows})
 }
@@ -1022,6 +1200,9 @@ func (t *TaskService) renewExecutor(w http.ResponseWriter, r *http.Request) {
 	token := ID() + ID()
 	sum := sha256.Sum256([]byte(token))
 	err := t.app.Store.Update(func(s *State) error {
+		if len(executorPending(s, id)) > 0 {
+			return errors.New("执行机仍有待确认任务，请先核对任务再重置令牌")
+		}
 		record, ok := LoadDoc[ExecutorRecord](s, "executors", id)
 		if !ok {
 			return errors.New("执行机不存在")
@@ -1058,8 +1239,17 @@ func (t *TaskService) editExecutor(w http.ResponseWriter, r *http.Request) {
 		if in.Name != "" && len(in.Name) <= 120 {
 			a.Name = in.Name
 		}
-		if in.Status == "active" || in.Status == "disabled" {
+		if in.Status == "active" || in.Status == "disabled" || in.Status == "draining" {
+			if in.Status == "active" && a.TokenHash == "" {
+				return errors.New("执行机凭据已撤销，请先核对原任务并重新生成安装令牌")
+			}
 			a.Status = in.Status
+			if in.Status != "active" {
+				a.Status = "disabled"
+				if len(executorPending(s, a.ID)) > 0 {
+					a.Status = "draining"
+				}
+			}
 		}
 		return SaveDoc(s, "executors", a.ID, a)
 	})
@@ -1074,6 +1264,16 @@ func (t *TaskService) deleteExecutor(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 403, "需要管理员权限")
 		return
 	}
-	_ = t.app.Store.Update(func(s *State) error { DeleteDoc(s, "executors", r.PathValue("id")); return nil })
+	err := t.app.Store.Update(func(s *State) error {
+		if pending := executorPending(s, r.PathValue("id")); len(pending) > 0 {
+			return errors.New("执行机有未结束或待核对任务，不能删除；请先查看任务记录，或停用以等待现有任务完成")
+		}
+		DeleteDoc(s, "executors", r.PathValue("id"))
+		return nil
+	})
+	if err != nil {
+		Fail(w, 409, err.Error())
+		return
+	}
 	WriteJSON(w, 200, map[string]bool{"ok": true})
 }

@@ -102,6 +102,7 @@ type RelaySegment struct {
 	EverReady                bool              `json:"everReady,omitempty"`
 	RuntimeObservedAt        int64             `json:"runtimeObservedAt,omitempty"`
 	RuntimeState             string            `json:"runtimeState,omitempty"`
+	FirewallStatus           string            `json:"firewallStatus,omitempty"`
 	IssuedRateMbps           int64             `json:"issuedRateMbps,omitempty"`
 	IssuedEntitlementVersion int64             `json:"issuedEntitlementVersion,omitempty"`
 	ConfigError              bool              `json:"configError,omitempty"`
@@ -267,6 +268,14 @@ func relayRuleView(s *State, rule UserRule, admin bool, now int64) RelayRuleView
 	}
 	if rule.ReconcileState == "config_error" {
 		out.SyncState, out.AppliedRateMbps = "config_error", 0
+	}
+	if rule.State == "active" || rule.State == "pending" || rule.State == "awaiting_front" {
+		for _, seg := range rule.Segments {
+			agent, _ := LoadDoc[RelayAgent](s, "relay_agents", seg.AgentID)
+			if agent.LastSeen > now-relayLeaseMS && (out.SyncState == "active" || out.SyncState == "syncing" || out.SyncState == "awaiting_front") && (seg.FirewallStatus == "error" || seg.FirewallStatus == "pending") {
+				out.SyncState, out.AppliedRateMbps = "firewall_pending", 0
+			}
+		}
 	}
 	return out
 }

@@ -187,7 +187,8 @@ const schemas: Record<string, Resource> = {
         label: "状态",
         options: [
           ["active", "启用"],
-          ["disabled", "停用"],
+          ["disabled", "停用（先完成现有任务）"],
+          ["draining", "等待现有任务完成（不接新任务）"],
         ],
       },
     ],
@@ -196,6 +197,7 @@ const schemas: Record<string, Resource> = {
       ["ip", "连接 IP"],
       ["status", "启用状态"],
       ["online", "在线状态"],
+      ["version", "程序版本"],
       ["lastSeenAt", "最后心跳"],
     ],
   },
@@ -234,11 +236,34 @@ const schemas: Record<string, Resource> = {
       ["address", "公网 IP"],
       ["online", "管理连接"],
       ["lifecycle", "节点状态"],
+      ["version", "程序版本"],
+      ["controlStatus", "管理认证 / 同步"],
+      ["lastSeen", "最近真实同步"],
       ["enabled", "启用"],
     ],
   },
 };
 function show(value: any, key: string) {
+  if (key === "status")
+    return (
+      (
+        {
+          active: "启用",
+          disabled: "停用",
+          draining: "等待现有任务完成（不接新任务）",
+        } as Record<string, string>
+      )[String(value)] || String(value || "—")
+    );
+  if (key === "controlStatus")
+    return (
+      (
+        {
+          online: "已认证并同步",
+          auth_error: "认证失败",
+          recovery_required: "需要恢复连接",
+        } as Record<string, string>
+      )[String(value)] || "尚无成功同步报告"
+    );
   if (key === "rateMbps") return `${value} Mbps`;
   if (key === "online")
     return (
@@ -258,7 +283,7 @@ function show(value: any, key: string) {
 export function ResourcePage({ kind }: { kind: string }) {
   const [showArchived, setShowArchived] = useState(false);
   const s = schemas[kind],
-    { data, error, reload } = useData(
+    { data, error, loading, reload } = useData(
       s.url + (kind === "agents" && showArchived ? "?includeArchived=1" : ""),
     );
   const [editing, setEditing] = useState<RecordData | null>(null),
@@ -267,11 +292,14 @@ export function ResourcePage({ kind }: { kind: string }) {
     [success, setSuccess] = useState(""),
     [token, setToken] = useState<RecordData | null>(null),
     [blockedAgent, setBlockedAgent] = useState<RecordData | null>(null),
-    [deletedAgent, setDeletedAgent] = useState<RecordData | null>(null);
-  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.1.1/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
+    [deletedAgent, setDeletedAgent] = useState<RecordData | null>(null),
+    [cleanupHelp, setCleanupHelp] = useState(false);
+  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
   const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;
+  const cleanupRole = kind === "executors" ? "executor" : "relay";
+  const cleanupCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.0/deploy/cleanup-agent.sh -o /tmp/msboost-cleanup-agent.sh && bash /tmp/msboost-cleanup-agent.sh --capability ${cleanupRole} --check`;
   const relayUninstallCommand = (id: string) =>
-    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.1.1/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
+    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.0/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
   async function freshResetAgent(row: RecordData) {
     if (
       !confirm(
@@ -322,6 +350,11 @@ export function ResourcePage({ kind }: { kind: string }) {
   return (
     <>
       <Header title={s.title}>
+        {(kind === "executors" || kind === "agents") && (
+          <Button onClick={() => setCleanupHelp(true)}>
+            本机清理说明
+          </Button>
+        )}
         <Button primary onClick={() => open()}>
           <Plus size={16} />
           新增
@@ -364,6 +397,8 @@ export function ResourcePage({ kind }: { kind: string }) {
       )}
       <div className="card flush mt16">
         <Table
+          loading={loading}
+          error={error}
           headers={[...s.columns.map((c) => c[1]), "操作"]}
           rows={rows.map((row) => [
             ...s.columns.map(([key]) => show(row[key], key)),
@@ -450,6 +485,28 @@ export function ResourcePage({ kind }: { kind: string }) {
                   部署 / 重装
                 </Button>
               )}
+              {kind === "executors" && (
+                <Button
+                  onClick={async () => {
+                    if (
+                      !confirm(
+                        "紧急撤销会使结果回传失效，但不会停止 VPS 上的命令。未结束任务将保留占用，需在 VPS 控制台核实结束后解除。确认继续？",
+                      )
+                    )
+                      return;
+                    try {
+                      await post(`${s.url}/${row.id}/revoke`, {
+                        confirm: "REVOKE_EXECUTOR",
+                      });
+                      reload();
+                    } catch (e) {
+                      setMessage((e as Error).message);
+                    }
+                  }}
+                >
+                  紧急撤销
+                </Button>
+              )}
               {kind === "agents" &&
                 !row.archived &&
                 row.enrollmentAllowed !== true && (
@@ -492,6 +549,35 @@ export function ResourcePage({ kind }: { kind: string }) {
           ])}
         />
       </div>
+      {cleanupHelp && (
+        <Modal
+          title={
+            cleanupRole === "executor" ? "卸载本机执行机" : "清理残缺的节点安装"
+          }
+          onClose={() => setCleanupHelp(false)}
+        >
+          <p>
+            在需要清理的 VPS 上用 root
+            运行下列命令，先查看本机组件清单。它会识别本项目安装的文件，也支持身份文件缺失或损坏的安装。
+          </p>
+          <pre className="code-panel mt16">{cleanupCommand}</pre>
+          <Button
+            onClick={() =>
+              void copyText(cleanupCommand).catch((e) => setMessage(e.message))
+            }
+          >
+            复制扫描命令
+          </Button>
+          <p className="mt16">确认清单后运行：</p>
+          <pre className="code-panel">{`bash /tmp/msboost-cleanup-agent.sh --capability ${cleanupRole} --cleanup`}</pre>
+          <p className="mt16">
+            终端会要求确认角色及本机主机名。清理会停止此角色的连接，保留私有备份、共享程序及同机另一个角色。执行机请先停止接新任务并等待现有任务结束；直接清理可能丢失尚未回传的结果。
+          </p>
+          <p className="muted mt16">
+            本机清理不自动删除面板记录。路径归属不明或进程无法停止时会保留文件并说明原因。
+          </p>
+        </Modal>
+      )}
       {editing && (
         <Modal
           title={(editing.id ? "编辑" : "新增") + s.title}
@@ -753,7 +839,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             </a>
             <a
               className="btn"
-              href="https://github.com/mozziexwz/node/blob/v2.1.1/docs/relay-recovery.md"
+              href="https://github.com/mozziexwz/node/blob/v2.2.0/docs/relay-recovery.md"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -1028,6 +1114,7 @@ export function CodesPage({ invitations = false }: { invitations?: boolean }) {
               {
                 active: "可使用 / 启用",
                 disabled: "停用",
+                draining: "等待现有任务完成（不接新任务）",
                 used: "次数已用尽",
                 archived: "已归档",
               } as Record<string, string>
@@ -1462,7 +1549,7 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
   );
 }
 export function AdminRules() {
-  const { data, error, reload } = useData("/api/admin/user-rules"),
+  const { data, error, loading, reload } = useData("/api/admin/user-rules"),
     {
       data: accounting,
       error: accountingError,
@@ -1490,6 +1577,7 @@ export function AdminRules() {
     awaiting_front: "前置机配置中",
     recovery_required: "恢复核对中",
     config_error: "配置异常，待核对",
+    firewall_pending: "节点防火墙待处理",
   };
   const status = (r: RecordData) => relayStatus(r).label;
   const rows = rules.filter(
@@ -1646,6 +1734,8 @@ export function AdminRules() {
       </div>
       <div className="card flush mt16">
         <Table
+          loading={loading}
+          error={error}
           headers={[
             "用户邮箱",
             "线路",

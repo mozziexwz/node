@@ -281,6 +281,15 @@ install_agent_cleanup() {
   if (( mutation && ! committed )); then
     systemctl stop "$unit" >/dev/null 2>&1 || true
     systemctl disable "$unit" >/dev/null 2>&1 || true
+    if [[ $capability == relay && ${firewall_mutation:-0} == 1 ]]; then
+      systemctl stop msboost-relay-firewall.service >/dev/null 2>&1 || true
+      "$stage/msboost-agent" --capability relay-firewall-cleanup >/dev/null 2>&1 || printf '防火墙受管规则未完全清理，请核查维护服务日志。\n' >&2
+      systemctl disable msboost-relay-firewall.service >/dev/null 2>&1 || true
+      if [[ -f $backup/firewall-unit ]]; then cp -p -- "$backup/firewall-unit" /etc/systemd/system/msboost-relay-firewall.service
+      else rm -f -- /etc/systemd/system/msboost-relay-firewall.service; fi
+      if [[ -f $backup/firewall-binary ]]; then cp -p -- "$backup/firewall-binary" "$managed/relay-firewall"
+      else rm -f -- "$managed/relay-firewall"; fi
+    fi
     if (( ${relay_reset_moved:-0} )); then
       local state_restore_ok=1
       if [[ -e $relay_reset_state || -L $relay_reset_state ]]; then
@@ -318,6 +327,8 @@ install_agent_cleanup() {
       masked) systemctl mask "$unit" >/dev/null 2>&1 || true ;;
       masked-runtime) systemctl mask --runtime "$unit" >/dev/null 2>&1 || true ;;
     esac
+    if [[ ${firewall_was_enabled:-0} == 1 ]]; then systemctl enable msboost-relay-firewall.service >/dev/null 2>&1 || true; fi
+    if [[ ${firewall_was_active:-0} == 1 ]]; then systemctl start msboost-relay-firewall.service >/dev/null 2>&1 || true; fi
     if (( was_active )); then systemctl start "$unit" >/dev/null 2>&1 || true; fi
     printf '安装失败，已尝试恢复原文件与服务。请核查服务状态；私有备份：%s\n' "$backup" >&2
   fi
@@ -412,6 +423,22 @@ if [[ $capability == relay ]]; then
   fi
 fi
 backup=''; mutation=0; committed=0; was_active=0
+firewall_mutation=0; firewall_was_active=0; firewall_was_enabled=0
+if [[ $capability == relay ]]; then
+  firewall_unit=/etc/systemd/system/msboost-relay-firewall.service
+  if [[ -e $firewall_unit || -L $firewall_unit ]]; then
+    [[ -f $firewall_unit && ! -L $firewall_unit && $(stat -c '%u:%h' "$firewall_unit") == 0:1 && $((8#$(stat -c %a "$firewall_unit") & 0022)) == 0 ]] &&
+      grep -Fxq '# MSBOOST_RELAY_FIREWALL_MANAGED_V1' "$firewall_unit" &&
+      grep -Fxq 'ExecStart=/usr/local/libexec/msboost-agent/relay-firewall --capability relay-firewall' "$firewall_unit" &&
+      [[ $(grep -c '^ExecStart=' "$firewall_unit") == 1 && -z $(systemctl show msboost-relay-firewall.service -p DropInPaths --value) ]] &&
+      ! grep -Eq '^[[:space:]]*Exec(StartPre|StartPost|Stop|StopPost|Reload|Condition)[[:space:]]*=' "$firewall_unit" || fail '防火墙维护单元不是受管形态，拒绝覆盖。'
+  fi
+  systemctl is-active --quiet msboost-relay-firewall.service && firewall_was_active=1 || true
+  systemctl is-enabled --quiet msboost-relay-firewall.service && firewall_was_enabled=1 || true
+  if [[ -e $managed/relay-firewall || -L $managed/relay-firewall ]]; then
+    [[ -f $managed/relay-firewall && ! -L $managed/relay-firewall && $(stat -c '%u:%h' "$managed/relay-firewall") == 0:1 && $((8#$(stat -c %a "$managed/relay-firewall") & 0022)) == 0 ]] || fail '维护程序归属不明确，拒绝覆盖。'
+  fi
+fi
 systemctl is-active --quiet "$unit" && was_active=1 || true
 stage=$(mktemp -d /tmp/msboost-agent.XXXXXX)
 previous_enable_state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
@@ -454,13 +481,14 @@ else
 fi
 unset token
 relay_policy_arg=''
-if [[ $capability == relay ]]; then relay_policy_arg=" --offline-policy $offline_policy"; fi
+relay_firewall_wants=''
+if [[ $capability == relay ]]; then relay_policy_arg=" --offline-policy $offline_policy"; relay_firewall_wants=' msboost-relay-firewall.service'; fi
 relay_state_dir=$(relay_service_state_dir "$capability" "$offline_policy")
 cat > "$stage/unit" <<EOF
 [Unit]
 Description=MSBOOST ${capability} Agent
 After=network-online.target
-Wants=network-online.target
+Wants=network-online.target${relay_firewall_wants}
 [Service]
 Type=simple
 DynamicUser=true
@@ -480,7 +508,40 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 UMask=0077
 EOF
 if [[ "$capability" == relay ]]; then
+  cat > "$stage/firewall-unit" <<'FIREWALL'
+# MSBOOST_RELAY_FIREWALL_MANAGED_V1
+[Unit]
+Description=MSBOOST Relay local firewall maintenance
+After=network-online.target ufw.service
+Before=msboost-relay.service
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/msboost-agent/relay-firewall --capability relay-firewall
+User=root
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=msboost-relay-firewall
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+MemoryMax=128M
+TasksMax=32
+[Install]
+WantedBy=multi-user.target
+FIREWALL
   cat >> "$stage/unit" <<'RELAY'
+Environment=MSBOOST_RELAY_FIREWALL_STATUS=/run/msboost-relay-firewall/status.json
 StateDirectory=msboost-relay
 StateDirectoryMode=0700
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
@@ -500,6 +561,8 @@ backup=$(mktemp -d "/var/backups/msboost-agent/${capability}.XXXXXXXX")
 [[ ! -f "$binary" ]] || cp -p -- "$binary" "$backup/binary"
 [[ ! -f "$envfile" ]] || cp -p -- "$envfile" "$backup/environment"
 [[ ! -f "$unitfile" ]] || cp -p -- "$unitfile" "$backup/unit"
+if [[ $capability == relay && -f $firewall_unit ]]; then cp -p -- "$firewall_unit" "$backup/firewall-unit"; fi
+if [[ $capability == relay && -f $managed/relay-firewall ]]; then cp -p -- "$managed/relay-firewall" "$backup/firewall-binary"; fi
 # Runtime may persist its first v2 record during download/preparation. Recheck
 # immediately before mutation while the cross-role installation lock is held.
 was_active=0; systemctl is-active --quiet "$unit" && was_active=1 || true
@@ -536,7 +599,17 @@ if [[ "$capability" == relay ]]; then install -m 0755 "$stage/gost" "$managed/go
 install -m 0755 "$stage/msboost-agent" "$binary"
 install -m 0600 "$stage/environment" "$envfile"
 install -m 0644 "$stage/unit" "$unitfile"
+if [[ $capability == relay ]]; then
+  firewall_mutation=1
+  install -m 0755 "$stage/msboost-agent" "$managed/relay-firewall"
+  install -m 0644 "$stage/firewall-unit" "$firewall_unit"
+fi
 systemctl daemon-reload
+if [[ $capability == relay ]]; then
+  systemctl enable msboost-relay-firewall.service >/dev/null
+  systemctl restart msboost-relay-firewall.service
+  systemctl is-active --quiet msboost-relay-firewall.service || fail '本机防火墙维护服务未启动，正在回滚。'
+fi
 systemctl enable "$unit" >/dev/null
 step '启动服务并检查本机运行状态'
 systemctl restart "$unit"

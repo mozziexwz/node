@@ -26,7 +26,7 @@ mkdir -p "$out"
 git archive --format=tar HEAD | gzip -n > "$out/msboost-deploy-${version}.tar.gz"
 cp deploy/install-agent.sh "$out/install-agent.sh"
 for arch in amd64 arm64; do
-  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$out/msboost-agent-linux-${arch}" ./cmd/agent
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w -X github.com/mozziexwz/node/internal/buildinfo.Version=$version" -o "$out/msboost-agent-linux-${arch}" ./cmd/agent
   CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$out/msboost-restore-linux-${arch}" ./cmd/restore
 done
 (

@@ -21,9 +21,16 @@ stat --printf='CI_DISASTER_PATH %n %u:%g:%a\n' -- / /opt /root
 source "$CI_REPO/deploy/manage.sh"
 source "$CI_REPO/deploy/disaster.sh"
 [[ $INSTALL_ROOT == /opt/msboost && ! -e $INSTALL_ROOT && ! -L $INSTALL_ROOT && ! -L /opt && $(realpath -m /opt) == /opt ]] || { die 'CI refuses an existing or redirected installation'; exit 1; }
-for existing in /usr/local/bin/msboost /etc/systemd/system/msboost-disaster-backup.service /etc/systemd/system/msboost-disaster-backup.timer; do
+for existing in /etc/systemd/system/msboost-disaster-backup.service /etc/systemd/system/msboost-disaster-backup.timer; do
   [[ ! -e $existing && ! -L $existing ]] || { die 'CI refuses an existing launcher or timer'; exit 1; }
 done
+# This harness overrides install_launcher and never removes that command. A
+# customer-node binary can coexist at this path; retain and verify it unchanged.
+CI_EXISTING_COMMAND=
+if [[ -e /usr/local/bin/msboost || -L /usr/local/bin/msboost ]]; then
+  [[ -f /usr/local/bin/msboost && ! -L /usr/local/bin/msboost ]] || { die 'CI refuses an unexpected command path type'; exit 1; }
+  CI_EXISTING_COMMAND=$(sha256sum /usr/local/bin/msboost)
+fi
 docker info >/dev/null
 [[ -z $(docker ps -aq --filter label=com.docker.compose.project=msboost) ]] || { die 'CI found existing MSBOOST containers'; exit 1; }
 for volume in msboost_app_data msboost_database_data; do
@@ -133,6 +140,7 @@ ci_cleanup() {
   trap '' HUP INT TERM
   [[ -f $CI_ROOT/.ci-owner && ! -L $CI_ROOT/.ci-owner && $(<"$CI_ROOT/.ci-owner") == "$CI_MARKER" ]] || { ci_restore_opt || true; exit 1; }
   ci_remove_site || status=1
+  [[ -z $CI_EXISTING_COMMAND || $(sha256sum /usr/local/bin/msboost) == "$CI_EXISTING_COMMAND" ]] || status=1
   ci_restore_opt || status=1
   if [[ $CI_TOOL_CONTAINER =~ ^[a-f0-9]{64}$ ]] && docker inspect "$CI_TOOL_CONTAINER" >/dev/null 2>&1; then
     [[ $(docker inspect --format '{{index .Config.Labels "msboost.ci.disaster"}}' "$CI_TOOL_CONTAINER") == "$CI_TOKEN" ]] && docker rm -f "$CI_TOOL_CONTAINER" >/dev/null || status=1
@@ -148,7 +156,7 @@ ci_cleanup() {
   for work in "${CI_CREATED_IMAGE_TAGS[@]}"; do
     [[ -n $work ]] || continue
     if docker image inspect "$work" >/dev/null 2>&1; then
-      if [[ -n ${MSBOOST_DISASTER_PREBUILT_IMAGE:-} && $(docker image inspect --format '{{.Id}}' "$work") == "$CI_IMAGE_ID" ]] || [[ $(docker image inspect --format '{{index .Config.Labels "msboost.ci.disaster"}}' "$work") == "$CI_TOKEN" ]]; then
+      if [[ ( -n ${MSBOOST_DISASTER_PREBUILT_IMAGE:-} || -n ${MSBOOST_DISASTER_CANDIDATE_IMAGE_ID:-} ) && $(docker image inspect --format '{{.Id}}' "$work") == "$CI_IMAGE_ID" ]] || [[ $(docker image inspect --format '{{index .Config.Labels "msboost.ci.disaster"}}' "$work") == "$CI_TOKEN" ]]; then
         docker image rm "$work" >/dev/null || status=1
       else status=1; fi
     fi
@@ -174,6 +182,15 @@ install() {
         printf '%s\n' "$CI_MARKER" > /opt/msboost/.ci-disaster-owner
       fi
     done
+  fi
+}
+
+# A new restore publishes a pre-marked staging directory atomically.
+mv() {
+  command mv "$@" || return
+  if [[ ${*: -1} == /opt/msboost && -f /opt/msboost/.disaster-incomplete ]]; then
+    [[ ! -L /opt && ! -L /opt/msboost && -d /opt/msboost ]] || return 1
+    printf '%s\n' "$CI_MARKER" > /opt/msboost/.ci-disaster-owner
   fi
 }
 
@@ -219,7 +236,13 @@ check_frontend() {
 
 note 'Test: prepare exact source/release image and pin dependency images.'
 if docker image inspect "$CI_BUILD_TAG" >/dev/null 2>&1; then die 'CI refuses to overwrite an existing local build tag'; exit 1; fi
-if [[ -n ${MSBOOST_DISASTER_PREBUILT_IMAGE:-} ]]; then
+if [[ -n ${MSBOOST_DISASTER_CANDIDATE_IMAGE_ID:-} ]]; then
+  # Explicit local candidate artifacts avoid compiling on low-memory test VPSs.
+  # Never pull a moving tag or infer that this is a published official release.
+  [[ -z ${MSBOOST_DISASTER_PREBUILT_IMAGE:-} && $MSBOOST_DISASTER_CANDIDATE_IMAGE_ID =~ ^sha256:[a-f0-9]{64}$ ]] || { die 'Candidate testing requires one exact local image ID'; exit 1; }
+  [[ $(server_identity "$MSBOOST_DISASTER_CANDIDATE_IMAGE_ID") == "$MSBOOST_DISASTER_CANDIDATE_IMAGE_ID" ]] || exit 1
+  docker tag "$MSBOOST_DISASTER_CANDIDATE_IMAGE_ID" "$CI_BUILD_TAG"
+elif [[ -n ${MSBOOST_DISASTER_PREBUILT_IMAGE:-} ]]; then
   [[ $MSBOOST_DISASTER_PREBUILT_IMAGE =~ ^ghcr.io/mozziexwz/node@sha256:[a-f0-9]{64}$ ]] || { die 'Only a pinned official image is accepted'; exit 1; }
   docker pull "$MSBOOST_DISASTER_PREBUILT_IMAGE"
   # The production image records its source in OCI metadata, but its version

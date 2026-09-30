@@ -152,7 +152,7 @@ func TestSafeRestoreKeepLastPreservesCurrentResourcesCommandsAndFinance(t *testi
 		t.Fatal(err)
 	}
 	response := backupRestoreRequest(t, b, &User{ID: "admin-context", Role: "admin", Status: "active"}, snapshot)
-	if response.Code != 200 || !strings.Contains(response.Body.String(), `"recoveryRequired":true`) || !strings.Contains(response.Body.String(), "recovery_required") {
+	if response.Code != 200 || !strings.Contains(response.Body.String(), `"recoveryRequired":true`) || !strings.Contains(response.Body.String(), "msboost relay-reconnect") {
 		t.Fatalf("safe restore did not report required recovery: %d", response.Code)
 	}
 	if err := a.Store.Update(func(s *State) error {

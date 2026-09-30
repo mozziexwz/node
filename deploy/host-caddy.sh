@@ -165,8 +165,25 @@ caddy_export() {
   tar -cf "$1" -C "$CADDY_ROOT" msboost-custom || return
 }
 
-caddy_import() {
-  local file directory=$1
+caddy_import() (
+  local file directory=$1 operation=${2:-} journal="$CADDY_ROOT/.msboost-restore-import" name digest candidate= new_journal=0
+  local -a published=()
+  declare -A published_hash=()
+  # Ordinary errors roll back only this invocation's new files. A hard kill
+  # leaves the journal, so the same verified archive can resume safely.
+  trap '
+    status=$?
+    if (( status != 0 )); then
+      clean=1
+      for file in "${published[@]}"; do
+        if caddy_safe_path "$file" && [[ -f $file && ! -L $file && $(sha256sum "$file" | cut -d" " -f1) == "${published_hash[$file]}" ]]; then rm -- "$file" || clean=0
+        else clean=0; fi
+      done
+      if [[ $new_journal == 1 && $clean == 1 && -f $journal && ! -L $journal && $(head -n 1 "$journal") == "$operation" ]]; then rm -- "$journal" || true; fi
+    fi
+    [[ -z $candidate || ! -f $candidate ]] || rm -f -- "$candidate"
+    exit "$status"
+  ' EXIT
   [[ -d $directory/msboost-custom && ! -L $directory/msboost-custom ]] || return 1
   # Whole archive was validated before extraction. Only explicit owned files
   # are installed; archived main configs, service units and certificates never run.
@@ -175,8 +192,39 @@ caddy_import() {
   done < <(find "$directory/msboost-custom" -mindepth 1 -print0)
   [[ $(<"$directory/msboost-custom/.msboost-owner") == "$CADDY_OWNER" ]] || return 1
   caddy_ensure || return
+  [[ $operation =~ ^[a-f0-9]{64}$ ]] || { die '扩展恢复需要已核验备份的 SHA-256 操作标识'; return 1; }
+  caddy_safe_path "$journal" || return
+  if [[ -e $journal ]]; then
+    [[ -f $journal && ! -L $journal && $(head -n 1 "$journal") == "$operation" ]] || { die '存在另一次未结束的扩展恢复，未覆盖；请保留其恢复记录核对'; return 1; }
+  else
+    (umask 077; set -o noclobber; printf '%s\n' "$operation" > "$journal") || return
+    new_journal=1
+  fi
+  # Preflight ALL destinations before writing any of them. A matching file is
+  # resumable only when this operation recorded ownership before its publication.
   while IFS= read -r -d '' file; do
-    [[ ! -e $CADDY_CUSTOM/${file##*/} && ! -L $CADDY_CUSTOM/${file##*/} ]] || { die '恢复目标已有 MSBOOST 扩展，不覆盖'; return 1; }
-    install -o root -g caddy -m 0640 "$file" "$CADDY_CUSTOM/${file##*/}" || return
+    name=${file##*/}; digest=$(sha256sum "$file" | cut -d' ' -f1)
+    caddy_safe_path "$CADDY_CUSTOM/$name" || return
+    if [[ -e $CADDY_CUSTOM/$name || -L $CADDY_CUSTOM/$name ]]; then
+      grep -Fxq "$digest $name" "$journal" && [[ -f $CADDY_CUSTOM/$name && ! -L $CADDY_CUSTOM/$name ]] && cmp -s "$file" "$CADDY_CUSTOM/$name" || { die '恢复目标已有其他或已修改的 MSBOOST 扩展，不覆盖'; return 1; }
+    fi
   done < <(find "$directory/msboost-custom" -maxdepth 1 -type f -name '*.caddy' -print0)
+  while IFS= read -r -d '' file; do
+    name=${file##*/}; digest=$(sha256sum "$file" | cut -d' ' -f1)
+    [[ ! -f $CADDY_CUSTOM/$name ]] || continue
+    grep -Fxq "$digest $name" "$journal" || printf '%s %s\n' "$digest" "$name" >> "$journal" || return
+    candidate=$(mktemp "$CADDY_ROOT/.msboost-restore-next.XXXXXXXX") || return
+    if ! install -o root -g caddy -m 0640 "$file" "$candidate"; then rm -f -- "$candidate"; return 1; fi
+    # No overwriting: a concurrent administrator's file is never ours.
+    if ! ln -- "$candidate" "$CADDY_CUSTOM/$name"; then rm -f -- "$candidate"; return 1; fi
+    published+=("$CADDY_CUSTOM/$name"); published_hash[$CADDY_CUSTOM/$name]=$digest
+    rm -- "$candidate" || return
+  done < <(find "$directory/msboost-custom" -maxdepth 1 -type f -name '*.caddy' -print0)
+)
+
+caddy_import_commit() {
+  local operation=$1 journal="$CADDY_ROOT/.msboost-restore-import"
+  caddy_safe_path "$journal" || return
+  [[ -f $journal && ! -L $journal && $(head -n 1 "$journal") == "$operation" ]] || return 1
+  rm -- "$journal"
 }

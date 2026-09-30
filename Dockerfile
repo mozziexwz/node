@@ -11,10 +11,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-ARG VERSION=2.1.1-dev
+ARG VERSION=2.2.0-dev
 ARG TARGETOS
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /out/msboost-server ./cmd/server && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/msboost-agent ./cmd/agent && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/msboost-restore ./cmd/restore
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /out/msboost-server ./cmd/server && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X github.com/mozziexwz/node/internal/buildinfo.Version=$VERSION" -o /out/msboost-agent ./cmd/agent && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/msboost-restore ./cmd/restore
 
 FROM debian:bookworm-slim
 LABEL org.opencontainers.image.source="https://github.com/mozziexwz/node"
@@ -29,6 +29,10 @@ COPY installers/ ./installers/
 RUN chmod -R a+rX /app/installers
 USER 10001:10001
 ENV LISTEN_ADDR=0.0.0.0:8080 DATA_DIR=/app/data WEB_DIR=/app/apps/web/dist
+# Soft Go heap/runtime target, NOT a process/container hard memory cap. Large
+# attachment backup bursts otherwise retain garbage until the VPS OOM killer.
+# Operators may override through the private env_file when sizing their host.
+ENV GOMEMLIMIT=384MiB
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=6s --start-period=20s --retries=12 CMD curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/health || exit 1
 ENTRYPOINT ["msboost-server"]

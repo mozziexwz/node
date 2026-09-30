@@ -3,6 +3,7 @@ import { WholeSiteBackups } from "./whole-site-backups";
 import { api, post, array, downloadFile, RecordData } from "./api";
 import {
   Header,
+  Loading,
   Button,
   Field,
   Select,
@@ -15,12 +16,24 @@ import {
   AsyncForm,
   useData,
   date,
+  bytes,
 } from "./ui";
 export function Backups() {
-  const { data, error, reload } = useData("/api/admin/backups"),
-    { data: plan, reload: reloadPlan } = useData("/api/admin/backup-plan"),
-    { data: targetData, reload: reloadTargets } = useData(
-      "/api/admin/backup-targets",
+  const { data, error, loading, reload } = useData("/api/admin/backups"),
+    {
+      data: plan,
+      error: planError,
+      loading: planLoading,
+      reload: reloadPlan,
+    } = useData("/api/admin/backup-plan"),
+    {
+      data: targetData,
+      error: targetError,
+      loading: targetLoading,
+      reload: reloadTargets,
+    } = useData("/api/admin/backup-targets"),
+    { data: capacity, error: capacityError } = useData(
+      "/api/admin/backup-capacity",
     );
   const [tab, setTab] = useState("history"),
     [busy, setBusy] = useState(false),
@@ -59,6 +72,15 @@ export function Backups() {
       </Header>
       <ErrorNotice error={error} />
       {message && <Notice>{message}</Notice>}
+      <ErrorNotice error={capacityError} />
+      {capacity && (
+        <Notice tone={capacity.status === "normal" ? "gray" : "orange"}>
+          可恢复备份预计 {(capacity.estimatedPackedBytes / 1048576).toFixed(1)}{" "}
+          / {(capacity.maxPackedBytes / 1048576).toFixed(0)} MiB；内容预算剩余{" "}
+          {(capacity.remainingContentBytes / 1048576).toFixed(1)}{" "}
+          MiB（已预留业务记录空间）。接近上限时请清理无用附件。
+        </Notice>
+      )}
       <div className="tabs mt16">
         {[
           ["whole-site", "整站备份状态"],
@@ -84,10 +106,12 @@ export function Backups() {
             。删除只影响本机文件，远程副本与历史记录保留；恢复前回滚副本受保护。
           </Notice>
           <Table
+            loading={loading}
+            error={error}
             headers={["时间", "大小", "状态", "保存目标", "操作"]}
             rows={array(data, "backups").map((b) => [
               date(b.createdAt),
-              (b.size / 1024 / 1024).toFixed(2) + " MB",
+              bytes(b.size),
               <Badge tone={b.status === "verified" ? "green" : "orange"}>
                 {(
                   {
@@ -130,7 +154,7 @@ export function Backups() {
                   onClick={async () => {
                     if (
                       !confirm(
-                        `仅删除这份 ${date(b.createdAt)} 的本机备份（${(b.size / 1024 / 1024).toFixed(2)} MB）？远程副本和历史记录不删除。本机文件删除后不能撤销，最少有效副本保护仍会检查。`,
+                        `仅删除这份 ${date(b.createdAt)} 的本机备份（${bytes(b.size)}）？远程副本和历史记录不删除。本机文件删除后不能撤销，最少有效副本保护仍会检查。`,
                       )
                     )
                       return;
@@ -183,104 +207,131 @@ export function Backups() {
           </div>
         </div>
       )}
-      {tab === "schedule" && plan && (
-        <div className="card mt16">
-          <AsyncForm
-            onSubmit={(f) =>
-              post(
-                "/api/admin/backup-plan",
-                {
-                  enabled: f.get("enabled") === "on",
-                  mode: f.get("mode"),
-                  time: f.get("time"),
-                  hours: Number(f.get("hours")),
-                  weekday: Number(f.get("weekday")),
-                  timezone: f.get("timezone"),
-                  retentionDays: Number(f.get("retentionDays")),
-                  minCopies: Number(f.get("minCopies")),
-                  targets: f.getAll("targets"),
-                },
-                "PUT",
-              )
-            }
-            onDone={reloadPlan}
+      {tab === "schedule" && (planLoading || targetLoading) && <Loading />}
+      {tab === "schedule" && (planError || targetError) && (
+        <div className="mt16">
+          <ErrorNotice error={planError || targetError} />
+          <Notice>
+            计划或远程目标未完整读取，暂不能修改，避免覆盖已有备份设置。
+          </Notice>
+          <Button
+            onClick={() => {
+              reloadPlan();
+              reloadTargets();
+            }}
           >
-            <Check
-              label="开启自动备份"
-              name="enabled"
-              defaultChecked={plan.enabled}
-            />
-            <div className="form-grid">
-              <Select label="频率" name="mode" defaultValue={plan.mode}>
-                <option value="daily">每天</option>
-                <option value="hours">每隔 N 小时</option>
-                <option value="weekly">每周</option>
-              </Select>
-              <Field
-                label="执行时间"
-                name="time"
-                type="time"
-                defaultValue={plan.time}
-              />
-              <Field
-                label="小时间隔"
-                name="hours"
-                type="number"
-                min={1}
-                max={168}
-                defaultValue={plan.hours}
-              />
-              <Select
-                label="每周指定日"
-                name="weekday"
-                defaultValue={plan.weekday || 0}
-              >
-                {["周日", "周一", "周二", "周三", "周四", "周五", "周六"].map(
-                  (t, i) => (
-                    <option value={i} key={i}>
-                      {t}
-                    </option>
-                  ),
-                )}
-              </Select>
-              <Select label="时区" name="timezone" defaultValue={plan.timezone}>
-                <option>Asia/Shanghai</option>
-                <option>UTC</option>
-              </Select>
-              <Field
-                label="本地保留天数"
-                type="number"
-                min={1}
-                name="retentionDays"
-                defaultValue={plan.retentionDays}
-              />
-              <Field
-                label="最少成功副本数"
-                type="number"
-                min={1}
-                name="minCopies"
-                defaultValue={plan.minCopies}
-              />
-            </div>
-            <h3>远程目标</h3>
-            {targets.map((t) => (
-              <Check
-                key={t.id}
-                name="targets"
-                value={t.id}
-                defaultChecked={plan.targets?.includes(t.id)}
-                label={t.name}
-              />
-            ))}
-            <Notice>
-              每次包含数据库业务数据、站点设置、文章与附件、审计及流量记录。主密钥必须独立备份；恢复时需要原密钥。
-            </Notice>
-            {plan.enabled && (
-              <p className="mt16">下次执行：{date(plan.nextAt)}</p>
-            )}
-          </AsyncForm>
+            重新读取计划与目标
+          </Button>
         </div>
       )}
+      {tab === "schedule" &&
+        plan &&
+        targetData &&
+        !planLoading &&
+        !targetLoading &&
+        !planError &&
+        !targetError && (
+          <div className="card mt16">
+            <AsyncForm
+              onSubmit={(f) =>
+                post(
+                  "/api/admin/backup-plan",
+                  {
+                    enabled: f.get("enabled") === "on",
+                    mode: f.get("mode"),
+                    time: f.get("time"),
+                    hours: Number(f.get("hours")),
+                    weekday: Number(f.get("weekday")),
+                    timezone: f.get("timezone"),
+                    retentionDays: Number(f.get("retentionDays")),
+                    minCopies: Number(f.get("minCopies")),
+                    targets: f.getAll("targets"),
+                  },
+                  "PUT",
+                )
+              }
+              onDone={reloadPlan}
+            >
+              <Check
+                label="开启自动备份"
+                name="enabled"
+                defaultChecked={plan.enabled}
+              />
+              <div className="form-grid">
+                <Select label="频率" name="mode" defaultValue={plan.mode}>
+                  <option value="daily">每天</option>
+                  <option value="hours">每隔 N 小时</option>
+                  <option value="weekly">每周</option>
+                </Select>
+                <Field
+                  label="执行时间"
+                  name="time"
+                  type="time"
+                  defaultValue={plan.time}
+                />
+                <Field
+                  label="小时间隔"
+                  name="hours"
+                  type="number"
+                  min={1}
+                  max={168}
+                  defaultValue={plan.hours}
+                />
+                <Select
+                  label="每周指定日"
+                  name="weekday"
+                  defaultValue={plan.weekday || 0}
+                >
+                  {["周日", "周一", "周二", "周三", "周四", "周五", "周六"].map(
+                    (t, i) => (
+                      <option value={i} key={i}>
+                        {t}
+                      </option>
+                    ),
+                  )}
+                </Select>
+                <Select
+                  label="时区"
+                  name="timezone"
+                  defaultValue={plan.timezone}
+                >
+                  <option>Asia/Shanghai</option>
+                  <option>UTC</option>
+                </Select>
+                <Field
+                  label="本地保留天数"
+                  type="number"
+                  min={1}
+                  name="retentionDays"
+                  defaultValue={plan.retentionDays}
+                />
+                <Field
+                  label="最少成功副本数"
+                  type="number"
+                  min={1}
+                  name="minCopies"
+                  defaultValue={plan.minCopies}
+                />
+              </div>
+              <h3>远程目标</h3>
+              {targets.map((t) => (
+                <Check
+                  key={t.id}
+                  name="targets"
+                  value={t.id}
+                  defaultChecked={plan.targets?.includes(t.id)}
+                  label={t.name}
+                />
+              ))}
+              <Notice>
+                每次包含数据库业务数据、站点设置、文章与附件、审计及流量记录。主密钥必须独立备份；恢复时需要原密钥。
+              </Notice>
+              {plan.enabled && (
+                <p className="mt16">下次执行：{date(plan.nextAt)}</p>
+              )}
+            </AsyncForm>
+          </div>
+        )}
       {tab === "targets" && (
         <div className="card mt16">
           <div className="between">
@@ -304,14 +355,50 @@ export function Backups() {
               新增目标
             </Button>
           </div>
+          <ErrorNotice error={targetError} />
+          {targetError && <Button onClick={reloadTargets}>重新读取目标</Button>}
           <Table
-            headers={["目标", "服务器", "认证方式", "目录", "操作"]}
+            loading={targetLoading}
+            error={targetError}
+            headers={["目标", "服务器", "认证方式", "目录", "连接验证", "操作"]}
             rows={targets.map((t) => [
               t.name,
               t.host,
               t.authMode === "password" ? "SSH 密码" : "SSH 私钥",
               t.path,
+              <>
+                <Badge tone={t.testStatus === "passed" ? "green" : "orange"}>
+                  {t.testStatus === "passed"
+                    ? "最近测试通过"
+                    : t.testStatus === "failed"
+                      ? "最近测试失败"
+                      : "尚未测试"}
+                </Badge>
+                <small>
+                  {t.testedAt ? date(t.testedAt) : "保存配置不代表备份成功"}
+                </small>
+              </>,
               <div className="actions">
+                <Button
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      const result = await post(
+                        `/api/admin/backup-targets/${t.id}/test`,
+                        {},
+                      );
+                      setMessage(result.message);
+                    } catch (e) {
+                      setMessage((e as Error).message);
+                    } finally {
+                      setBusy(false);
+                      reloadTargets();
+                    }
+                  }}
+                >
+                  测试连接及回读
+                </Button>
                 <Button
                   onClick={() => {
                     setTargetAuthMode(t.authMode || "private_key");
@@ -352,7 +439,8 @@ export function Backups() {
             恢复后原节点可能继续转发，相关资源将保留，不会自动释放端口或覆盖配置。
             恢复前保存受保护的私有回滚副本；恢复后退出全部会话，撤销 Agent
             凭据，停用控制面的线路定义，保持维护。Token
-            失效不代表旧业务已停止。请在面板服务器运行 msboost，选择菜单 16“恢复节点管理连接向导”，按提示核对后恢复连接。
+            失效不代表旧业务已停止。请在面板服务器运行 msboost，选择菜单
+            16“恢复节点管理连接向导”，按提示核对后恢复连接。
           </Notice>
           <div className="mt24">
             <input

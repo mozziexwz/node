@@ -14,7 +14,7 @@ relay_uninstall_managed_manifest() (
   for entry in "$dir"/*; do
     name=${entry##*/}
     case $name in
-      managed-v1|gost-v3.3.0) relay_uninstall_regular "$entry" && [[ $(stat -c %u -- "$entry") == "$owner" ]] || return 1 ;;
+      managed-v1|gost-v3.3.0|relay-firewall) relay_uninstall_regular "$entry" && [[ $(stat -c %u -- "$entry") == "$owner" ]] || return 1 ;;
       *) return 1 ;;
     esac
   done
@@ -168,6 +168,17 @@ binary=/usr/local/bin/msboost-agent
 envfile=/etc/msboost-relay.env
 unitfile=/etc/systemd/system/msboost-relay.service
 unit=msboost-relay.service
+firewall_unit=/etc/systemd/system/msboost-relay-firewall.service
+firewall_paths=()
+if [[ -e $firewall_unit || -L $firewall_unit ]]; then
+  relay_uninstall_regular "$firewall_unit" && [[ $(stat -c %u "$firewall_unit") == 0 && $((8#$(stat -c %a "$firewall_unit") & 0022)) == 0 ]] &&
+    grep -Fxq '# MSBOOST_RELAY_FIREWALL_MANAGED_V1' "$firewall_unit" &&
+    grep -Fxq 'ExecStart=/usr/local/libexec/msboost-agent/relay-firewall --capability relay-firewall' "$firewall_unit" &&
+    [[ $(grep -c '^ExecStart=' "$firewall_unit") == 1 && -z $(systemctl show msboost-relay-firewall.service -p DropInPaths --value) ]] &&
+    ! grep -Eq '^[[:space:]]*Exec(StartPre|StartPost|Stop|StopPost|Reload|Condition)[[:space:]]*=' "$firewall_unit" || relay_uninstall_fail '防火墙维护单元归属不明确，没有停止服务。'
+  relay_uninstall_regular "$managed/relay-firewall" && [[ $(stat -c %u "$managed/relay-firewall") == 0 && $((8#$(stat -c %a "$managed/relay-firewall") & 0022)) == 0 ]] || relay_uninstall_fail '防火墙维护程序不可信，没有停止服务。'
+  firewall_paths+=("${firewall_unit#/}")
+fi
 marker=$managed/managed-v1
 relay_uninstall_managed_manifest "$managed" || relay_uninstall_fail '受管程序目录包含外来文件或不安全链接。'
 relay_uninstall_regular "$marker" && [[ $(stat -c %u -- "$marker") == 0 && $(< "$marker") == MSBOOST_AGENT_MANAGED_V1 ]] || relay_uninstall_fail '受管所有权标记缺失或无效，不清理。'
@@ -208,9 +219,15 @@ relay_uninstall_stopped "$unit" || relay_uninstall_fail 'Relay 或转发子进�
 relay_uninstall_state_manifest "$state" || relay_uninstall_fail '停止后目录出现未识别文件或不安全链接；没有删除文件。'
 relay_uninstall_identity_preflight "$state" "$agent_id" "$server" "$require_v2" || relay_uninstall_fail '停止后节点身份发生变化；没有删除文件。'
 # Existing backups are outside the deletion scope and never gate uninstall.
-tar -czf "$backup/relay.tar.gz" -C / -- "${unitfile#/}" "${envfile#/}" "${binary#/}" "${managed#/}" "${state#/}" || relay_uninstall_fail '无法保存完整私有备份；服务已停止，但没有删除文件。'
+tar -czf "$backup/relay.tar.gz" -C / -- "${unitfile#/}" "${envfile#/}" "${binary#/}" "${managed#/}" "${state#/}" "${firewall_paths[@]}" || relay_uninstall_fail '无法保存完整私有备份；服务已停止，但没有删除文件。'
 tar -tzf "$backup/relay.tar.gz" >/dev/null || relay_uninstall_fail '私有备份校验失败；服务已停止，但没有删除文件。'
 systemctl disable "$unit" >/dev/null || relay_uninstall_fail '无法禁用旧 Relay；状态尚未删除。'
+if (( ${#firewall_paths[@]} )); then
+  systemctl stop msboost-relay-firewall.service || relay_uninstall_fail '维护服务停止失败，已保留组件和备份。'
+  "$managed/relay-firewall" --capability relay-firewall-cleanup || relay_uninstall_fail '本项目防火墙规则尚未清理，已保留组件和备份；不删除其他规则。'
+  systemctl disable msboost-relay-firewall.service >/dev/null || relay_uninstall_fail '维护服务禁用失败，已保留组件。'
+  rm -f -- "$firewall_unit" "$managed/relay-firewall"
+fi
 rm -f -- "$unitfile" "$envfile"
 systemctl daemon-reload
 [[ $state == /var/lib/private/msboost-relay || $state == /var/lib/msboost-relay ]] || relay_uninstall_fail '状态路径超出受管范围。'

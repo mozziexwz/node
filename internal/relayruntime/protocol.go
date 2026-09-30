@@ -2,7 +2,7 @@
 // no SSH, installer, DD, or general command endpoint.
 package relayruntime
 
-type Config struct{ ServerURL, EnrollmentToken, StateDir, GostBinary, OfflinePolicy string }
+type Config struct{ ServerURL, EnrollmentToken, StateDir, GostBinary, OfflinePolicy, Version, FirewallStatusPath string }
 type Rule struct {
 	ID                 string      `json:"id"`
 	Version            int64       `json:"version"`

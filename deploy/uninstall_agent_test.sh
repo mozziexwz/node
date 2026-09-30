@@ -47,6 +47,8 @@ mkdir -- "$managed"
 printf 'MSBOOST_AGENT_MANAGED_V1\n' > "$managed/managed-v1"
 printf 'synthetic gost\n' > "$managed/gost-v3.3.0"
 relay_uninstall_managed_manifest "$managed" "$(id -u)"
+printf 'synthetic firewall helper\n' > "$managed/relay-firewall"
+relay_uninstall_managed_manifest "$managed" "$(id -u)"
 printf '%s\n' unrelated > "$managed/foreign"
 if relay_uninstall_managed_manifest "$managed" "$(id -u)"; then echo 'accepted foreign managed asset' >&2; exit 1; fi
 fixture_active=inactive fixture_main=0 fixture_control=0 fixture_group=''

@@ -61,7 +61,9 @@ docker() {
       IFS= read -r second
       IFS= read -r confirm
       if IFS= read -r extra; then fail 'extra secret frame data'; fi
-      [[ $email == "$MOCK_EMAIL" && $first == "$TEST_SECRET" && $second == "$TEST_SECRET" && $confirm == "$MOCK_CONFIRM" ]] || fail 'invalid stdin frame'
+      [[ $email == "$MOCK_EMAIL" && $first == "$MOCK_FIRST" && $second == "$MOCK_SECOND" && $confirm == "$MOCK_CONFIRM" ]] || fail 'invalid stdin frame'
+      # Password policy is delegated to the shared Go validator, not Bash.
+      [[ ${#first} -ge 8 && ${#first} -le 72 ]] || return 64
       [[ $MOCK_TOOL_FAILURE == 0 ]] || return 63
       printf '%s\n' 'synthetic-admin-updated' ;;
     *) fail 'administrator command attempted service lifecycle mutation' ;;
@@ -102,7 +104,7 @@ for reason in cancel mismatch short long invalid_email image unhealthy nonroot n
     esac
     if admin_password_site; then fail 'rejected administrator flow succeeded'; fi
   ) > "$OUTPUT" 2>&1 || fail 'rejection assertion failed'
-  if grep -q '^run ' "$TRACE"; then fail 'rejected input started helper'; fi
+  if [[ $reason != short && $reason != long ]] && grep -q '^run ' "$TRACE"; then fail 'rejected input started helper'; fi
   check_no_leak
 done
 : > "$TRACE"

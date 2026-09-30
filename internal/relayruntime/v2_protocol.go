@@ -58,11 +58,12 @@ type V2Command struct {
 }
 
 type V2Ack struct {
-	CommandID   string `json:"commandId"`
-	RuleID      string `json:"ruleId"`
-	Generation  int64  `json:"generation"`
-	RuntimeHash string `json:"runtimeHash,omitempty"`
-	State       string `json:"state"` // persisted, ready, failed, stopping, stopped
+	CommandID      string `json:"commandId"`
+	RuleID         string `json:"ruleId"`
+	Generation     int64  `json:"generation"`
+	RuntimeHash    string `json:"runtimeHash,omitempty"`
+	State          string `json:"state"`                    // persisted, ready, failed, stopping, stopped
+	FirewallStatus string `json:"firewallStatus,omitempty"` // local only, not public reachability
 }
 
 // Each epoch belongs to one immutable billing grant. Cross-month or uncertain
@@ -84,6 +85,7 @@ type V2TrafficAck struct {
 
 type V2SyncRequest struct {
 	ProtocolVersion           int                 `json:"protocolVersion"`
+	Version                   string              `json:"version,omitempty"`
 	AgentID                   string              `json:"agentId"`
 	AgentInstanceID           string              `json:"agentInstanceId"`
 	Sequence                  int64               `json:"sequence"`
@@ -99,18 +101,19 @@ type V2SyncRequest struct {
 }
 
 type V2SyncResponse struct {
-	ProtocolVersion  int                  `json:"protocolVersion"`
-	AgentID          string               `json:"agentId"`
-	RequestID        string               `json:"requestId"`
-	ControlEpoch     string               `json:"controlEpoch"`
-	PreviousRevision int64                `json:"previousRevision"`
-	Revision         int64                `json:"revision"`
-	Status           string               `json:"status"` // ready or recovery_required; never implicit clear
-	OfflinePolicy    string               `json:"offlinePolicy"`
-	Commands         []V2Command          `json:"commands"`
-	TrafficAcks      []V2TrafficAck       `json:"trafficAcks"`
-	TargetProbes     []TargetProbeRequest `json:"targetProbes,omitempty"`
-	TargetProbeAcks  []string             `json:"targetProbeAcks,omitempty"`
+	FirewallStatusSupported bool                 `json:"-"` // Negotiated by HTTP header; old strict JSON peers remain compatible.
+	ProtocolVersion         int                  `json:"protocolVersion"`
+	AgentID                 string               `json:"agentId"`
+	RequestID               string               `json:"requestId"`
+	ControlEpoch            string               `json:"controlEpoch"`
+	PreviousRevision        int64                `json:"previousRevision"`
+	Revision                int64                `json:"revision"`
+	Status                  string               `json:"status"` // ready or recovery_required; never implicit clear
+	OfflinePolicy           string               `json:"offlinePolicy"`
+	Commands                []V2Command          `json:"commands"`
+	TrafficAcks             []V2TrafficAck       `json:"trafficAcks"`
+	TargetProbes            []TargetProbeRequest `json:"targetProbes,omitempty"`
+	TargetProbeAcks         []string             `json:"targetProbeAcks,omitempty"`
 }
 
 // Revision is a monotonic catalogue watermark, not an ACK of all commands.

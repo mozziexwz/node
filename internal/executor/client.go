@@ -10,7 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/mozziexwz/node/internal/buildinfo"
 )
 
 // Sent on every authenticated poll/heartbeat, not inferred from a release
@@ -43,13 +46,20 @@ func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
 	}
 	client := &http.Client{Timeout: 35 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 	base := strings.TrimRight(serverURL, "/")
+	var pending atomic.Pointer[Result]
 	go func() {
 		for waitContext(ctx, 20*time.Second) {
-			request, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/executor/heartbeat", bytes.NewBufferString("{}"))
+			status := map[string]any{}
+			if out := pending.Load(); out != nil {
+				status = map[string]any{"taskId": out.ID, "lease": out.Lease, "waitingResult": true}
+			}
+			body, _ := json.Marshal(status)
+			request, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/executor/heartbeat", bytes.NewReader(body))
 			request.Header.Set("Authorization", "Bearer "+token)
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
 			request.Header.Set("X-MSBOOST-Scoped-Cleanup", "1")
+			request.Header.Set("X-MSBOOST-Agent-Version", buildinfo.Version)
 			response, err := client.Do(request)
 			if err == nil {
 				response.Body.Close()
@@ -61,6 +71,7 @@ func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
 		req.Header.Set("X-MSBOOST-Scoped-Cleanup", "1")
+		req.Header.Set("X-MSBOOST-Agent-Version", buildinfo.Version)
 		resp, err := client.Do(req)
 		if err != nil {
 			if !waitContext(ctx, 3*time.Second) {
@@ -74,10 +85,8 @@ func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
 		}
 		if resp.StatusCode != 200 {
 			resp.Body.Close()
-			if resp.StatusCode != 204 {
-				if !waitContext(ctx, 3*time.Second) {
-					break
-				}
+			if !waitContext(ctx, 3*time.Second) {
+				break
 			}
 			continue
 		}
@@ -96,28 +105,64 @@ func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
 		cancel()
 		job = RequestlessJob(job)
 		body, _ := json.Marshal(result)
-		// Retry result delivery only. Server rejects replay after the first ACK.
-		for attempt := 0; attempt < 5; attempt++ {
-			req, _ = http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/executor/result", bytes.NewReader(body))
-			req.Header.Set("Authorization", "Bearer "+token)
-			req.Header.Set("Content-Type", "application/json")
-			resp, err = client.Do(req)
-			if err == nil {
-				status := resp.StatusCode
-				resp.Body.Close()
-				if status == 200 || status == 409 {
-					break
-				}
-				if status == 401 {
-					return errors.New("executor token rejected")
-				}
-			}
-			if !waitContext(ctx, time.Duration(attempt+1)*time.Second) {
-				break
-			}
+		pending.Store(&Result{ID: result.ID, Lease: result.Lease})
+		// A one-item memory outbox blocks new work until its ACK. No SSH secrets
+		// or result configuration is written to disk. Never replay execution.
+		err = deliverResult(ctx, client, base, token, body, resultRetryPolicy{maxAge: 30 * time.Minute, now: time.Now, wait: waitContext})
+		pending.Store(nil)
+		if err != nil {
+			return err
 		}
 	}
 	return ctx.Err()
+}
+
+type resultRetryPolicy struct {
+	maxAge time.Duration
+	now    func() time.Time
+	wait   func(context.Context, time.Duration) bool
+}
+
+func deliverResult(ctx context.Context, client *http.Client, base, token string, body []byte, p resultRetryPolicy) error {
+	deadline := p.now().Add(p.maxAge)
+	delay := time.Second
+	for ctx.Err() == nil {
+		remaining := deadline.Sub(p.now())
+		if remaining <= 0 {
+			break
+		}
+		requestCtx, cancel := context.WithTimeout(ctx, remaining)
+		req, _ := http.NewRequestWithContext(requestCtx, http.MethodPost, base+"/api/executor/result", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(req)
+		cancel()
+		if err == nil {
+			status := response.StatusCode
+			response.Body.Close()
+			if status == http.StatusOK {
+				return nil
+			}
+			if status == 401 || status == 403 || status == 409 || status == 400 || status == 413 {
+				return errors.New("result delivery rejected; remote operation was not repeated; check the original task and VPS before releasing its hold")
+			}
+		}
+		remaining = deadline.Sub(p.now())
+		if delay > remaining {
+			delay = remaining
+		}
+		if delay <= 0 || !p.wait(ctx, delay) {
+			break
+		}
+		delay *= 2
+		if delay > 30*time.Second {
+			delay = 30 * time.Second
+		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return errors.New("result delivery expired after 30 minutes; remote operation was not repeated; check the task and VPS, and recover configuration from the VPS if needed")
 }
 func RequestlessJob(j Job) Job { j.Request = Request{}; j.Script = Asset{}; return j }
 func waitContext(ctx context.Context, d time.Duration) bool {

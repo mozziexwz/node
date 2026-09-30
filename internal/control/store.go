@@ -143,6 +143,9 @@ func (s *Store) transactionWithBackupPause(write, gateOperation bool, fn func(*S
 		if encoded, err = json.Marshal(state); err != nil {
 			return err
 		}
+		if backupPackedBudget(len(encoded)) > backupMaxBytes && len(encoded) >= len(raw) {
+			return errBackupStateCapacity
+		}
 		query = "UPDATE control_state SET payload=?,revision=revision+1 WHERE id=1"
 		if s.dialect == "postgres" {
 			query = "UPDATE control_state SET payload=$1,revision=revision+1 WHERE id=1"

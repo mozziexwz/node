@@ -24,6 +24,7 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 	result := make(chan executor.Result, 1)
 	job := Task{ID: ID(), UserID: userID, Kind: "front", Host: ssh.Host, State: "queued", Phase: "paid_front", Message: "等待配置此线路的客户前置机", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli()}
 	job.SSHPort, job.SSHFingerprint = ssh.Port, ssh.Fingerprint
+	envelope := &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: executor.Request{Kind: "front", SSH: ssh, ForwardTarget: &executor.Target{Host: targetHost, Port: targetPort}}, Deadline: now.Add(4 * time.Minute).UnixMilli()}, UserID: userID, QueuedAt: now, Result: result}
 	t.mu.Lock()
 	err := t.app.Store.Update(func(s *State) error {
 		if maintenance, _ := s.Settings["maintenance"].(bool); maintenance {
@@ -36,7 +37,7 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 		if !t.confirmedProbe(userID, ssh) {
 			return errors.New("请先检查并确认前置机的真实 SSH 指纹")
 		}
-		if t.targetBusy(ssh.Host) {
+		if t.targetBusy(s, ssh.Host) {
 			return errors.New("该前置机已有未结束任务")
 		}
 		if !t.hasExecutorFor(s, "front") {
@@ -53,10 +54,13 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 				}
 			}
 		}
-		return SaveDoc(s, "tasks", job.ID, job)
+		if err := SaveDoc(s, "tasks", job.ID, job); err != nil {
+			return err
+		}
+		return saveTaskOperation(s, envelope)
 	})
 	if err == nil {
-		t.envelopes[job.ID] = &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: executor.Request{Kind: "front", SSH: ssh, ForwardTarget: &executor.Target{Host: targetHost, Port: targetPort}}, Deadline: now.Add(4 * time.Minute).UnixMilli()}, UserID: userID, QueuedAt: now, Result: result}
+		t.envelopes[job.ID] = envelope
 	}
 	t.mu.Unlock()
 	if err != nil {

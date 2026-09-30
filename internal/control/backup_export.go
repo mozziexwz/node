@@ -37,7 +37,7 @@ func ExportPostgresBackup(databaseURL, key, keyFile string, output io.Writer) er
 	defer tx.Rollback()
 	var raw string
 	// Refuse oversized rows at the database before allocating the snapshot.
-	err = tx.QueryRowContext(ctx, "SELECT payload FROM control_state WHERE id=1 AND octet_length(payload)<=104857600").Scan(&raw)
+	err = tx.QueryRowContext(ctx, "SELECT payload FROM control_state WHERE id=1 AND octet_length(payload)<=$1", backupMaxStateBytes).Scan(&raw)
 	if err != nil {
 		return errors.New("无法读取现有站点快照，或快照超过 100 MB；没有创建或修改业务库")
 	}
@@ -73,7 +73,7 @@ func backupExportCipher(key, keyFile string) (cipher.AEAD, error) {
 
 func exportStateBackup(raw []byte, aead cipher.AEAD, output io.Writer) error {
 	var state State
-	if len(raw) > 100<<20 || json.Unmarshal(raw, &state) != nil || state.Users == nil || state.Sessions == nil || state.Settings == nil || state.Docs == nil {
+	if len(raw) > backupMaxStateBytes || json.Unmarshal(raw, &state) != nil || state.Users == nil || state.Sessions == nil || state.Settings == nil || state.Docs == nil {
 		return errors.New("数据库快照结构无效")
 	}
 	if err := validateRestoreReferences(&state); err != nil {

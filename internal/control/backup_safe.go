@@ -117,6 +117,11 @@ func validateRestoreIdle(s *State) error {
 	if !boolSetting(s, "maintenance") {
 		return errors.New("请先开启维护模式，然后重新预检")
 	}
+	for _, operation := range ListDocs[taskOperation](s, "task_operations") {
+		if operationBusy(operation) {
+			return errors.New("存在未结束或待核对的 VPS 操作，请先核对任务记录")
+		}
+	}
 	for _, raw := range s.Docs["tasks"] {
 		var task map[string]any
 		if json.Unmarshal(raw, &task) != nil {
@@ -402,12 +407,39 @@ func isolateRestoredState(s *State, disaster bool) error {
 		}
 	}
 	for key, raw := range s.Docs["tasks"] {
-		var task map[string]any
+		var task Task
 		if json.Unmarshal(raw, &task) != nil {
 			return errors.New("任务记录无效")
 		}
-		if task["state"] == "running" || task["state"] == "queued" {
-			task["state"], task["message"] = "interrupted", "备份恢复后任务不自动重放"
+		op, exists := LoadDoc[taskOperation](s, "task_operations", key)
+		uncertain := task.State == "running" || task.State == "unknown" || task.State == "executed" || task.State == "interrupted"
+		if exists || uncertain || task.State == "queued" {
+			if !exists {
+				op = taskOperation{ID: key, Hosts: []string{taskHost(task.Host)}, Status: "resolved"}
+				op.Request.Kind = task.Kind
+			}
+			// Restoring a snapshot never grants an old executor permission to
+			// report into the new site, even after that executor is re-enrolled.
+			op.LeaseHash, op.Receipt = "", ""
+			if op.Status == "queued" {
+				op.Status = "resolved"
+			} else if (exists && op.Status != "resolved") || (!exists && uncertain && task.Kind != "fingerprint") {
+				op.Status = "review"
+			}
+			if task.Kind == "fingerprint" {
+				op.Status = "resolved"
+			}
+			task.NeedsReview = operationBusy(op)
+			if task.NeedsReview {
+				op.Status = "review"
+				task.NextStep = "请在 VPS 控制台确认原操作已经结束，再从任务详情解除占用"
+			}
+			if task.State == "running" || task.State == "queued" {
+				task.State, task.Message = "interrupted", "备份恢复后任务不自动重放"
+			}
+			if err := SaveDoc(s, "task_operations", key, op); err != nil {
+				return err
+			}
 			if err := SaveDoc(s, "tasks", key, task); err != nil {
 				return err
 			}

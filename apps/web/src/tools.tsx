@@ -346,6 +346,9 @@ const phases: Record<string, string> = {
   executor: "执行机通信",
   executor_timeout: "执行机通信超时",
   server_restart: "服务重启中断",
+  waiting_result: "等待执行结果回传",
+  manually_reconciled: "已核实操作结束",
+  executor_revoked: "执行机已撤销，需核实 VPS",
   ownership: "受管所有权检查",
   cleanup: "清理",
 };
@@ -372,7 +375,7 @@ export function TaskDetail({
   task,
   onClose,
   owner,
-  save = true,
+  save = false,
 }: {
   task: RecordData;
   onClose: () => void;
@@ -386,7 +389,11 @@ export function TaskDetail({
   useEffect(() => {
     let live = true;
     const timer = setInterval(() => {
-      if (!["queued", "running"].includes(current.state)) return;
+      if (
+        !["queued", "running"].includes(current.state) &&
+        !current.needsReview
+      )
+        return;
       api("/api/tasks/" + task.id)
         .then((r) => {
           if (live) setCurrent(r.task || r);
@@ -399,7 +406,7 @@ export function TaskDetail({
       live = false;
       clearInterval(timer);
     };
-  }, [task.id, current.state]);
+  }, [task.id, current.state, current.needsReview]);
   useEffect(() => {
     if (
       !current.configAvailable ||
@@ -526,6 +533,35 @@ export function TaskDetail({
           >
             <Download size={16} />
             下载配置
+          </Button>
+        </div>
+      )}
+      {current.needsReview && (
+        <div className="mt24">
+          <Notice tone="orange">
+            此服务器仍被原任务占用。请从 VPS
+            控制台确认部署、清理或重装已结束；解除占用不会停止远程命令，也不代表原任务成功。
+          </Notice>
+          <Button
+            className="mt16"
+            onClick={async () => {
+              if (
+                !confirm(
+                  "已在 VPS 控制台核实原操作结束，且没有仍在运行的安装、清理或重装程序？仅确认后才能继续新操作。",
+                )
+              )
+                return;
+              try {
+                await post(`/api/tasks/${current.id}/reconcile`, {
+                  confirm: "CONFIRM_TASK_ENDED",
+                });
+                setCurrent(await api(`/api/tasks/${current.id}`));
+              } catch (e) {
+                setError((e as Error).message);
+              }
+            }}
+          >
+            已核实结束，解除占用
           </Button>
         </div>
       )}
@@ -809,7 +845,7 @@ export function ToolPage({
                 <ErrorNotice error={error} />
                 {(kind === "deploy" || kind === "relay") && (
                   <Notice tone="orange">
-                    仅支持 Debian 系统部署（Debian 11 或以上版本）。
+                    仅支持 Debian 11、12、13，不支持其他发行版或版本。
                   </Notice>
                 )}
                 <div className="form-actions">
@@ -1016,13 +1052,24 @@ function CleanupPanel({
         )}
       <ErrorNotice error={error} />
       {task && (
-        <TaskDetail task={task} owner={user.id} onClose={() => setTask(null)} />
+        <TaskDetail
+          task={task}
+          owner={user.id}
+          save={false}
+          onClose={() => setTask(null)}
+        />
       )}
     </details>
   );
 }
-export function TasksPage({ user }: { user: RecordData }) {
-  const { data, error, reload } = useData(
+export function TasksPage({
+  user,
+  settings,
+}: {
+  user: RecordData;
+  settings: RecordData;
+}) {
+  const { data, error, loading, reload } = useData(
     user.role === "admin" ? "/api/admin/tasks" : "/api/tasks",
   );
   const [selected, setSelected] = useState<RecordData | null>(null),
@@ -1049,7 +1096,11 @@ export function TasksPage({ user }: { user: RecordData }) {
     <>
       <Header
         title={user.role === "admin" ? "任务审计" : "任务记录"}
-        sub="任务结果保存在服务器；免费配置只保存在生成时的浏览器。"
+        sub={
+          settings.localSave !== false
+            ? "任务结果保存在服务器；免费配置会自动加密保存到当前浏览器，请下载备份。"
+            : "自动保存已关闭；免费配置仅临时交付，请及时下载。已有本机副本不会自动删除。"
+        }
       >
         <Button onClick={reload}>刷新</Button>
       </Header>
@@ -1059,6 +1110,8 @@ export function TasksPage({ user }: { user: RecordData }) {
       </Notice>
       <div className="card flush mt24">
         <Table
+          loading={loading}
+          error={error}
           headers={["任务 / 时间", "服务器", "状态", "配置", "操作"]}
           rows={tasks.map((t) => [
             <>
@@ -1143,6 +1196,7 @@ export function TasksPage({ user }: { user: RecordData }) {
       {selected && (
         <TaskDetail
           owner={user.id}
+          save={settings.localSave !== false}
           task={selected}
           onClose={() => {
             setSelected(null);
@@ -1196,7 +1250,7 @@ export function TasksPage({ user }: { user: RecordData }) {
           </Button>
         </Modal>
       )}
-      {!tasks.length && !error && (
+      {!loading && !tasks.length && !error && (
         <Empty>还没有任务。请从一项免费工具开始。</Empty>
       )}
     </>

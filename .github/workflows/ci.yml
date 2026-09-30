@@ -68,6 +68,15 @@ jobs:
           go test -race -count=1 -v ./internal/executor -run '^TestCleanupPython(IsolatedInventoryAndMutation|MSBOOSTOwnershipAndRetainedData)$'
           go test -race -count=1 -v ./internal/control -run '^TestOfflineRestorePostgresIntegration$'
       - run: go vet ./...
+      - name: Verify UFW forwarding rules in private mount and network namespaces
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ufw iptables iproute2
+          mkdir -p .runtime
+          go test -c -o .runtime/relay-firewall.test ./internal/relayfirewall
+          sudo bash deploy/relay_firewall_test.sh "$PWD/.runtime/relay-firewall.test"
+          go build -o .runtime/relay-firewall-agent ./cmd/agent
+          sudo bash deploy/relay_firewall_systemd_test.sh "$PWD/.runtime/relay-firewall-agent" "$PWD/.runtime/relay-firewall.test"
       - name: Verify Cloudflare trusted proxy boundaries with real Caddy
         run: |
           mkdir -p .runtime/caddy
@@ -133,6 +142,7 @@ jobs:
           bash agent.sh --help
           bash deploy/manage_test.sh
           bash deploy/host_caddy_test.sh
+          bash deploy/caddy_restore_retry_test.sh
           bash deploy/bootstrap_test.sh
           bash deploy/backup_activity_recovery_test.sh
           bash deploy/relay_recovery_test.sh

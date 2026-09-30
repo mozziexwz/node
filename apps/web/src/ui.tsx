@@ -160,9 +160,13 @@ export function Badge({
 export function Table({
   headers,
   rows,
+  loading = false,
+  error = "",
 }: {
   headers: React.ReactNode[];
   rows: React.ReactNode[][];
+  loading?: boolean;
+  error?: string;
 }) {
   return (
     <div className="table-wrap">
@@ -184,7 +188,7 @@ export function Table({
           ))}
         </tbody>
       </table>
-      {!rows.length && <Empty />}
+      {!rows.length && (loading ? <Loading /> : error ? null : <Empty />)}
     </div>
   );
 }
@@ -275,6 +279,12 @@ export function useData<T = RecordData>(url: string | null) {
     reload: () => setRevision((x) => x + 1),
     setData,
   };
+}
+export function bytes(value: number) {
+  if (!Number.isFinite(value) || value < 0) return "未知";
+  if (value < 1024) return `${value} B`;
+  if (value < 1048576) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / 1048576).toFixed(2)} MiB`;
 }
 export function Loading() {
   return (

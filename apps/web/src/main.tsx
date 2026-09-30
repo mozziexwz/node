@@ -277,7 +277,7 @@ function App() {
       );
       break;
     case "tasks":
-      page = <TasksPage user={user} />;
+      page = <TasksPage user={user} settings={settings} />;
       break;
     case "account":
       page = <Account user={user} onRefresh={() => void refresh()} />;

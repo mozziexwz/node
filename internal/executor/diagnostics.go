@@ -30,7 +30,7 @@ var diagnostics = map[string]Diagnostic{
 	"archive_failed":         {"archive_failed", "extract", "安装资源解压失败或归档内容无效", "检查磁盘可用空间及 tar 支持；不要删除 SHA256 校验或执行未验证的资源。"},
 	"binary_unusable":        {"binary_unusable", "binary", "已校验程序无法通过架构或启动检查", "检查程序架构与可执行目录的挂载选项；不要将 /run 改为可执行，也不要跳过资源校验。"},
 	"install_failed":         {"install_failed", "install", "写入受管组件失败", "检查 /usr/local/libexec 的磁盘空间、文件权限和只读挂载；不要覆盖未知或使用中的共享文件。"},
-	"target_unreachable":     {"target_unreachable", "target", "转发目标 TCP 连接失败", "检查目标节点地址、监听端口及节点安全组。"},
+	"target_unreachable":     {"target_unreachable", "target", "转发目标 TCP 连接失败", "检查目标节点端口的公网连通性、本机防火墙（如 UFW）及服务商安全组；本地监听成功不代表公网可达。前置配置失败时先检查权益节点入口，不必反复重装前置机。"},
 	"service_failed":         {"service_failed", "service", "远端服务启动或监听检查失败", "检查服务监听端口是否被占用，以及 VPS 的 systemd 和资源限制。"},
 	"bbr_failed":             {"bbr_failed", "bbr", "目标 VPS 的 BBR 网络参数未能配置", "检查内核是否支持 tcp_bbr，以及 sysctl.d 权限、软件源和网络参数。"},
 	"executor_configuration": {"executor_configuration", "executor", "执行机缺少固定版本下载配置", "请管理员升级执行机，确认当前架构的 GOST 地址和 SHA256 已配置。"},

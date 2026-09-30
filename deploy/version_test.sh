@@ -48,6 +48,8 @@ version_check_tree() {
   grep -Fq -- 'copyText(relayFreshResetCommand)' "$repo/apps/web/src/admin.tsx" || return 1
   value=$(grep -Eo 'https://raw\.githubusercontent\.com/mozziexwz/node/[^ /`]+/deploy/uninstall-agent\.sh' "$repo/apps/web/src/admin.tsx") || return 1
   [[ $value == "https://raw.githubusercontent.com/mozziexwz/node/$tag/deploy/uninstall-agent.sh" ]] || return 1
+  value=$(grep -Eo 'https://raw\.githubusercontent\.com/mozziexwz/node/[^ /`]+/deploy/cleanup-agent\.sh' "$repo/apps/web/src/admin.tsx") || return 1
+  [[ $value == "https://raw.githubusercontent.com/mozziexwz/node/$tag/deploy/cleanup-agent.sh" ]] || return 1
   grep -Fq -- 'copyText(relayUninstallCommand(deletedAgent.id))' "$repo/apps/web/src/admin.tsx" || return 1
 }
 version_test_main() {

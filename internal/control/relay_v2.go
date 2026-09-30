@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mozziexwz/node/internal/relayruntime"
@@ -140,6 +141,12 @@ func relayV2AckMatches(command RelayV2Command, ack relayruntime.V2Ack) bool {
 	return ack.CommandID == command.CommandID && ack.RuleID == command.RuleID && ack.Generation == command.Generation && ack.RuntimeHash == command.RuntimeHash
 }
 func relayV2KnownAck(s *State, agent RelayAgent, ack relayruntime.V2Ack) bool {
+	if ack.FirewallStatus != "" && ack.FirewallStatus != "ready" && ack.FirewallStatus != "pending" && ack.FirewallStatus != "error" {
+		return false
+	}
+	if ack.State == "ready" && (ack.FirewallStatus == "pending" || ack.FirewallStatus == "error") {
+		return false
+	}
 	command, ok := LoadDoc[RelayV2Command](s, "relay_v2_command_history", ack.CommandID)
 	if !ok || command.AgentID != agent.ID || !relayV2AckMatches(command, ack) {
 		return false
@@ -182,6 +189,7 @@ func relayV2ApplyAck(s *State, agent RelayAgent, ack relayruntime.V2Ack, now int
 				continue
 			}
 			seg.AckState, seg.RuntimeState, seg.AckAt, seg.RuntimeObservedAt = ack.State, ack.State, now, now
+			seg.FirewallStatus = ack.FirewallStatus
 			if ack.State == "ready" {
 				seg.AppliedGeneration, seg.EverReady = ack.Generation, true
 			}
@@ -385,6 +393,7 @@ func decodeRelayV2(r *http.Request, in *relayruntime.V2SyncRequest) error {
 }
 
 func (a *App) relaySyncAgentV2(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-MSBOOST-Relay-Firewall", "1")
 	var in relayruntime.V2SyncRequest
 	if err := decodeRelayV2(r, &in); err != nil {
 		commerceError(w, 400, err)
@@ -436,6 +445,9 @@ func (a *App) relaySyncAgentV2(w http.ResponseWriter, r *http.Request) {
 		}
 		agent.ProtocolVersion, agent.OfflinePolicy, agent.Capabilities = relayruntime.ProtocolV2, relayruntime.KeepLast, append([]string(nil), in.Capabilities...)
 		if !conflict && freshObservation {
+			if len(in.Version) <= 64 && in.Version != "" && !strings.ContainsAny(in.Version, "\x00\r\n\t ") {
+				agent.Version = in.Version
+			}
 			clearRelayEnrollmentRetry(&agent)
 			if newInstance {
 				if err := SaveDoc(s, "relay_v2_retired_instances", agent.ID+":"+catalog.InstanceID, true); err != nil {

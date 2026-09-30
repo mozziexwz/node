@@ -99,14 +99,14 @@ GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/
 
 ## 执行机管理
 
-- `GET /api/admin/executors` 返回 `{executors:[{id,name,status,createdAt,lastSeenAt,ip,online}]}`。`status` 为管理状态 `active` / `disabled`；`online` 仅在启用、有心跳且间隔小于 90 秒时为 true。
+- `GET /api/admin/executors` 返回 `{executors:[{id,name,status,createdAt,lastSeenAt,ip,online}]}`。`status` 为 `active` / `draining` / `disabled`；draining 停止接新任务，仍可补报已有结果。有最近 90 秒内心跳的 active / draining 执行机显示在线；version 显示构建版本。
 - `ip` 是最近一次轮询/心跳的请求来源，按控制面可信代理配置解析，不直接相信任意 `X-Forwarded-For`；可能是 NAT 出口，离线后保留最后观察值。
 - `POST /api/admin/executors` 接受 `{name}`，返回 `{executor,token}`。令牌只显示一次，数据库仅存哈希，不能认证 relay Agent。
 - `PATCH /api/admin/executors/{id}` 接受 `{name?,status?:"active"|"disabled"}`。
 - `POST /api/admin/executors/{id}/enrollment` 返回新 `{token}` 并清空心跳；有已交付待确认任务时拒绝重置。
-- `DELETE /api/admin/executors/{id}` 撤销令牌，不能召回已交付任务或证明 VPS 操作已取消。
+- `DELETE /api/admin/executors/{id}` 拒绝存在待核实任务的执行机。忙时普通停用进入 draining，完成后停用。独立紧急撤销接口 `POST /api/admin/executors/{id}/revoke` 要求 `{confirm:"REVOKE_EXECUTOR"}`，撤销凭据但不召回远程命令，任务保留待核对占用。
 - 执行机以 `Authorization: Bearer ...` 调用 `GET /api/executor/next`，长轮询 25 秒，无任务返回 204。带唯一租约的信封仅交付一次，丢失响应不能重新执行。
-- `POST /api/executor/result` 正常返回 200，重复/过期租约返回 409；可重试结果交付，不可重试执行。
+- `POST /api/executor/result` 正常返回 200；同一执行机、授权及完全相同的已保存结果重复回传也返回 200，内容不同或授权失效返回 409。执行机在内存中最多保留结果 30 分钟，指数退避重试期间不领取下一任务，只补报结果、不再次执行命令；进程退出后不能从磁盘恢复敏感配置。
 - `POST /api/executor/heartbeat` 每 20 秒更新心跳，长任务期间仍发送。
 
 执行机以 `msboost-agent --capability executor` 运行，配置 `MSBOOST_SERVER_URL`、`MSBOOST_EXECUTOR_TOKEN` 和两架构的 `GOST_*_URL` / `GOST_*_SHA256`。控制面要求 HTTPS，仅 loopback 开发允许 HTTP。GOST 使用固定官方 `go-gost/gost` Release，不使用 `latest`。远端免费中转要求 root SSH、systemd 247+ / `LoadCredential`；安装可在 Debian/Ubuntu 补齐 Python 3、curl、tar，其他系统需预先准备。清理预览不安装依赖。
@@ -116,3 +116,10 @@ GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/
 ## 内部付费前置适配
 
 `TaskService.ProvisionFront(ctx,userID,ssh,targetHost,targetPort) (executor.Hop,error)` 将客户前置接向实际分配的站内入口。检查维护状态、有效套餐、当前探测证明和持久化主机信任；不消耗免费任务配额，也不套用免费邮箱开关。浏览器共用 `prepareSSH`，只读探测仍受 active 登录账户、探测配额、公网地址和执行机在线约束。调用方负责付费规则事务，失败须撤销站内规则。SSH 凭据短期内存持有，超时不算成功，错误使用相同白名单。
+
+
+## 重启后的任务核对
+
+面板持久保存不含密码、原始配置或脚本的任务占用记录，包括目标及前置机。重启后已领取任务继续占用原主机，等待执行机补报；未领取任务取消，不重放。任务详情在需要核实时提供解除入口：用户先在 VPS 控制台确认原命令结束，再提交 `POST /api/tasks/{id}/reconcile` 和 `{confirm:"CONFIRM_TASK_ENDED"}`。此操作不代表部署成功，也不能停止远端命令。DD 提交成功仍需等待重装结束后核实。
+
+结果配置仍仅保留内存 10 分钟。面板在结果提交后、确认响应到达前重启，可通过同一结果补报恢复剩余下载期限，不延长原到期时间。整站恢复会撤销旧执行机认证和结果授权，保留未结束任务的核对入口。

@@ -5,14 +5,14 @@
 ## 权益和枫叶
 
 - `GET /api/plans` → `{plans: Plan[],purchasedCounts:{planId:次数},purchaseRequireVerifiedEmail}`。Plan 为 `{id,name,priceCents,days,trafficBytes,rateMbps,maxPurchasesPerUser,level,trial,currentHoldersOnly,enabled,version,createdAt}`。无示例权益；允许 0 枫叶、1–31 天，`level` 为 1–3。`maxPurchasesPerUser` 为 0–1000000 整数，0 无限；历史 paid 记录计次，免费/枫叶/在线渠道统一按事务检查。同 requestId 重试不再计次；限制调整时，正在支付的旧记录采用创建快照与当前限制中更严格的一项，条件不再满足的有效通知进入 `paid_review`，不能丢弃真实款项。
-- `currentHoldersOnly=true` 时，仅当前权益仍有效且当前权益 ID 正好等于目标 Plan ID 的用户可续兑；需与 `enabled=true` 配合，`enabled=false` 仍对所有用户关闭。`trial=true` 时，服务端扫描该用户所有已履约体验权益；从未体验者可兑，任何体验权益一旦成功履约后终身拒绝再次兑换或续兑。两项规则不是前端按钮限制。
+- `currentHoldersOnly=true` 仅允许当前权益有效且 ID 匹配的用户续兑；历史持有、已到期或当前持有其他权益均不符合。下架（`enabled=false`）阻止新客户，但不阻止当前有效持有人续兑同一权益。旧 `trial` 是历史展示字段，不再实施跨全部体验权益的终身一次限制；体验限兑由该权益的 `maxPurchasesPerUser` 控制。管理员重置限兑计数会推进 `redemptionCountEpoch`，保留历史订单，但旧周期订单不占用新周期次数。
 - `GET /api/wallet` → `{balanceCents,ledger:[{id,userId,kind,amountCents,balanceAfter,reference,reason,createdAt,cardCode?}]}`。本人兑换码流水在读取时解密 `cardCode`；不把明文重新写入账本。
 - `POST /api/wallet/redeem` 输入 `{code,requestId}`。requestId 为 8–128 字符，返回 `{balanceCents}`。兑换码只增加枫叶，账本与使用记录原子提交。同 requestId 网络重试幂等；换新 requestId 再次使用无效或已使用代码返回 409“兑换码无效或已被使用”，不重复提示成功，也不泄露精确状态。
 - `GET /api/orders` → `{orders:Order[]}`；`GET /api/orders/{id}` → Order。
 - `POST /api/orders` 输入 `{planId,channelId,requestId,confirmReplace:true}`。枫叶渠道的技术 ID 仍为 `balance`，其余为实际在线渠道 ID。返回 Order；非枫叶渠道提供 `paymentUrl` 跳转真实收银台。枫叶扣减与权益发放原子完成。
 - `purchaseRequireVerifiedEmail=true` 时，兑换事务要求当前用户邮箱已验证；开启此设置需 SMTP 测试就绪。有效渠道通知到达时若邮箱、次数、`currentHoldersOnly` 或 `trial` 条件已不满足，转 `paid_review`，不擅自退款或发放权益。
 - Order为 `{id,userId,plan,amountCents,currency:"CNY",channelId,state,requestId,tradeNo?,paymentUrl?,createdAt,expiresAt,paidAt?,entitlementVersion,reviewReason?}`。state为pending/paid/expired/paid_review；paid_review说明收到有效签名款项但需要管理员人工核对，不覆盖现有新权益。
-- 再次兑换门槛：剩余真实毫秒 `<30天` OR 剩余字节 `<10000000000`。新权益覆盖、非叠加。体验权益不适用续兑；`currentHoldersOnly` 另要求当前有效且同权益。每用户仅一个未过期待处理记录，30 分钟有效。
+- 再次兑换门槛：剩余真实毫秒 `<30天` OR 剩余字节 `<10000000000`。新权益覆盖、非叠加。限兑按目标权益与当前计数周期检查，不因旧 `trial` 标记增加额外终身限制；`currentHoldersOnly` 另要求当前有效且同权益。每用户仅一个未过期待处理记录，30 分钟有效。
 - `GET /api/admin/plans`、`POST /api/admin/plans`、`PUT/DELETE /api/admin/plans/{id}`。保存体是 Plan 字段（创建省略 id/version/createdAt），`priceCents % 100 == 0`。兑换记录引用阻止删除，下架通过 `enabled:false`。
 - `GET /api/admin/cards` → `{cards:[{id,code,amountCents,status,batch,usedBy?,usedByEmail?,createdAt,usedAt?}]}`，完整 code，仅管理员可枚举。默认排除 archived；`?status=archived` 查看已归档，`?status=all` 查看全部，也可按 active/disabled/used 筛选。删除已用兑换码是归档，不删除兑换幂等或账本记录。
 - `POST /api/admin/cards` 输入 `{count,amountCents,batch}`，count 1–1000，返回完整cards。

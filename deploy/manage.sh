@@ -6,7 +6,7 @@ umask 077
 INSTALL_ROOT=/opt/msboost
 PROJECT=msboost
 MARKER=MSBOOST_DEPLOY_V1
-VERSION=v2.1.1
+VERSION=v2.2.0
 SOURCE_DIR=
 DOMAIN=
 IP_ADDRESS=
@@ -575,9 +575,11 @@ admin_password_site() (
   admin_password_read "$tty_fd" admin_email_input '目标管理员邮箱（不回显）: ' || return
   admin_email_input=${admin_email_input,,}
   [[ ${#admin_email_input} -le 254 && $admin_email_input =~ ^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,63}$ ]] || { die '管理员邮箱格式无效'; return 1; }
-  admin_password_read "$tty_fd" admin_password_first '新密码（12–72 字节，不回显）: ' || return
+  admin_password_read "$tty_fd" admin_password_first '新密码（至少 8 个字符，最多 72 UTF-8 字节，不回显）: ' || return
   admin_password_read "$tty_fd" admin_password_second '再次输入新密码（不回显）: ' || return
-  [[ ${#admin_password_first} -ge 12 && ${#admin_password_first} -le 72 && $admin_password_first == "$admin_password_second" ]] || { die '密码须为 12–72 字节且两次一致；未修改密码'; return 1; }
+  [[ $admin_password_first == "$admin_password_second" ]] || { die '两次输入的密码不一致；未修改密码'; return 1; }
+  # Character/byte limits and forbidden patterns are validated by the SAME
+  # Go function as the website, before any DB mutation. Do not duplicate them.
   admin_password_read "$tty_fd" admin_confirm_input "确认仅修改 $admin_email_input，请输入 RESET $admin_email_input（不回显；其他输入取消）: " || return
   [[ $admin_confirm_input == "RESET $admin_email_input" ]] || { note '已取消，未修改密码。'; return 1; }
   exec {tty_fd}>&-

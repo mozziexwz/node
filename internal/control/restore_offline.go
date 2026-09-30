@@ -72,7 +72,7 @@ func OfflineRestore(opts OfflineRestoreOptions) (OfflineRestoreResult, error) {
 		return result, err
 	}
 	b := NewBackupService(&App{aead: aead})
-	raw, err := readRegularLimited(opts.BackupPath, 100<<20)
+	raw, err := readRegularLimited(opts.BackupPath, backupMaxBytes)
 	if err != nil {
 		return result, errors.New("不能读取备份普通文件，或文件超过 100 MB")
 	}

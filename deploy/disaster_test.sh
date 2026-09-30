@@ -56,6 +56,7 @@ require_platform() { :; }
 ensure_docker() { trace ensure-docker; }
 caddy_ensure() { :; }
 caddy_import() { trace restore-owned-proxy; }
+caddy_import_commit() { trace restore-owned-proxy-commit; }
 caddy_publish() { trace "host-caddy $*"; }
 install_launcher() { trace install-launcher; }
 check_frontend() { trace frontend-check; [[ $MOCK_FAIL != frontend ]]; }
@@ -126,7 +127,7 @@ docker() {
       local name=${*: -1}
       [[ $name =~ ^msboost_(app_data|database_data|caddy_data|caddy_config)$ && $* == *'--label com.docker.compose.project=msboost'* ]] || fail 'unowned volume creation'
       : > "$CASE_ROOT/$name" ;;
-    pull:*) [[ $MOCK_FAIL != pull && $MOCK_FAIL != fallback ]] ;;
+    pull:*) [[ $MOCK_FAIL != pull && $MOCK_FAIL != fallback && ( $MOCK_FAIL != dependencies || $2 != postgres@sha256:* ) ]] ;;
     run:*)
       [[ " $* " == *' --network none '* && " $* " == *' --read-only '* && " $* " == *' --entrypoint tar '* ]] || fail 'unexpected image execution'
       if [[ " $* " == *'target=/snapshot,readonly'* ]]; then
@@ -484,6 +485,29 @@ for fault in none archive-verify unpack archive-member config dependencies volum
     [[ ! -e $INSTALL_ROOT ]] || fail 'unverified archive created installed site'
   fi
 done
+
+for fault in config volume-import database-start state-import; do
+  fixture "restore-resume-$fault"; CASE_KIND=restore; MOCK_FAIL=$fault
+  expect_failure run_restore
+  [[ -f $INSTALL_ROOT/.disaster-incomplete ]] || fail 'interrupted import lost its retry identity'
+  old_database=$(env_get "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME)
+  MOCK_FAIL=; MOCK_RUNNING=database
+  run_restore
+  [[ ! -e $INSTALL_ROOT/.disaster-incomplete && -f $CASE_ROOT/state-imported ]] || fail 'same-archive resume failed'
+  [[ $(env_get "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME) != "$old_database" ]] || fail 'resume reused a partially imported database'
+done
+fixture restore-resume-edited; CASE_KIND=restore; MOCK_FAIL=state-import
+expect_failure run_restore
+env_set "$INSTALL_ROOT/.env" PUBLIC_URL https://edited.example
+MOCK_FAIL=; MOCK_RUNNING=database
+expect_failure run_restore
+[[ $(env_get "$INSTALL_ROOT/.env" PUBLIC_URL) == https://edited.example ]] || fail 'retry overwrote a manually edited environment'
+
+fixture restore-health-failed-after-import; CASE_KIND=restore; MOCK_FAIL=frontend
+expect_failure run_restore
+[[ -f $CASE_ROOT/state-imported && ! -e $INSTALL_ROOT/.disaster-incomplete ]] || fail 'health failure lost committed restore data'
+assert_has "$TRACE" restore-owned-proxy-commit
+[[ $(sed -n '/restore-owned-proxy-commit/,$p' "$TRACE") == *frontend-check* ]] || fail 'health check ran before completing the import journal'
 
 fixture restore-existing; CASE_KIND=restore; mkdir "$INSTALL_ROOT"
 expect_failure run_restore

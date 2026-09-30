@@ -54,6 +54,8 @@ type BackupTarget struct {
 	Password       string `json:"password,omitempty"`
 	SealedPassword string `json:"sealedPassword,omitempty"`
 	Enabled        bool   `json:"enabled"`
+	TestedAt       int64  `json:"testedAt,omitempty"`
+	TestStatus     string `json:"testStatus,omitempty"`
 }
 type BackupRecord struct {
 	ID        string            `json:"id"`
@@ -83,6 +85,7 @@ func NewBackupService(a *App) *BackupService { return &BackupService{app: a} }
 func (b *BackupService) Register(m *http.ServeMux) {
 	m.HandleFunc("GET /api/admin/disaster-backups", b.disasterHistory)
 	m.HandleFunc("GET /api/admin/backups", b.list)
+	m.HandleFunc("GET /api/admin/backup-capacity", b.capacity)
 	m.HandleFunc("POST /api/admin/backups", b.create)
 	m.HandleFunc("GET /api/admin/backups/{id}/download", b.download)
 	m.HandleFunc("DELETE /api/admin/backups/{id}", b.deleteBackup)
@@ -92,6 +95,7 @@ func (b *BackupService) Register(m *http.ServeMux) {
 	m.HandleFunc("POST /api/admin/backup-targets", b.saveTarget)
 	m.HandleFunc("PUT /api/admin/backup-targets/{id}", b.saveTarget)
 	m.HandleFunc("DELETE /api/admin/backup-targets/{id}", b.deleteTarget)
+	m.HandleFunc("POST /api/admin/backup-targets/{id}/test", b.testTarget)
 	m.HandleFunc("POST /api/admin/backups/preflight", b.preflight)
 	m.HandleFunc("POST /api/admin/backups/restore", b.restore)
 	m.HandleFunc("POST /api/admin/backups/retention", b.retention)
@@ -175,8 +179,12 @@ func (b *BackupService) savePlan(w http.ResponseWriter, r *http.Request) {
 	p.NextAt = next
 	err = b.app.Store.Update(func(s *State) error {
 		for _, id := range p.Targets {
-			if _, ok := LoadDoc[BackupTarget](s, "backup_targets", id); !ok {
+			target, ok := LoadDoc[BackupTarget](s, "backup_targets", id)
+			if !ok {
 				return errors.New("备份目标不存在")
+			}
+			if p.Enabled && (!target.Enabled || target.TestStatus != "passed" || target.TestedAt == 0) {
+				return errors.New("启用计划前，请启用所选异地目标并测试连接、写入和回读；保存设置不代表备份成功")
 			}
 		}
 		return SaveDoc(s, "backup_plans", "default", p)
@@ -275,6 +283,10 @@ func (b *BackupService) saveTarget(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		v.PrivateKey, v.Password = "", ""
+		v.TestedAt, v.TestStatus = 0, "untested"
+		if exists && backupTargetIdentity(v) == backupTargetIdentity(old) {
+			v.TestedAt, v.TestStatus = old.TestedAt, old.TestStatus
+		}
 		return SaveDoc(s, "backup_targets", v.ID, v)
 	})
 	if err != nil {
@@ -350,13 +362,13 @@ func (b *BackupService) pack(s *State) ([]byte, error) {
 	}
 	sum := sha256.Sum256(raw)
 	packed, err := json.Marshal(BackupEnvelope{Version: 1, CreatedAt: time.Now().UnixMilli(), SHA256: hex.EncodeToString(sum[:]), Sealed: sealed})
-	if len(packed) > 100<<20 {
+	if len(packed) > backupMaxBytes {
 		return nil, errors.New("加密备份超过当前 100 MB 恢复上限，不能生成不可恢复的副本")
 	}
 	return packed, err
 }
 func (b *BackupService) unpack(raw []byte) (*State, error) {
-	if len(raw) > 100<<20 {
+	if len(raw) > backupMaxBytes {
 		return nil, errors.New("备份超过100 MB")
 	}
 	var envelope BackupEnvelope
@@ -499,6 +511,10 @@ func (b *BackupService) run(ctx context.Context) (record BackupRecord, runErr er
 	return record, nil
 }
 func (b *BackupService) upload(ctx context.Context, t BackupTarget, id string, raw []byte) error {
+	return b.uploadTarget(ctx, t, id, raw, false)
+}
+
+func (b *BackupService) uploadTarget(ctx context.Context, t BackupTarget, id string, raw []byte, probe bool) error {
 	if err := validateBackupTarget(t); err != nil {
 		return err
 	}
@@ -526,24 +542,12 @@ func (b *BackupService) upload(ctx context.Context, t BackupTarget, id string, r
 		auth = ssh.PublicKeys(signer)
 	}
 	addr := net.JoinHostPort(t.Host, fmt.Sprint(t.Port))
-	cfg := &ssh.ClientConfig{User: t.User, Auth: []ssh.AuthMethod{auth}, Timeout: 15 * time.Second, HostKeyCallback: executor.PinnedHostKey(t.Fingerprint)}
-	dial := (&net.Dialer{Timeout: 15 * time.Second}).DialContext
-	if b.dialContext != nil {
-		dial = b.dialContext
-	}
-	conn, err := dial(ctx, "tcp", addr)
+	cfg := &ssh.ClientConfig{User: t.User, Auth: []ssh.AuthMethod{auth}, Timeout: 15 * time.Second}
+	client, closeConnection, err := b.connectBackupSSH(ctx, addr, cfg, t.Fingerprint)
 	if err != nil {
-		return errors.New("SFTP 连接失败")
+		return err
 	}
-	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
-	_ = conn.SetDeadline(time.Now().Add(3 * time.Minute))
-	cc, ch, rq, err := ssh.NewClientConn(conn, addr, cfg)
-	if err != nil {
-		return errors.New("SFTP 主机指纹核对或 SSH 认证失败")
-	}
-	client := ssh.NewClient(cc, ch, rq)
+	defer closeConnection()
 	defer client.Close()
 	sf, err := sftp.NewClient(client)
 	if err != nil {
@@ -622,6 +626,18 @@ func (b *BackupService) upload(ctx context.Context, t BackupTarget, id string, r
 		return err
 	}
 	published = true
+	if probe {
+		if err := ensureBackupDirectory(sf, t.Path, selfUID); err != nil {
+			return err
+		}
+		info, err := sf.Lstat(final)
+		if err != nil || !info.Mode().IsRegular() || executor.CheckSFTPOwner(info, uid, true) != nil {
+			return errors.New("测试文件归属变化，未删除未知文件")
+		}
+		if err := sf.Remove(final); err != nil {
+			return errors.New("连接和回读成功，但测试文件清理失败，请检查目录权限")
+		}
+	}
 	return nil
 }
 
@@ -711,7 +727,7 @@ func (b *BackupService) download(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filepath.Join(b.app.Config.DataDir, "backups", record.ID+".msb"))
 }
 func (b *BackupService) readUpload(w http.ResponseWriter, r *http.Request) ([]byte, error) {
-	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, backupMaxBytes+(1<<20))
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		return nil, err
 	}
@@ -723,7 +739,11 @@ func (b *BackupService) readUpload(w http.ResponseWriter, r *http.Request) ([]by
 		return nil, err
 	}
 	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, 100<<20))
+	raw, err := io.ReadAll(io.LimitReader(f, backupMaxBytes+1))
+	if len(raw) > backupMaxBytes {
+		return nil, errors.New("备份超过 100 MiB 恢复上限")
+	}
+	return raw, err
 }
 func (b *BackupService) preflight(w http.ResponseWriter, r *http.Request) {
 	if !b.admin(w, r) {
@@ -817,7 +837,7 @@ func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 	}
 	message := "安全恢复完成；当前用户、财务、流量与转发关联已保留。请重新登录并重新关联Agent，核对线路后解除维护。恢复前的私有回滚副本已保护，不会自动清理。"
 	if recoveryRequired {
-		message = "数据安全恢复完成，转发进入 recovery_required。旧节点可能仍在转发；端口、目标、实例和撤销记录已保留冻结，管理凭据已撤销。当前未提供受信无损接管，必须保留维护并人工核对，不能直接重新部署或释放资源。私有回滚副本已保护。"
+		message = "数据安全恢复完成，节点需恢复管理连接。旧节点可能仍在转发，请保持维护，在面板服务器运行 msboost relay-reconnect，按向导选择节点并核对。配置一致的转发可保留；配置不一致或记录不完整时，向导会列出影响，再由你确认中断或重新部署。不要直接释放端口或重复安装。恢复前的私有回滚副本已保护。"
 	}
 	WriteJSON(w, 200, map[string]any{"ok": true, "mode": "safe", "rollbackId": rollback.ID, "recoveryRequired": recoveryRequired, "message": message})
 }
@@ -956,7 +976,7 @@ func (b *BackupService) verifiedLocalBackup(record BackupRecord) bool {
 	}
 	file := filepath.Join(b.app.Config.DataDir, "backups", record.ID+".msb")
 	info, err := os.Lstat(file)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 100<<20 {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > backupMaxBytes {
 		return false
 	}
 	f, err := os.Open(file)
@@ -964,8 +984,8 @@ func (b *BackupService) verifiedLocalBackup(record BackupRecord) bool {
 		return false
 	}
 	defer f.Close()
-	raw, err := io.ReadAll(io.LimitReader(f, 100<<20+1))
-	if err != nil || len(raw) > 100<<20 {
+	raw, err := io.ReadAll(io.LimitReader(f, backupMaxBytes+1))
+	if err != nil || len(raw) > backupMaxBytes {
 		return false
 	}
 	sum := sha256.Sum256(raw)

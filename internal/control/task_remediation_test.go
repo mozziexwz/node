@@ -2,6 +2,7 @@ package control
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -92,6 +93,9 @@ func TestSSHTrustPersistsAndRequiresExplicitChangedKey(t *testing.T) {
 	})
 	// A new task service simulates loss of in-memory credentials/probe cache.
 	restarted := NewTaskService(a)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	restarted.Start(ctx) // Unclaimed queued jobs are safe to cancel on restart.
 	old := connection.Fingerprint
 	connection.Fingerprint = "SHA256:" + strings.Repeat("B", 43)
 	restarted.probes[taskProbeKey(user.ID, connection)] = taskProbe{Fingerprint: connection.Fingerprint, Expires: time.Now().Add(time.Minute)}

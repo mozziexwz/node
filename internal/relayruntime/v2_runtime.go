@@ -138,6 +138,7 @@ func (s *runtimeState) applyV2Response(ctx context.Context, request V2SyncReques
 	if err := s.validateV2EnvelopeLocked(request, response); err != nil {
 		return err
 	}
+	s.firewallReporting = response.FirewallStatusSupported
 	// Traffic ACKs refer only to the exact sent batch. Their persistence failure
 	// does not turn a valid control command into an implicit stop or vice versa.
 	accountingErr := s.acknowledgeV2TrafficLocked(request.Traffic, response.TrafficAcks)
@@ -210,6 +211,9 @@ func (s *runtimeState) applyV2Response(ctx context.Context, request V2SyncReques
 func (s *runtimeState) reconcileV2Locked(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	for _, p := range s.processes {
+		s.refreshFirewallLocked(p)
 	}
 	if s.v2.disk.RecoveryRequired || s.v2.cacheOnly {
 		return s.reconcileFrozenV2Locked(ctx)
@@ -385,12 +389,14 @@ func (s *runtimeState) v2Request(instanceID string) V2SyncRequest {
 func (s *runtimeState) v2RequestLocked(instanceID string) V2SyncRequest {
 	s.v2.sequence++
 	request := V2SyncRequest{ProtocolVersion: ProtocolV2, AgentID: s.v2.disk.AgentID, AgentInstanceID: instanceID, Sequence: s.v2.sequence, RequestID: randomID(), ControlEpoch: s.v2.disk.ControlEpoch, AppliedRevision: s.v2.disk.Revision, Capabilities: append(append([]string(nil), V2Capabilities...), SocksGuardCapability, TargetProbeCapability), Acks: []V2Ack{}, Traffic: s.v2TrafficBatchLocked(), AccountingDegraded: s.v2AccountingDegradedLocked()}
+	request.Version = s.cfg.Version
 	request.TargetProbeResults = s.targetProbeBatchLocked()
 	request.localCredentialGeneration = s.v2.credentialGeneration
 	for _, record := range s.v2.disk.Records {
 		command := record.Command
 		state := record.State
 		p := s.processes[command.RuleID]
+		s.refreshFirewallLocked(p)
 		// Never advertise a stale persisted ready/stopped state after a local
 		// process transition until its new result has itself been persisted.
 		if state == "ready" && (p == nil || p.stopping || processDone(p) || p.ack.State != "ready") {
@@ -399,7 +405,11 @@ func (s *runtimeState) v2RequestLocked(instanceID string) V2SyncRequest {
 		if state == "stopped" && !processDone(p) {
 			state = "stopping"
 		}
-		request.Acks = append(request.Acks, V2Ack{CommandID: command.CommandID, RuleID: command.RuleID, Generation: command.Generation, RuntimeHash: command.RuntimeHash, State: state})
+		firewallStatus := ""
+		if p != nil && s.firewallReporting {
+			firewallStatus = p.firewallStatus
+		}
+		request.Acks = append(request.Acks, V2Ack{CommandID: command.CommandID, RuleID: command.RuleID, Generation: command.Generation, RuntimeHash: command.RuntimeHash, State: state, FirewallStatus: firewallStatus})
 	}
 	sort.Slice(request.Acks, func(i, j int) bool { return request.Acks[i].RuleID < request.Acks[j].RuleID })
 	return request
@@ -424,6 +434,25 @@ func callV2(ctx context.Context, cfg Config, token string, request V2SyncRequest
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
+		// A previously negotiated panel may have been rolled back. Retry only
+		// this optional observation once; preserve every command/traffic ACK,
+		// sequence and request identity. A current peer's validation errors are
+		// never hidden, and authentication failures never trigger this fallback.
+		if res.StatusCode == http.StatusBadRequest && res.Header.Get("X-MSBOOST-Relay-Firewall") != "1" {
+			legacy := request
+			legacy.Acks = append([]V2Ack(nil), request.Acks...)
+			changed := false
+			for i := range legacy.Acks {
+				if legacy.Acks[i].FirewallStatus != "" {
+					legacy.Acks[i].FirewallStatus = ""
+					changed = true
+				}
+			}
+			if changed {
+				_ = res.Body.Close()
+				return callV2(ctx, cfg, token, legacy)
+			}
+		}
 		if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
 			return response, errors.New("v2 control authentication unavailable")
 		}
@@ -436,6 +465,7 @@ func callV2(ctx context.Context, cfg Config, token string, request V2SyncRequest
 	if err = strictV2JSON(data, &response); err != nil {
 		return response, err
 	}
+	response.FirewallStatusSupported = res.Header.Get("X-MSBOOST-Relay-Firewall") == "1"
 	return response, nil
 }
 

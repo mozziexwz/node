@@ -46,6 +46,12 @@ test("relay status separates management loss from the last business report", () 
     assert.doesNotMatch(view.label, /转发中|正常|已停止/);
   }
 });
+
+test("local firewall not ready never reads as configuration confirmed", () => {
+  const rule = { state: "active", syncState: "firewall_pending", controlStatus: "online", offlinePolicy: "keep_last" };
+  assert.match(relayMemberLabel(rule), /防火墙待处理/);
+  assert.doesNotMatch(relayMemberLabel(rule), /配置已确认|正常|可用/);
+});
 test("only complete keep_last ACK advertises confirmed offline retention; v2 never gets a 45 second deadline", () => {
   const confirmed = relayStatus({
     offlinePolicy: "keep_last",
@@ -352,7 +358,8 @@ test(
               message: "历史周期独立核对",
             },
           });
-        if (url.pathname === "/api/admin/backups")
+          if (url.pathname === "/api/admin/backup-capacity") return route.fulfill({json:{estimatedPackedBytes:1024,maxPackedBytes:104857600,remainingContentBytes:83885056,status:"normal"}});
+          if (url.pathname === "/api/admin/backups")
           return route.fulfill({ json: { backups: [] } });
         if (url.pathname === "/api/admin/backup-plan")
           return route.fulfill({ json: { enabled: false } });

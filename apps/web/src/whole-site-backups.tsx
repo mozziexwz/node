@@ -1,15 +1,20 @@
 import { useEffect } from "react";
 import { array, post } from "./api";
-import { Button, Notice, Table, Badge, ErrorNotice, useData, date, AsyncForm, Check } from "./ui";
+import { Button, Notice, Table, Badge, ErrorNotice, useData, date, bytes, AsyncForm, Check, Loading } from "./ui";
 
 export function WholeSiteBackups() {
-  const { data, error, reload } = useData("/api/admin/disaster-backups");
+  const { data, error, loading, reload } = useData("/api/admin/disaster-backups");
   const { data: settings, reload: reloadSettings } = useData("/api/admin/settings");
   useEffect(() => { const timer = setInterval(reload, 15000); return () => clearInterval(timer); }, []);
   const schedule = data?.schedule;
   const runs = array(data, "runs");
   const localAt = Math.max(0, ...runs.map((r) => r.localVerifiedAt || 0));
   const remoteAt = Math.max(0, ...runs.map((r) => r.remoteVerifiedAt || 0));
+  if (!data) return <div className="card mt16">
+    <div className="actions"><h3>整站备份</h3><Button onClick={reload}>刷新状态</Button></div>
+    <ErrorNotice error={error} />
+    {loading && <Loading />}
+  </div>;
   return <div className="card mt16">
     <div className="actions"><h3>整站备份</h3><Button onClick={reload}>刷新状态</Button></div>
     <ErrorNotice error={error} />
@@ -27,7 +32,7 @@ export function WholeSiteBackups() {
       date(r.updatedAt), <span>{r.message}{r.detail && <small className="muted">{r.detail}</small>}</span>,
       <Badge tone={r.localOK ? "green" : "orange"}>{r.localOK ? "校验通过" : "尚未完成"}</Badge>,
       <Badge tone={r.remoteOK ? "green" : "orange"}>{r.remoteOK ? "校验通过" : r.remoteConfigured ? "尚未成功" : "未配置"}</Badge>,
-      r.archive ? `${r.archive}（${(r.size / 1024 / 1024).toFixed(2)} MB）` : "尚未生成",
+      r.archive ? `${r.archive}（${bytes(r.size)}）` : "尚未生成",
     ])} />
   </div>;
 }

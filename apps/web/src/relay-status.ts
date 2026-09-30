@@ -38,6 +38,7 @@ export function relayStatus(rule: RecordData, routeOnline?: boolean) {
     awaiting_front: "等待前置机配置",
     provisioning: "前置机配置中",
     config_error: "配置异常，待核对",
+    firewall_pending: "节点防火墙待处理，请联系管理员",
   };
   const runtime: Record<string, string> = {
     last_reported_running: "运行",

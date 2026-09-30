@@ -33,6 +33,7 @@ try {
  }
  if(!ready)throw new Error('Isolated server did not become healthy: '+failure);
  const tests=process.argv.includes('--browser') ? ['tests/acceptance.test.mjs','tests/articles.test.mjs','tests/payment-return.test.mjs','tests/password-reset.test.mjs','tests/supplement23-copy.test.mjs','tests/relay-status.test.mjs','tests/plans-policy.test.mjs','tests/cards-usage.test.mjs','tests/tunnels.test.mjs','tests/agent-install.test.mjs','tests/smtp-alias.test.mjs','tests/whole-site-backups.test.mjs','tests/payment-whitelist.test.mjs'] : ['tests/http.test.mjs','tests/users-model.test.mjs','tests/navigation.test.mjs'];
+ if(process.argv.includes('--browser'))tests.push('tests/local-save.test.mjs','tests/maintenance.test.mjs','tests/loading-state.test.mjs');
  const test=spawn(process.execPath,['--test',...tests],{cwd:path.join(root,'apps/web'),stdio:'inherit',windowsHide:true,env:{...process.env,MSBOOST_TEST_URL:base,MSBOOST_TEST_CREDENTIALS:credentials}});
  process.exitCode=await new Promise((resolve,reject)=>{test.once('error',reject);test.once('exit',code=>resolve(code??1));});
 } finally {

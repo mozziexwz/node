@@ -412,7 +412,10 @@ func (a *App) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		contentAudit(s, u.ID, "attachment.upload", v.ID)
-		return SaveDoc(s, "articles", article.ID, article)
+		if err := SaveDoc(s, "articles", article.ID, article); err != nil {
+			return err
+		}
+		return checkContentBackupCapacity(s)
 	})
 	if err != nil {
 		Fail(w, 409, err.Error())

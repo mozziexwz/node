@@ -270,12 +270,29 @@ disaster_validate_environment() {
 disaster_restore() {
   # The full-site path is intentionally clean-host-only. Existing installations
   # can still use the independent new-database recovery documented previously.
-  [[ ! -e $INSTALL_ROOT && ! -L $INSTALL_ROOT ]] || { die '整站恢复仅用于全新目标：/opt/msboost 已存在，拒绝覆盖。已有站点请按文档恢复到新数据库。'; return 1; }
+  local resuming=0 archive_digest running existing_key install_stage
+  if [[ -e $INSTALL_ROOT || -L $INSTALL_ROOT ]]; then
+    [[ -d $INSTALL_ROOT && ! -L $INSTALL_ROOT && -f $INSTALL_ROOT/.disaster-incomplete && ! -L $INSTALL_ROOT/.disaster-incomplete && $(stat -c %u "$INSTALL_ROOT/.disaster-incomplete") == 0 && $(stat -c %a "$INSTALL_ROOT/.disaster-incomplete") == 600 ]] || { die '整站恢复仅用于全新目标，或本安装器已记录的同一备份中断恢复；不会覆盖已有站点。'; return 1; }
+    resuming=1
+  fi
   validate_source || return
   disaster_tool || return
   local archive=$DISASTER_ARCHIVE confirm volume image recovered_db archive_format
   if [[ -z $archive ]]; then archive=$(read_tty '输入本机整站备份 .tar.gz 的绝对路径: '); fi
   [[ $archive == /* && -f $archive && ! -L $archive ]] || { die '需要本机普通备份文件的绝对路径'; return 1; }
+  archive_digest=$(sha256sum "$archive" | cut -d' ' -f1) || return
+  if [[ $resuming == 1 ]]; then
+    [[ $(env_get "$INSTALL_ROOT/.disaster-incomplete" archive_sha256) == "$archive_digest" ]] || { die '重试必须使用上次同一份备份，现有恢复资料未修改'; return 1; }
+    [[ -f $INSTALL_ROOT/.managed-by-msboost && ! -L $INSTALL_ROOT/.managed-by-msboost && $(<"$INSTALL_ROOT/.managed-by-msboost") == "$MARKER" ]] || { die '中断恢复的归属标记无效'; return 1; }
+    if [[ -f $INSTALL_ROOT/.env && -d $INSTALL_ROOT/deploy ]]; then
+      assert_managed || return
+      running=$(compose_live ps --status running --services) || return
+      [[ $running != *server* ]] || { die '恢复目标的应用已经运行，拒绝重放快照；请检查当前站点后使用修复。'; return 1; }
+    else
+      assert_no_collision || return
+    fi
+    note '继续同一备份的中断恢复。只重建隔离恢复库，不覆盖以前的数据库；未完成的隔离库保留供核对。'
+  fi
   "$DISASTER_TOOL" disaster verify --archive "$archive" >/dev/null || return
   note '备份包完整校验通过。'
   archive_format=$("$DISASTER_TOOL" disaster format --archive "$archive") || return
@@ -284,7 +301,7 @@ disaster_restore() {
   confirm=$(read_tty '确认原站点已停机，且此 VPS 是全新目标，输入 RESTORE_NEW_MSBOOST: ')
   [[ $confirm == RESTORE_NEW_MSBOOST ]] || { die '已取消'; return 1; }
   ensure_docker || return
-  assert_no_collision || return
+  [[ $resuming == 1 ]] || assert_no_collision || return
   DISASTER_WORK=$(mktemp -d /root/msboost-disaster-work.XXXXXXXX) || return
   "$DISASTER_TOOL" disaster unpack --archive "$archive" --dir "$DISASTER_WORK/bundle" || return
   local recovered="$DISASTER_WORK/bundle"
@@ -295,11 +312,15 @@ disaster_restore() {
   for volume in "${restore_volumes[@]}"; do "$DISASTER_TOOL" disaster validate-volume --archive "$recovered/$volume.tar" || return; done
   image=$(env_get "$recovered/site.env" MSBOOST_IMAGE)
   disaster_validate_environment "$recovered/site.env" || return
+  if [[ $resuming == 1 && -f $INSTALL_ROOT/.env ]]; then
+    for existing_key in PUBLIC_URL MASTER_KEY ADMIN_EMAIL ADMIN_PASSWORD POSTGRES_USER POSTGRES_PASSWORD POSTGRES_IMAGE MSBOOST_VERSION MSBOOST_IMAGE_ID COOKIE_SECURE; do
+      [[ $(env_get "$INSTALL_ROOT/.env" "$existing_key") == "$(env_get "$recovered/site.env" "$existing_key")" ]] || { die '中断恢复的站点配置已被修改，请先核对；未覆盖现有配置'; return 1; }
+    done
+  fi
   [[ $(env_get "$recovered/site.env" MSBOOST_VERSION) == "$VERSION" ]] || { die "需使用备份同版本的安装入口恢复；当前入口 $VERSION 与备份不符，不进行隐式升级。"; return 1; }
   "$DISASTER_TOOL" disaster validate-volume --archive "$recovered/proxy.tar" || return
   install -d -m 0700 "$DISASTER_WORK/proxy" || return
   tar -xf "$recovered/proxy.tar" -C "$DISASTER_WORK/proxy" --no-same-owner --no-same-permissions || return
-  caddy_import "$DISASTER_WORK/proxy" || return
   STAGE=$(mktemp -d "$DISASTER_WORK/image-stage.XXXXXXXX") || return
   install -m 600 "$recovered/site.env" "$STAGE/.env" || return
   if [[ $image == ghcr.io/mozziexwz/node@sha256:* ]]; then
@@ -308,16 +329,24 @@ disaster_restore() {
   else die '本地自构建镜像未包含在整站备份内，请按离线文档先导入原镜像再人工恢复。'; return 1; fi
   image=$(env_get "$STAGE/.env" MSBOOST_IMAGE)
   [[ $(server_identity "$image") == "$(env_get "$recovered/site.env" MSBOOST_IMAGE_ID)" ]] || { die '备份应用镜像身份不一致'; return 1; }
-  install -d -m 700 "$INSTALL_ROOT" || return
-  printf '%s\n' 'MSBOOST_DISASTER_V1' "work=$DISASTER_WORK" > "$INSTALL_ROOT/.disaster-incomplete"
-  printf '%s\n' "$MARKER" > "$INSTALL_ROOT/.managed-by-msboost"
+  # Finish network-dependent preparation before publishing any Caddy extension
+  # or claiming /opt/msboost. Dependency failures leave a clean retry target.
+  docker pull "$(env_get "$recovered/site.env" POSTGRES_IMAGE)" || return
+  caddy_import "$DISASTER_WORK/proxy" "$archive_digest" || return
+  if [[ $resuming == 0 ]]; then
+    # Publish the directory WITH its progress/ownership markers in one rename;
+    # a killed process cannot leave an unidentifiable empty /opt/msboost.
+    install_stage=$(mktemp -d "${INSTALL_ROOT%/*}/.msboost-restore-root.XXXXXXXX") || return
+    (umask 077; printf '%s\n' 'MSBOOST_DISASTER_V1' "work=$DISASTER_WORK" "archive_sha256=$archive_digest" > "$install_stage/.disaster-incomplete"; printf '%s\n' "$MARKER" > "$install_stage/.managed-by-msboost") || return
+    mv -T --no-clobber -- "$install_stage" "$INSTALL_ROOT" || return
+    [[ $(env_get "$INSTALL_ROOT/.disaster-incomplete" archive_sha256) == "$archive_digest" ]] || { die '恢复目标在准备期间发生变化，未接管'; return 1; }
+  fi
   install -m 600 "$STAGE/.env" "$INSTALL_ROOT/.env" || return
   copy_deployment_files "$SOURCE_DIR" "$INSTALL_ROOT" || return
   # Bind all services to the selected new DB before the first app startup.
   recovered_db="msboost_restore_$(date -u +%Y%m%d%H%M%S)_$(random_hex 4)"
   env_set "$INSTALL_ROOT/.env" MSBOOST_DATABASE_NAME "$recovered_db" || return
   compose_live config --quiet || return
-  compose_live pull database || return
   # Do not even create app/proxy containers before import: a daemon restart
   # must not accidentally launch a still-empty site's bootstrap code.
   for volume in app_data database_data; do
@@ -342,6 +371,10 @@ disaster_restore() {
   local preserved="$INSTALL_ROOT/backups/disaster-source-$(date -u +%Y%m%dT%H%M%SZ)"
   install -m 600 "$DISASTER_WORK/import-result.json" "$recovered/import-result.json" || return
   mv -- "$recovered" "$preserved" || return
+  # Data import is now committed and must not be replayed. A later launcher or
+  # health-check failure is repaired in place; do not leave an import journal
+  # that could block a future clean restore after an intentional purge.
+  caddy_import_commit "$archive_digest" || return
   install_launcher || return
   start_live || { die '恢复数据已保留，但站点健康检查失败。检查 DNS/端口后 repair；不要重新安装或 purge。'; return 1; }
   note '整站恢复完成。网站仍处于维护状态，支付与兑换保持关闭，请重新登录后台。'

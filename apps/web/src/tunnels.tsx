@@ -143,7 +143,7 @@ function StageFields({
 }
 
 export function RouteBuilder() {
-  const { data, error, reload } = useData("/api/admin/routes");
+  const { data, error, loading, reload } = useData("/api/admin/routes");
   const { data: nodeData, error: nodeError } = useData(
     "/api/admin/relay-agents",
   );
@@ -210,11 +210,13 @@ export function RouteBuilder() {
           管理关联用户中转（可按线路筛选）
         </a>
       )}
-      {!nodes.length && (
+      {nodeData && !nodes.length && !nodeError && (
         <Notice>请先在“节点”中新增中转节点并安装 Agent。</Notice>
       )}
       <div className="card flush mt16">
         <Table
+          loading={loading}
+          error={error}
           headers={[
             "隧道",
             "权益等级",

@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mozziexwz/node/internal/relayfirewall"
 )
 
 type process struct {
@@ -36,17 +38,20 @@ type process struct {
 	stopping        bool
 	startedAt       int64
 	v2BillingPeriod string
+	serviceReady    bool
+	firewallStatus  string
 }
 type runtimeState struct {
-	mu            sync.Mutex
-	cfg           Config
-	processes     map[string]*process
-	pending       map[string]Traffic
-	journal       string
-	observerToken string
-	observerURL   string
-	v2            *v2RuntimeState
-	v2Traffic     *v2TrafficState
+	mu                sync.Mutex
+	cfg               Config
+	processes         map[string]*process
+	pending           map[string]Traffic
+	journal           string
+	observerToken     string
+	observerURL       string
+	v2                *v2RuntimeState
+	v2Traffic         *v2TrafficState
+	firewallReporting bool
 }
 
 func randomID() string {
@@ -220,8 +225,10 @@ func (s *runtimeState) observer(w http.ResponseWriter, r *http.Request) {
 			}
 			switch event.Status.State {
 			case "running":
+				p.serviceReady = true
 				p.ack.State = "ready"
 				p.ack.Message = "GOST listener bound; public reachability not independently verified"
+				s.refreshFirewallLocked(p)
 			case "failed":
 				p.ack.State = "failed"
 				p.ack.Message = "GOST service failed"
@@ -255,6 +262,22 @@ func (s *runtimeState) observer(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	io.WriteString(w, `{"ok":true}`)
+}
+
+func (s *runtimeState) refreshFirewallLocked(p *process) {
+	if s.cfg.FirewallStatusPath == "" || p == nil || !p.serviceReady || p.stopping || processDone(p) || p.ack.State == "failed" {
+		return
+	}
+	p.firewallStatus = relayfirewall.Check(s.cfg.FirewallStatusPath, os.Getpid(), relayfirewall.ProcessStart(os.Getpid()), p.rule.ListenPort, time.Now())
+	if p.firewallStatus == "ready" {
+		p.ack.State = "ready"
+		p.ack.Message = "Listener and local firewall ready; public reachability not independently verified"
+	} else {
+		// Keep an already-running forward alive if maintenance evidence becomes
+		// stale. Never restart its listener just to repair a firewall or report.
+		p.ack.State = "pending"
+		p.ack.Message = "Waiting for local firewall maintenance; check msboost-relay-firewall.service"
+	}
 }
 func (s *runtimeState) stopLocked(id string) {
 	p := s.processes[id]

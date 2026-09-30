@@ -50,12 +50,12 @@ elif a[0] not in ('disable','daemon-reload'):sys.exit(1)
 ''', 0o755)
 
 
-def reset(*, records=None, recovery=False, executor=False, extra=False, stop='normal'):
+def reset(*, records=None, recovery=False, executor=False, extra=False, stop='normal', firewall=False):
     # These fixed fixture paths exist only inside this disposable container.
     for path in [ROOT, BACKUPS, MANAGED, Path('/run/msboost-agent-install')]:
         if path.exists():
             shutil.rmtree(path)
-    for path in [UNIT, ENV, BIN, Path('/etc/msboost-executor.env'), Path('/var/lib/msboost-relay')]:
+    for path in [UNIT, ENV, BIN, Path('/etc/msboost-executor.env'), Path('/var/lib/msboost-relay'), Path('/etc/systemd/system/msboost-relay-firewall.service'), Path('/run/fixture-firewall-fail')]:
         path.unlink(missing_ok=True)
     ROOT.mkdir(parents=True, mode=0o700)
     BACKUPS.mkdir(parents=True, mode=0o700)
@@ -65,6 +65,9 @@ def reset(*, records=None, recovery=False, executor=False, extra=False, stop='no
     write(BIN, 'fixture agent', 0o755)
     write(MANAGED/'managed-v1', 'MSBOOST_AGENT_MANAGED_V1\n')
     write(MANAGED/'gost-v3.3.0', 'fixture gost', 0o755)
+    if firewall:
+        write(Path('/etc/systemd/system/msboost-relay-firewall.service'), '# MSBOOST_RELAY_FIREWALL_MANAGED_V1\n[Service]\nExecStart=/usr/local/libexec/msboost-agent/relay-firewall --capability relay-firewall\n', 0o644)
+        write(MANAGED/'relay-firewall', '#!/bin/bash\nset -eu\n[[ "$*" == "--capability relay-firewall-cleanup" ]]\n[[ ! -e /run/fixture-active && ! -e /run/fixture-role-relay ]]\nprintf "firewall-cleanup\\n" >> /run/fixture-calls\n[[ ! -e /run/fixture-firewall-fail ]]\n', 0o755)
     write(ROOT/'relay-token.json', json.dumps({'agentId': ID, 'token': 'fixture-private-only'}))
     write(ROOT/'relay-v2-state.json', json.dumps({'schema': 2, 'offlinePolicy': 'keep_last', 'agentId': ID, 'serverUrl': SERVER, 'recoveryRequired': recovery, 'records': records or {}}))
     for name in ['relay-health.json', 'relay-enrollment.json', 'traffic-v2-journal.json', '.relay-v2-1234', '.msboost-1234']:
@@ -133,3 +136,30 @@ write(Path('/run/fixture-unrelated'), 'external target')
 run('--acknowledge-stop', ok=False)
 assert STATUS.exists() and Path('/run/fixture-unrelated').read_text() == 'external target'
 print('PASS symlink escape rejection', flush=True)
+
+reset(executor=True, firewall=True)
+run('--acknowledge-stop')
+assert not Path('/etc/systemd/system/msboost-relay-firewall.service').exists()
+assert not (MANAGED/'relay-firewall').exists() and BIN.exists()
+calls=CALLS.read_text()
+assert calls.index('stop msboost-relay.service') < calls.index('stop msboost-relay-firewall.service') < calls.index('firewall-cleanup')
+with tarfile.open(next(BACKUPS.glob('uninstall-relay.*/relay.tar.gz'))) as archive:
+    assert archive.getmember('etc/systemd/system/msboost-relay-firewall.service')
+    assert archive.getmember('usr/local/libexec/msboost-agent/relay-firewall')
+print('PASS relay uninstall backs up and removes only its firewall companion', flush=True)
+
+reset(executor=True, firewall=True)
+write(Path('/run/fixture-firewall-fail'), 'fail')
+run('--acknowledge-stop', ok=False)
+assert ROOT.exists() and UNIT.exists() and (MANAGED/'relay-firewall').exists()
+assert Path('/etc/systemd/system/msboost-relay-firewall.service').exists() and BIN.exists()
+assert list(BACKUPS.glob('uninstall-relay.*/relay.tar.gz'))
+print('PASS firewall cleanup failure retains components and verified backup', flush=True)
+
+for unsafe in (Path('/etc/systemd/system/msboost-relay-firewall.service'), MANAGED/'relay-firewall'):
+    reset(executor=True, firewall=True)
+    unsafe.chmod(0o777)
+    run('--acknowledge-stop', ok=False)
+    assert STATUS.exists() and ROOT.exists() and UNIT.exists()
+    assert 'stop msboost-relay' not in CALLS.read_text()
+print('PASS untrusted writable firewall components do not run or stop services', flush=True)
