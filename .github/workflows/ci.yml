@@ -148,7 +148,10 @@ jobs:
           bash deploy/relay_recovery_test.sh
           bash deploy/agent_migration_test.sh
           bash deploy/uninstall_agent_test.sh
-          bash deploy/disaster_test.sh
+          # Restore retry deliberately requires a root-owned private marker.
+          # Exercise real ownership in the disposable container, not by mocking
+          # stat or weakening that production check on the unprivileged runner.
+          docker run --rm --network none msboost-uninstall-fixture bash /src/deploy/disaster_test.sh
           bash deploy/disaster_online_test.sh
           bash deploy/disaster_joint_validation_test.sh
           bash deploy/relay_dynamic_user_validation_test.sh

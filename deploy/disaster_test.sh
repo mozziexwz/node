@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Offline lifecycle contracts: no real Docker, apt, network, systemd or /opt.
+# Run as root inside the no-network uninstall fixture container so recovery
+# marker ownership/mode checks remain real rather than replacing stat.
 set -Eeuo pipefail
 # The runner may be hosted by systemd, but successful maintenance cases model
 # an interactive root session. Explicit negative cases below keep exercising
@@ -502,6 +504,19 @@ env_set "$INSTALL_ROOT/.env" PUBLIC_URL https://edited.example
 MOCK_FAIL=; MOCK_RUNNING=database
 expect_failure run_restore
 [[ $(env_get "$INSTALL_ROOT/.env" PUBLIC_URL) == https://edited.example ]] || fail 'retry overwrote a manually edited environment'
+
+if [[ $(command id -u) == 0 && $(command uname -s) == Linux ]]; then
+  for unsafe in owner mode; do
+    fixture "restore-resume-unsafe-$unsafe"; CASE_KIND=restore; MOCK_FAIL=state-import
+    expect_failure run_restore
+    if [[ $unsafe == owner ]]; then command chown 1000:1000 "$INSTALL_ROOT/.disaster-incomplete"
+    else command chmod 0644 "$INSTALL_ROOT/.disaster-incomplete"; fi
+    MOCK_FAIL=; MOCK_RUNNING=database
+    trace_before=$(wc -l < "$TRACE")
+    expect_failure run_restore
+    [[ $(wc -l < "$TRACE") == "$trace_before" && -f $INSTALL_ROOT/.disaster-incomplete ]] || fail 'untrusted recovery marker allowed a lifecycle operation'
+  done
+fi
 
 fixture restore-health-failed-after-import; CASE_KIND=restore; MOCK_FAIL=frontend
 expect_failure run_restore
