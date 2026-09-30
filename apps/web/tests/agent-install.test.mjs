@@ -72,6 +72,12 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     await expect(safety).toContainText("日常升级会保留原身份和配置");
     await expect(safety).toContainText("--upgrade-in-place --acknowledge-relay-restart");
     await expect(safety).toContainText("--diagnose");
+    await expect(safety).toContainText("无需等待面板在线或转发停止确认");
+    await expect(safety.getByRole("button", { name: "复制本机节点卸载命令" })).toBeVisible();
+    const localUninstall = await safety.locator("pre.code-panel").filter({ hasText: "uninstall-agent.sh" }).textContent();
+    assert.ok(localUninstall.includes(`/${releaseVersion}/deploy/uninstall-agent.sh`));
+    assert.match(localUninstall, /--agent-id 'relay-2'.*--acknowledge-stop$/);
+    assert.deepEqual(writes, [], "viewing the local uninstall command must not change the panel");
     await expect(safety.getByRole("link", { name: "节点维护帮助" })).toHaveAttribute("href", `https://github.com/mozziexwz/node/blob/${releaseVersion}/docs/relay-recovery.md`);
     await safety.getByRole("button", { name: "关闭窗口" }).click();
     page.once("dialog", (dialog) => void dialog.accept());
@@ -105,6 +111,8 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     await blocked.getByRole("button", { name: "删除" }).click();
     const removed = page.getByRole("dialog");
     await expect(removed).toContainText("节点已从控制面退役");
+    await expect(removed).toContainText("无需等待面板在线或转发终态");
+    await expect(removed).toContainText("旧备份和同机执行机保留");
     const cleanup = await removed.locator("pre.code-panel").textContent();
     assert.ok(cleanup.includes(`/${releaseVersion}/deploy/uninstall-agent.sh`));
     assert.match(cleanup, /--agent-id 'relay-2'.*--acknowledge-stop$/);

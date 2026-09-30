@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Remove only a proven MSBOOST-managed relay from this VPS. The panel must
-# retire the matching identity first; no panel credentials are accepted here.
+# Local root explicitly authorizes stopping this MSBOOST-managed relay.
+# Panel connectivity, retirement and durable forwarding state are not gates.
+# Preserve private recovery material; never remove another role's programs.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then set +xv; fi
 relay_uninstall_fail() { printf '错误：%s\n' "$*" >&2; exit 1; }
 relay_uninstall_regular() {
@@ -32,8 +33,10 @@ relay_uninstall_state_manifest() (
     name=${entry##*/}
     [[ ! -L $entry ]] || return 1
     case $name in
-      relay-token.json|relay-v2-state.json|relay-v2.lock|traffic-v2-journal.json|traffic-journal.json)
+      relay-token.json|relay-enrollment.json|relay-v2-state.json|relay-health.json|relay-v2.lock|traffic-v2-journal.json|traffic-journal.json)
         relay_uninstall_regular "$entry" || return 1 ;;
+      .msboost-*|.relay-v2-*)
+        [[ $name =~ ^\.(msboost|relay-v2)-[0-9]+$ ]] && relay_uninstall_regular "$entry" || return 1 ;;
       recovery.sock) [[ -S $entry ]] || return 1 ;;
       rule-*.json)
         [[ $name =~ ^rule-[a-f0-9]{48}\.json$ ]] && relay_uninstall_regular "$entry" || return 1 ;;
@@ -72,7 +75,6 @@ relay_uninstall_unit_preflight() {
 }
 relay_uninstall_identity_preflight() {
   local state=$1 expected_id=$2 expected_server=$3 require_v2=${4:-0}
-  relay_uninstall_state_manifest "$state" || return 1
   relay_uninstall_regular "$state/relay-token.json" || return 1
   [[ $require_v2 == 0 ]] || relay_uninstall_regular "$state/relay-v2-state.json" || return 1
   python3 - "$state" "$expected_id" "$expected_server" "$require_v2" <<'PY'
@@ -98,31 +100,28 @@ try:
         assert isinstance(v2, dict) and v2.get('schema') == 2
         assert v2.get('offlinePolicy') == 'keep_last'
         assert v2.get('agentId') == expected_id and v2.get('serverUrl') == expected_server
-        assert v2.get('recoveryRequired') is not True
-        records = v2.get('records')
-        assert isinstance(records, dict)
-        assert all(isinstance(record, dict) and record.get('state') == 'stopped'
-                   and isinstance(record.get('command'), dict)
-                   and record['command'].get('action') == 'revoke'
-                   for record in records.values())
+        # This is a destructive local stop, not an online retirement proof.
+        # ready/failed/recovery/unknown records must not trap the VPS owner.
 except (OSError, ValueError, AssertionError, TypeError):
     sys.exit(1)
 PY
 }
-relay_uninstall_backup_manifest() (
-  local dir=$1 owner=${2:-0} entry name
-  relay_uninstall_private_dir "$dir" && [[ $(stat -c %u -- "$dir") == "$owner" ]] || return 1
-  shopt -s nullglob dotglob
-  for entry in "$dir"/*; do
-    name=${entry##*/}
-    [[ ! -L $entry ]] || return 1
-    case $name in
-      binary|environment|unit) relay_uninstall_regular "$entry" || return 1 ;;
-      relay-state|failed-new-relay-state) relay_uninstall_state_manifest "$entry" || return 1 ;;
-      *) return 1 ;;
-    esac
-  done
-)
+relay_uninstall_stopped() {
+  local unit=$1 active
+  active=$(systemctl show "$unit" -p ActiveState --value) || return 1
+  [[ $active == inactive || $active == failed ]] || return 1
+  [[ $(systemctl show "$unit" -p MainPID --value) == 0 &&
+     $(systemctl show "$unit" -p ControlPID --value) == 0 &&
+     -z $(systemctl show "$unit" -p ControlGroup --value) ]]
+}
+relay_uninstall_help() {
+  printf '%s\n' \
+    '用法：uninstall-agent.sh --agent-id 节点ID --server https://面板域名 --acknowledge-stop [--check]' \
+    '只在目标节点 VPS 以 root 运行。确认后会停止本机 Relay 及全部转发。' \
+    '不要求面板在线、先退役或转发终态；但节点身份、路径归属必须匹配，进程必须真正停止。' \
+    '自动保留 root 私有备份及既有备份；不删除控制面记录、执行机或其他服务。' \
+    '--check 仅检查本机身份和受管文件，不停止服务、不删除文件。'
+}
 relay_uninstall_lock() {
   local parent=/run/msboost-agent-install path identity
   [[ -d /run && ! -L /run && $(stat -c %u -- /run) == 0 ]] || relay_uninstall_fail '锁目录父路径不可信。'
@@ -145,7 +144,7 @@ if [[ ${BASH_SOURCE[0]} != "$0" ]]; then return 0; fi
 set -Eeuo pipefail
 umask 077
 export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-agent_id='' server='' acknowledge=0
+agent_id='' server='' acknowledge=0 check_only=0
 while (( $# )); do
   case $1 in
     --agent-id|--server)
@@ -153,15 +152,17 @@ while (( $# )); do
       if [[ $1 == --agent-id ]]; then agent_id=$2; else server=${2%/}; fi
       shift 2 ;;
     --acknowledge-stop) acknowledge=1; shift ;;
+    --check) check_only=1; shift ;;
+    --help|-h) relay_uninstall_help; exit 0 ;;
     *) relay_uninstall_fail "未知参数 $1。" ;;
   esac
 done
 [[ $agent_id =~ ^[a-f0-9]{40}$ ]] || relay_uninstall_fail '节点 ID 格式无效。'
 [[ $server =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || relay_uninstall_fail '必须指定原 HTTPS 控制面地址。'
-[[ $acknowledge == 1 ]] || relay_uninstall_fail '须显式添加 --acknowledge-stop，确认本机连接会断开。'
+[[ $acknowledge == 1 || $check_only == 1 ]] || relay_uninstall_fail '须显式添加 --acknowledge-stop，确认本机连接会断开。'
 [[ $(uname -s) == Linux && $(id -u) == 0 ]] || relay_uninstall_fail '仅可在目标 Linux VPS 以 root 运行。'
-for tool in systemctl flock stat python3; do command -v "$tool" >/dev/null || relay_uninstall_fail "缺少 $tool。"; done
-relay_uninstall_lock
+for tool in systemctl flock stat python3 tar; do command -v "$tool" >/dev/null || relay_uninstall_fail "缺少 $tool。"; done
+if (( ! check_only )); then relay_uninstall_lock; fi
 managed=/usr/local/libexec/msboost-agent
 binary=/usr/local/bin/msboost-agent
 envfile=/etc/msboost-relay.env
@@ -180,29 +181,35 @@ env_mode=$(stat -c %a -- "$envfile")
 state=$(relay_uninstall_state_path /var/lib/msboost-relay /var/lib/private/msboost-relay) || relay_uninstall_fail '本机中转状态布局不可信。'
 relay_uninstall_unit_preflight "$unitfile" "$state" || relay_uninstall_fail '本机服务单元不是受管 Relay 形态。'
 [[ $(systemctl show "$unit" -p FragmentPath --value) == "$unitfile" && -z $(systemctl show "$unit" -p DropInPaths --value) ]] || relay_uninstall_fail 'systemd 实际单元路径或覆盖配置不匹配。'
+[[ $(systemctl show "$unit" -p KillMode --value) == control-group ]] || relay_uninstall_fail '服务不是整组停止模式，无法保证转发子进程停止。'
 require_v2=0
 [[ $state != /var/lib/private/msboost-relay ]] || require_v2=1
-relay_uninstall_identity_preflight "$state" "$agent_id" "$server" "$require_v2" || relay_uninstall_fail '本机节点身份、控制面或转发终态不匹配；不得清理可能仍在运行的业务。'
-backups=()
-if [[ -e /var/backups/msboost-agent || -L /var/backups/msboost-agent ]]; then
-  [[ -d /var/backups && ! -L /var/backups && $(stat -c %u -- /var/backups) == 0 ]] || relay_uninstall_fail '私有备份父目录不可信。'
-  relay_uninstall_private_dir /var/backups/msboost-agent && [[ $(stat -c %u -- /var/backups/msboost-agent) == 0 ]] || relay_uninstall_fail '私有备份路径不可信。'
-  shopt -s nullglob
-  for path in /var/backups/msboost-agent/relay.*; do
-    [[ ${path##*/} =~ ^relay\.[A-Za-z0-9]{8}$ ]] && relay_uninstall_backup_manifest "$path" || relay_uninstall_fail '存在未受信的 Relay 备份，拒绝部分清理。'
-    backups+=("$path")
-  done
-  shopt -u nullglob
+relay_uninstall_state_manifest "$state" || relay_uninstall_fail '状态目录包含未识别文件或不安全链接；尚未停止服务。请检查目录文件归属。'
+relay_uninstall_identity_preflight "$state" "$agent_id" "$server" "$require_v2" || relay_uninstall_fail '指定节点 ID 或面板地址与本机身份不符，或身份文件已损坏；尚未停止服务。请核对命令是否属于这台 VPS。'
+if (( check_only )); then
+  printf '检查通过：本机节点 %s，面板 %s。未停止服务、未清理文件。\n' "$agent_id" "$server"
+  exit 0
 fi
+[[ -d /var/backups && ! -L /var/backups && $(stat -c %u -- /var/backups) == 0 ]] || relay_uninstall_fail '私有备份父目录不可信。'
+if [[ ! -e /var/backups/msboost-agent && ! -L /var/backups/msboost-agent ]]; then
+  mkdir -m 0700 -- /var/backups/msboost-agent
+fi
+relay_uninstall_private_dir /var/backups/msboost-agent && [[ $(stat -c %u -- /var/backups/msboost-agent) == 0 ]] || relay_uninstall_fail '私有备份路径不可信。'
+backup=$(mktemp -d /var/backups/msboost-agent/uninstall-relay.XXXXXXXX)
+printf '卸载备份目录：%s（仅 root 可读，请勿公开）\n' "$backup"
 shared=0
 for path in /etc/systemd/system/msboost-executor.service /etc/msboost-executor.env; do
   [[ ! -e $path && ! -L $path ]] || shared=1
 done
 systemctl is-active --quiet msboost-executor.service && shared=1 || true
-printf '即将停止并删除本机受管节点 %s；旧连接会断开，且此步骤不能恢复。\n' "$agent_id"
+printf '即将停止并卸载本机受管节点 %s；全部旧连接会断开。不会等待面板或转发终态。\n' "$agent_id"
 systemctl stop "$unit" || relay_uninstall_fail '无法停止旧 Relay；没有删除状态。'
-systemctl is-active --quiet "$unit" && relay_uninstall_fail '旧 Relay 仍在运行；没有删除状态。'
-relay_uninstall_identity_preflight "$state" "$agent_id" "$server" "$require_v2" || relay_uninstall_fail '停止后状态变化或仍有未停止转发；没有删除状态。'
+relay_uninstall_stopped "$unit" || relay_uninstall_fail 'Relay 或转发子进程尚未完全退出；没有删除文件。'
+relay_uninstall_state_manifest "$state" || relay_uninstall_fail '停止后目录出现未识别文件或不安全链接；没有删除文件。'
+relay_uninstall_identity_preflight "$state" "$agent_id" "$server" "$require_v2" || relay_uninstall_fail '停止后节点身份发生变化；没有删除文件。'
+# Existing backups are outside the deletion scope and never gate uninstall.
+tar -czf "$backup/relay.tar.gz" -C / -- "${unitfile#/}" "${envfile#/}" "${binary#/}" "${managed#/}" "${state#/}" || relay_uninstall_fail '无法保存完整私有备份；服务已停止，但没有删除文件。'
+tar -tzf "$backup/relay.tar.gz" >/dev/null || relay_uninstall_fail '私有备份校验失败；服务已停止，但没有删除文件。'
 systemctl disable "$unit" >/dev/null || relay_uninstall_fail '无法禁用旧 Relay；状态尚未删除。'
 rm -f -- "$unitfile" "$envfile"
 systemctl daemon-reload
@@ -212,14 +219,11 @@ if [[ -L /var/lib/msboost-relay ]]; then
   [[ $(readlink -- /var/lib/msboost-relay) == private/msboost-relay || $(readlink -- /var/lib/msboost-relay) == /var/lib/private/msboost-relay ]] || relay_uninstall_fail '公开状态链接不可信。'
   rm -f -- /var/lib/msboost-relay
 fi
-for path in "${backups[@]}"; do
-  [[ $path == /var/backups/msboost-agent/relay.* && ! -L $path ]] || relay_uninstall_fail '备份路径发生变化。'
-  rm -rf -- "$path"
-done
 if [[ $shared == 0 ]]; then
   rm -f -- "$binary" "$managed/gost-v3.3.0" "$marker"
   rmdir -- "$managed" || relay_uninstall_fail '共享程序目录仍有其他文件，已保留以便人工核查。'
 fi
-printf '已清理本机受管 Relay 身份、状态、单元与同角色私有备份。'
+printf '已停止并清理本机受管 Relay 身份、状态与单元；既有私有备份全部保留。'
 if [[ $shared == 1 ]]; then printf '同机执行机仍在，已保留共享程序。'; fi
-printf '\n请在控制面核对旧节点已退役；本脚本不会删除控制面记录或其他服务。\n'
+printf '\n本次卸载备份：%s/relay.tar.gz\n' "$backup"
+printf '本脚本不会删除控制面记录或其他服务。若后台仍有该节点，请处理关联业务并删除或封存；本机卸载不会自动释放面板预留端口。\n'

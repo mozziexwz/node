@@ -268,10 +268,10 @@ export function ResourcePage({ kind }: { kind: string }) {
     [token, setToken] = useState<RecordData | null>(null),
     [blockedAgent, setBlockedAgent] = useState<RecordData | null>(null),
     [deletedAgent, setDeletedAgent] = useState<RecordData | null>(null);
-  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.1.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
+  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.1.1/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
   const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;
   const relayUninstallCommand = (id: string) =>
-    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.1.0/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
+    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.1.1/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
   async function freshResetAgent(row: RecordData) {
     if (
       !confirm(
@@ -720,6 +720,23 @@ export function ResourcePage({ kind }: { kind: string }) {
           <p className="muted mt16">
             重新部署会中断此节点现有连接。管理连接离线时，节点仍可能继续转发。
           </p>
+          <p className="mt16">
+            确定不再使用本机节点？在该节点 VPS 的 root 终端运行以下卸载命令。
+            无需等待面板在线或转发停止确认，会中断全部现有连接并保留私有备份。
+            卸载不会自动删除后台记录或释放预留端口，请另行处理关联业务。
+          </p>
+          <pre className="code-panel">
+            {relayUninstallCommand(blockedAgent.id)}
+          </pre>
+          <Button
+            onClick={() =>
+              void copyText(relayUninstallCommand(blockedAgent.id)).catch((e) =>
+                setMessage(e.message),
+              )
+            }
+          >
+            复制本机节点卸载命令
+          </Button>
           <div className="actions mt16">
             <Button
               primary
@@ -736,7 +753,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             </a>
             <a
               className="btn"
-              href="https://github.com/mozziexwz/node/blob/v2.1.0/docs/relay-recovery.md"
+              href="https://github.com/mozziexwz/node/blob/v2.1.1/docs/relay-recovery.md"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -768,7 +785,9 @@ export function ResourcePage({ kind }: { kind: string }) {
           <p className="muted mt16">
             需要重新使用这台 VPS
             时，先完成清理，再新增节点并使用新节点令牌安装。
-            如果清理脚本检测到本机仍有未停止转发或路径归属不明，会拒绝删除。
+            无需等待面板在线或转发终态。脚本会先停止整个节点服务，再备份清理；
+            仅目标身份不符、文件归属不明或进程无法停止时会中止，避免误删。
+            旧备份和同机执行机保留；本次卸载备份路径会在终端显示。
           </p>
         </Modal>
       )}
