@@ -20,6 +20,12 @@ for unit in msboost-relay.service msboost-relay-firewall.service; do
   [[ -z $(systemctl show "$unit" -p FragmentPath --value) && $(systemctl show "$unit" -p MainPID --value) == 0 ]]
 done
 [[ ! -e /run/msboost-firewall-probe ]]
+# Fresh Debian/Ubuntu runners need not have installed any libexec program yet.
+# Create only the standard parent; each fixture still gets its own mktemp path.
+[[ ! -L /usr/local/libexec ]]
+mkdir -p /usr/local/libexec
+[[ -d /usr/local/libexec && $(stat -c %u /usr/local/libexec) == 0 ]]
+[[ $(stat -c %a /usr/local/libexec) =~ ^[0-7]?[0-7][0145][0145]$ ]]
 stage=$(mktemp -d /usr/local/libexec/msboost-firewall-test.XXXXXXXX)
 chmod 0755 "$stage"
 suffix=${stage##*.}; ns=msbf-$suffix; peer=msbc-$suffix
