@@ -4,6 +4,45 @@ import { chromium, expect } from '@playwright/test';
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 
+test('settings cannot save false defaults while loading or after a failed refresh', {timeout:60000}, async () => {
+  const compiled=await build({stdin:{contents:`import React from 'react';import {createRoot} from 'react-dom/client';import {Settings} from './admin';createRoot(document.getElementById('app')).render(<Settings onRefresh={()=>{}}/>);`,resolveDir:fileURLToPath(new URL('../src/',import.meta.url)),loader:'jsx'},bundle:true,write:false,format:'iife',platform:'browser'});
+  const browser=await chromium.launch({headless:true,...(process.platform==='win32'?{channel:'chrome'}:{})});
+  const page=await browser.newPage();const base='http://127.0.0.1:19988';let releaseRead,mode='pending',writes=[];
+  const settings={deploy:true,relay:true,dd:true,paidCreate:true,planSale:true,cards:true,paywx:false,payali:false,monitor:true,localSave:true,publicArticles:true,attachments:true,maintenance:false,register:true,invite:false,registrationEmailVerificationRequired:true,freeToolsRequireVerifiedEmail:true,purchaseRequireVerifiedEmail:true};
+  await page.route('**/*',async route=>{
+    const url=new URL(route.request().url());if(url.origin!==base)return route.abort();
+    if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:'<div id="app"></div>'});
+    if(url.pathname==='/api/admin/settings'){
+      if(route.request().method()==='PUT'){writes.push(route.request().postDataJSON());mode='failed';return route.fulfill({json:{ok:true}});}
+      if(mode==='pending')await new Promise(resolve=>releaseRead=resolve);
+      if(mode!=='ready')return route.fulfill({status:503,json:{error:'设置读取失败，请重试'}});
+      return route.fulfill({json:{settings}});
+    }
+    return route.fulfill({json:{}});
+  });
+  try{
+    await page.goto(base);await page.addScriptTag({content:compiled.outputFiles[0].text});
+    await expect.poll(()=>typeof releaseRead).toBe('function');
+    await expect(page.getByRole('button',{name:'保存',exact:true})).toHaveCount(0);
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    releaseRead();await expect(page.getByText('设置读取失败，请重试',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'保存',exact:true})).toHaveCount(0);
+    mode='ready';await page.getByRole('button',{name:'重新读取设置',exact:true}).click();
+    await expect(page.getByRole('checkbox',{name:'部署 MSBOOST',exact:true})).toBeChecked();
+    await page.getByRole('checkbox',{name:'维护模式',exact:true}).check();
+    await page.getByRole('button',{name:'保存',exact:true}).click();
+    await expect.poll(()=>writes.length).toBe(1);
+    assert.equal(writes[0].maintenance,true);assert.equal(writes[0].deploy,true);assert.equal(writes[0].relay,true);assert.equal(writes[0].dd,true);assert.equal(writes[0].paywx,false);
+    await expect(page.getByText('设置读取失败，请重试',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'保存',exact:true})).toHaveCount(0);
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    mode='ready';await page.getByRole('button',{name:'重新读取设置',exact:true}).click();
+    await page.getByRole('button',{name:'注册与验证',exact:true}).click();
+    await expect(page.getByRole('checkbox',{name:'注册时必须验证邮箱',exact:true})).toBeChecked();
+    assert.equal(writes.length,1);
+  }finally{releaseRead?.();await browser.close();}
+});
+
 test('pending and failed reads never claim disabled backups, missing nodes or empty tables', {timeout:60000}, async () => {
   const compiled=await build({stdin:{contents:`import React from 'react';import {createRoot} from 'react-dom/client';import {WholeSiteBackups} from './whole-site-backups';import {RouteBuilder} from './tunnels';import {ResourcePage,AdminRules} from './admin';import {Backups} from './backups';import {TasksPage} from './tools';createRoot(document.getElementById('app')).render(<><WholeSiteBackups/><RouteBuilder/><ResourcePage kind="executors"/><Backups/><TasksPage user={{id:'test',role:'admin'}} settings={{}}/><AdminRules/></>);`,resolveDir:fileURLToPath(new URL('../src/',import.meta.url)),loader:'jsx'},bundle:true,write:false,format:'iife',platform:'browser'});
   const browser=await chromium.launch({headless:true,...(process.platform==='win32'?{channel:'chrome'}:{})});

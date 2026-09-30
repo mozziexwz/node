@@ -294,12 +294,12 @@ export function ResourcePage({ kind }: { kind: string }) {
     [blockedAgent, setBlockedAgent] = useState<RecordData | null>(null),
     [deletedAgent, setDeletedAgent] = useState<RecordData | null>(null),
     [cleanupHelp, setCleanupHelp] = useState(false);
-  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.1/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
+  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.2/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
   const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;
   const cleanupRole = kind === "executors" ? "executor" : "relay";
-  const cleanupCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.1/deploy/cleanup-agent.sh -o /tmp/msboost-cleanup-agent.sh && bash /tmp/msboost-cleanup-agent.sh --capability ${cleanupRole} --check`;
+  const cleanupCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.2/deploy/cleanup-agent.sh -o /tmp/msboost-cleanup-agent.sh && bash /tmp/msboost-cleanup-agent.sh --capability ${cleanupRole} --check`;
   const relayUninstallCommand = (id: string) =>
-    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.1/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
+    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.2/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
   async function freshResetAgent(row: RecordData) {
     if (
       !confirm(
@@ -839,7 +839,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             </a>
             <a
               className="btn"
-              href="https://github.com/mozziexwz/node/blob/v2.2.1/docs/relay-recovery.md"
+              href="https://github.com/mozziexwz/node/blob/v2.2.2/docs/relay-recovery.md"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -1288,11 +1288,15 @@ const featureNames: Record<string, string> = {
   purchaseRequireVerifiedEmail: "兑换权益必须验证邮箱",
 };
 export function Settings({ onRefresh }: { onRefresh: () => void }) {
-  const { data, error, reload } = useData("/api/admin/settings");
+  const { data, error, loading, reload } = useData("/api/admin/settings");
   const [tab, setTab] = useState("features"),
     [values, setValues] = useState<RecordData>({});
+  const [loadedSettings, setLoadedSettings] = useState<RecordData | null>(null);
   useEffect(() => {
-    if (data) setValues(data.settings || data);
+    if (data) {
+      setValues(data.settings || data);
+      setLoadedSettings(data);
+    }
   }, [data]);
   const keys =
     tab === "registration"
@@ -1313,6 +1317,21 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
               "purchaseRequireVerifiedEmail",
             ].includes(k),
         );
+  // Do not serialize unchecked defaults or stale values before the latest
+  // successful read has been copied into the editable form.
+  if (loading || error || !data || loadedSettings !== data) {
+    return (
+      <>
+        <Header title="系统设置" sub="功能开关由服务端即时校验。" />
+        <ErrorNotice error={error} />
+        {loading || !error ? (
+          <Notice>正在读取系统设置…</Notice>
+        ) : (
+          <Button onClick={reload}>重新读取设置</Button>
+        )}
+      </>
+    );
+  }
   return (
     <>
       <Header title="系统设置" sub="功能开关由服务端即时校验。" />

@@ -24,7 +24,7 @@ test('maintenance UI explains draining, scoped cleanup and verified backup targe
       const responses={
         '/api/me':{user:{id:'maintenance-admin',role:'admin',status:'active',email:'10000001@qq.com'}},
         '/api/settings':{},
-        '/api/admin/executors':{executors:[{id:'fixture-executor',name:'验收执行机',status:'draining',online:true,version:'v2.2.1',lastSeenAt:Date.now()}]},
+        '/api/admin/executors':{executors:[{id:'fixture-executor',name:'验收执行机',status:'draining',online:true,version:'v2.2.2',lastSeenAt:Date.now()}]},
         '/api/admin/backups':{backups:[]},
         '/api/admin/backup-plan':{},
         '/api/admin/backup-capacity':{status:'normal',estimatedPackedBytes:1048576,maxPackedBytes:104857600,remainingContentBytes:82837504},
@@ -35,7 +35,7 @@ test('maintenance UI explains draining, scoped cleanup and verified backup targe
     await page.goto(base+'/#executors');
     await page.addScriptTag({content:bundle.outputFiles.find(file=>file.path.endsWith('.js')).text});
     await expect(page.getByText('等待现有任务完成（不接新任务）',{exact:true})).toBeVisible();
-    await expect(page.getByText('v2.2.1',{exact:true})).toBeVisible();
+    await expect(page.getByText('v2.2.2',{exact:true})).toBeVisible();
     await page.getByRole('button',{name:'本机清理说明',exact:true}).click();
     const modal=page.locator('dialog');
     await expect(modal.getByText('卸载本机执行机',{exact:true})).toBeVisible();

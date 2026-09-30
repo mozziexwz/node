@@ -2,7 +2,7 @@
 
 MSBOOST 是自托管控制面板。会员在网页上将游戏节点部署到自己的 VPS，配置自备中转或使用捐赠权益转发；管理员管理执行机、节点、权益、兑换、工单和备份。系统 DD 使用固定版本的 [bin456789/reinstall](https://github.com/bin456789/reinstall) 脚本。
 
-当前版本：**v2.2.1**。采用官方 systemd Caddy，应用与数据库继续使用预构建 Compose 镜像。支持 v2.0.1 的 systemd Caddy 安装升级，**不提供旧 Docker Caddy 迁移或旧数据导入。** 控制面支持 Debian 12/13；客户 VPS 免费部署工具支持 Debian 11/12/13；网站 DD 功能重装为 Debian 12。部署前请阅读[平台支持范围](docs/platform-support.md)和[安全边界](docs/security-and-limits.md)。
+当前版本：**v2.2.2**。采用官方 systemd Caddy，应用与数据库继续使用预构建 Compose 镜像。支持 v2.0.1 的 systemd Caddy 安装升级，**不提供旧 Docker Caddy 迁移或旧数据导入。** 控制面支持 Debian 12/13；客户 VPS 免费部署工具支持 Debian 11/12/13；网站 DD 功能重装为 Debian 12。部署前请阅读[平台支持范围](docs/platform-support.md)和[安全边界](docs/security-and-limits.md)。
 
 新版免费中转和捐赠权益转发默认筛查并拒绝常见明文 SOCKS4/5 握手，无需会员另行设置。升级网站不会自动更新其他 VPS 上的旧执行机、节点 Agent 或已有中转；新转发须由具备防护能力的新版 Agent 执行，存量服务应按[Agent 安装与升级](docs/agent-installation.md)安排维护。加密或伪装的代理流量不能仅凭入口特征完全识别。
 
@@ -12,11 +12,11 @@ MSBOOST 是自托管控制面板。会员在网页上将游戏节点部署到自
 
 ```sh
 apt-get update && apt-get install -y curl ca-certificates
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.1/install.sh -o /root/msboost-install.sh
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.2/install.sh -o /root/msboost-install.sh
 bash /root/msboost-install.sh
 ```
 
-安装器优先拉取 `ghcr.io/mozziexwz/node:v2.2.1` 预构建镜像；GHCR 不可用时下载并校验同版本 [Release](https://github.com/mozziexwz/node/releases/tag/v2.2.1) 的预构建归档。两者均失败则停止，不在 VPS 静默编译。安装前应核对 Release 的 `SHA256SUMS` 与目标架构。Caddy 自动签发 HTTPS 证书。初始管理员密码保存在仅 root 可读的 `/opt/msboost/.env`，不会写入安装日志；在私有终端查看：
+安装器优先拉取 `ghcr.io/mozziexwz/node:v2.2.2` 预构建镜像；GHCR 不可用时下载并校验同版本 [Release](https://github.com/mozziexwz/node/releases/tag/v2.2.2) 的预构建归档。两者均失败则停止，不在 VPS 静默编译。安装前应核对 Release 的 `SHA256SUMS` 与目标架构。Caddy 自动签发 HTTPS 证书。初始管理员密码保存在仅 root 可读的 `/opt/msboost/.env`，不会写入安装日志；在私有终端查看：
 
 ```sh
 sed -n '/^ADMIN_EMAIL=/p; /^ADMIN_PASSWORD=/p' /opt/msboost/.env
@@ -74,7 +74,7 @@ node scripts/dev-server.mjs
 - [安全模型与限制](docs/security-and-limits.md)、[Relay 离线与恢复](docs/relay-v2-contract.md)、[受信恢复操作](docs/relay-recovery.md)
 - [备份与恢复](docs/backup-recovery.md)、[整站灾备](docs/disaster-backup.md)
 - [身份接口](docs/contracts-identity.md)、[任务接口](docs/contracts-tasks.md)、[商务与线路接口](docs/contracts-commerce.md)
-- [v2.2.1 发布说明](docs/release-notes.md)、[第三方来源与许可](THIRD_PARTY_NOTICES.md)
+- [v2.2.2 发布说明](docs/release-notes.md)、[第三方来源与许可](THIRD_PARTY_NOTICES.md)
 
 用户提供的 MSBOOST 脚本保存在 `installers/node/msboost.sh`；DD 脚本使用审查过的固定上游提交，见 [reinstall 清单](installers/reinstall/manifest.json)。不会随客户点击自动追踪上游 `main`。
 
