@@ -445,8 +445,11 @@ func (a *App) relaySyncAgentV2(w http.ResponseWriter, r *http.Request) {
 		}
 		agent.ProtocolVersion, agent.OfflinePolicy, agent.Capabilities = relayruntime.ProtocolV2, relayruntime.KeepLast, append([]string(nil), in.Capabilities...)
 		if !conflict && freshObservation {
-			if len(in.Version) <= 64 && in.Version != "" && !strings.ContainsAny(in.Version, "\x00\r\n\t ") {
-				agent.Version = in.Version
+			if newInstance {
+				agent.Version = ""
+			}
+			if version := r.Header.Get("X-MSBOOST-Agent-Version"); len(version) <= 64 && version != "" && !strings.ContainsAny(version, "\x00\r\n\t ") {
+				agent.Version = version
 			}
 			clearRelayEnrollmentRetry(&agent)
 			if newInstance {

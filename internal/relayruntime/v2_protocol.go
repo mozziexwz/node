@@ -85,7 +85,6 @@ type V2TrafficAck struct {
 
 type V2SyncRequest struct {
 	ProtocolVersion           int                 `json:"protocolVersion"`
-	Version                   string              `json:"version,omitempty"`
 	AgentID                   string              `json:"agentId"`
 	AgentInstanceID           string              `json:"agentInstanceId"`
 	Sequence                  int64               `json:"sequence"`

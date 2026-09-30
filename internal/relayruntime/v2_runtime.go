@@ -389,7 +389,6 @@ func (s *runtimeState) v2Request(instanceID string) V2SyncRequest {
 func (s *runtimeState) v2RequestLocked(instanceID string) V2SyncRequest {
 	s.v2.sequence++
 	request := V2SyncRequest{ProtocolVersion: ProtocolV2, AgentID: s.v2.disk.AgentID, AgentInstanceID: instanceID, Sequence: s.v2.sequence, RequestID: randomID(), ControlEpoch: s.v2.disk.ControlEpoch, AppliedRevision: s.v2.disk.Revision, Capabilities: append(append([]string(nil), V2Capabilities...), SocksGuardCapability, TargetProbeCapability), Acks: []V2Ack{}, Traffic: s.v2TrafficBatchLocked(), AccountingDegraded: s.v2AccountingDegradedLocked()}
-	request.Version = s.cfg.Version
 	request.TargetProbeResults = s.targetProbeBatchLocked()
 	request.localCredentialGeneration = s.v2.credentialGeneration
 	for _, record := range s.v2.disk.Records {
@@ -427,6 +426,9 @@ func callV2(ctx context.Context, cfg Config, token string, request V2SyncRequest
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
+	// Optional build metadata belongs in a header: pre-v2.2 panels reject
+	// unknown JSON fields before processing an otherwise valid v2 sync.
+	req.Header.Set("X-MSBOOST-Agent-Version", cfg.Version)
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	res, err := client.Do(req)
 	if err != nil {

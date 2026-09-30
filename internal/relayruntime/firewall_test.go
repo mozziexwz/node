@@ -57,3 +57,36 @@ func TestFirewallOptionalFieldFallbackDoesNotRetryAuthOrCurrentPeerErrors(t *tes
 		}
 	}
 }
+
+func TestRelayBuildVersionIsHeaderOnlyForStrictLegacyPanels(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("X-MSBOOST-Agent-Version") != "v2.2.0" {
+			t.Error("build version header missing")
+		}
+		var fields map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
+			t.Error(err)
+			http.Error(w, "invalid request", 400)
+			return
+		}
+		allowed := strings.Fields("protocolVersion agentId agentInstanceId sequence requestId controlEpoch appliedRevision capabilities acks traffic targetProbeResults accountingDegraded")
+		for field := range fields {
+			known := false
+			for _, key := range allowed {
+				known = known || field == key
+			}
+			if !known {
+				http.Error(w, "strict legacy request", 400)
+				return
+			}
+		}
+		io.WriteString(w, `{"protocolVersion":2,"status":"ready"}`)
+	}))
+	defer server.Close()
+	_, err := callV2(context.Background(), Config{ServerURL: server.URL, Version: "v2.2.0"}, "test-token", V2SyncRequest{ProtocolVersion: 2, AgentID: "agent"})
+	if err != nil || calls != 1 {
+		t.Fatal("new build cannot sync with strict legacy panel", calls, err)
+	}
+}
