@@ -30,6 +30,11 @@ stage=$(mktemp -d /usr/local/libexec/msboost-firewall-test.XXXXXXXX)
 chmod 0755 "$stage"
 suffix=${stage##*.}; ns=msbf-$suffix; peer=msbc-$suffix
 created=0; ns_created=0; peer_created=0
+snapshot_host_rules() {
+  # iptables-save emits wall-clock comments and live built-in-chain counters
+  # on some versions. Compare all policy/rule content, not that moving metadata.
+  "$1" | sed '/^#/d; s/ \[[0-9][0-9]*:[0-9][0-9]*\]$/ [0:0]/'
+}
 cleanup() {
   local result=$?
   trap - EXIT
@@ -48,10 +53,10 @@ cleanup() {
   [[ $ns_created == 0 ]] || ip netns delete "$ns"
   # Keep the small private fixture for reproducibility; no broad deletion.
   printf 'PRIVATE_SERVICE_FIXTURE=%s\n' "$stage"
-  iptables-save > "$work/ufw-host-after"
-  ip6tables-save > "$work/ufw6-host-after"
-  cmp -s "$work/ufw-host-before" "$work/ufw-host-after"
-  cmp -s "$work/ufw6-host-before" "$work/ufw6-host-after"
+  snapshot_host_rules iptables-save > "$work/ufw-host-after"
+  snapshot_host_rules ip6tables-save > "$work/ufw6-host-after"
+  diff -u "$work/ufw-host-before" "$work/ufw-host-after"
+  diff -u "$work/ufw6-host-before" "$work/ufw6-host-after"
   printf 'HOST_FIREWALL_UNCHANGED\n'
   exit "$result"
 }
@@ -59,8 +64,8 @@ install -m 0755 "$work/agent" "$stage/agent"
 install -m 0755 "$work/firewall.test" "$stage/firewall.test"
 cp -a /etc/ufw "$stage/ufw"
 cp -a /etc/default/ufw "$stage/default-ufw"
-iptables-save > "$work/ufw-host-before"
-ip6tables-save > "$work/ufw6-host-before"
+snapshot_host_rules iptables-save > "$work/ufw-host-before"
+snapshot_host_rules ip6tables-save > "$work/ufw6-host-before"
 trap cleanup EXIT
 ip netns add "$ns"; ns_created=1
 ip netns add "$peer"; peer_created=1
@@ -124,9 +129,13 @@ with socket.create_connection(('10.237.54.1',int(sys.argv[1])),2) as s:
 PY
 }
 probe
-ufw_private reload
-sleep 3
-probe
+# Repeated administrator operations must serialize with the continuously
+# running helper, not race UFW's multi-command chain teardown/rebuild.
+for reload in $(seq 1 12); do
+  ufw_private reload
+  sleep 2
+  probe
+done
 systemctl stop msboost-relay.service
 sleep 3
 ! nsenter --net="/run/netns/$ns" -- iptables -C MSBOOST-RELAY -p tcp -m tcp --dport "$port" -m comment --comment msboost-relay-firewall-v1 -j ACCEPT

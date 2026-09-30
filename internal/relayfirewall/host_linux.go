@@ -158,21 +158,67 @@ func relayPID(ctx context.Context) (int, error) {
 	return pid, nil
 }
 
+// UFW uses POSIX lockf, not flock. Individual xtables locks do not protect its
+// multi-command reload: reattaching our jump halfway through that reload can
+// prevent UFW from deleting/rebuilding its own chains. Share its operation lock
+// across BOTH families, and do not invoke the locking UFW CLI while holding it.
+func lockUFW(ctx context.Context, path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0644)
+	if err != nil {
+		return nil, err
+	}
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0022 != 0 || st.Sys().(*syscall.Stat_t).Uid != 0 || st.Sys().(*syscall.Stat_t).Nlink != 1 {
+		f.Close()
+		return nil, errors.New("untrusted UFW operation lock")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	for {
+		lock := syscall.Flock_t{Type: syscall.F_WRLCK, Whence: 0, Start: 0, Len: 0}
+		err = syscall.FcntlFlock(f.Fd(), syscall.F_SETLK, &lock)
+		if err == nil {
+			return f, nil // Closing the descriptor releases the POSIX lock.
+		}
+		if !errors.Is(err, syscall.EAGAIN) && !errors.Is(err, syscall.EACCES) {
+			f.Close()
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			f.Close()
+			return nil, errors.New("UFW operation is still in progress")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
 func syncHost(ctx context.Context, ports []int, cleanup bool) (string, error) {
 	// Do not bypass another firewall manager using a top-level INPUT accept.
 	if _, err := os.Stat("/usr/bin/firewall-cmd"); err == nil && !cleanup {
-		cmd := exec.CommandContext(ctx, "/usr/bin/firewall-cmd", "--state")
-		if cmd.Run() == nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		cmd := exec.CommandContext(probeCtx, "/usr/bin/firewall-cmd", "--state")
+		err := cmd.Run()
+		cancel()
+		if err == nil {
 			return "firewalld", errors.New("firewalld requires explicit administrator rules; automatic UFW management is unavailable")
 		}
 	}
 	active := false
 	if _, err := os.Stat("/usr/sbin/ufw"); err == nil {
-		out, e := runCommand(ctx, "ufw", "status")
+		lock, e := lockUFW(ctx, "/run/ufw.lock")
 		if e != nil {
-			return "ufw", annotate(e, "read UFW")
+			return "ufw", annotate(e, "lock UFW")
 		}
-		active = strings.HasPrefix(out, "Status: active")
+		defer lock.Close()
+		// Match UFW's runtime check (ufw-user-input exists), not merely ENABLED
+		// in its startup config. Listing the table distinguishes missing chains
+		// from actual command failures without recursively acquiring ufw.lock.
+		out, e := runCommand(ctx, "iptables", "-w", "5", "-S")
+		if e != nil {
+			return "ufw", annotate(e, "read UFW runtime")
+		}
+		active = strings.Contains("\n"+out+"\n", "\n-N ufw-user-input\n")
 	}
 	backend := "unmanaged"
 	if active {

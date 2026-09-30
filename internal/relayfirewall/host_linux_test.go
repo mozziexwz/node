@@ -16,6 +16,89 @@ import (
 	"time"
 )
 
+func TestUFWLockCoordinatesWithPythonLockf(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned UFW operation lock")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python lockf interoperability needs python3")
+	}
+	path := filepath.Join(t.TempDir(), "ufw.lock")
+	lock, err := lockUFW(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	probe := `import fcntl,sys
+f=open(sys.argv[1],'w')
+try: fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except BlockingIOError: sys.exit(0)
+sys.exit(9)`
+	if out, err := exec.Command(python, "-c", probe, path).CombinedOutput(); err != nil {
+		t.Fatal("UFW lockf did not observe helper lock", err, string(out))
+	}
+	lock.Close()
+	// Hold the lock from a different process; waiting must respect cancellation.
+	child := exec.Command(python, "-u", "-c", `import fcntl,sys
+f=open(sys.argv[1],'w');fcntl.lockf(f,fcntl.LOCK_EX);print('locked',flush=True);sys.stdin.read()`, path)
+	in, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { in.Close(); child.Wait() }()
+	b := make([]byte, 7)
+	if _, err = io.ReadFull(out, b); err != nil || string(b) != "locked\n" {
+		t.Fatal(err, string(b))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if unexpected, err := lockUFW(ctx, path); err == nil {
+		unexpected.Close()
+		t.Fatal("ignored UFW's operation lock")
+	}
+}
+
+func TestUFWLockRejectsUnsafeFiles(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-only UFW operation lock")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lock")
+	if err := os.WriteFile(path, nil, 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0666); err != nil {
+		t.Fatal(err)
+	}
+	check := func(p string) {
+		t.Helper()
+		if f, err := lockUFW(context.Background(), p); err == nil {
+			f.Close()
+			t.Fatal("accepted unsafe lock", p)
+		}
+	}
+	check(path)
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	check(filepath.Join(dir, "link"))
+	if err := os.Link(path, filepath.Join(dir, "hard")); err != nil {
+		t.Fatal(err)
+	}
+	check(path)
+}
+
 func TestKernelListenerOwnership(t *testing.T) {
 	public, err := net.Listen("tcp4", "0.0.0.0:0")
 	if err != nil {
