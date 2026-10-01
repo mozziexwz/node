@@ -7,13 +7,14 @@ import { fileURLToPath } from 'node:url';
 test('settings cannot save false defaults while loading or after a failed refresh', {timeout:60000}, async () => {
   const compiled=await build({stdin:{contents:`import React from 'react';import {createRoot} from 'react-dom/client';import {Settings} from './admin';createRoot(document.getElementById('app')).render(<Settings onRefresh={()=>{}}/>);`,resolveDir:fileURLToPath(new URL('../src/',import.meta.url)),loader:'jsx'},bundle:true,write:false,format:'iife',platform:'browser'});
   const browser=await chromium.launch({headless:true,...(process.platform==='win32'?{channel:'chrome'}:{})});
-  const page=await browser.newPage();const base='http://127.0.0.1:19988';let releaseRead,mode='pending',writes=[];
+  const page=await browser.newPage();const base='http://127.0.0.1:19988';let releaseRead,mode='pending',failWrite=false,reads=0,writes=[];
   const settings={deploy:true,relay:true,dd:true,paidCreate:true,planSale:true,cards:true,paywx:false,payali:false,monitor:true,localSave:true,publicArticles:true,attachments:true,maintenance:false,register:true,invite:false,registrationEmailVerificationRequired:true,freeToolsRequireVerifiedEmail:true,purchaseRequireVerifiedEmail:true};
   await page.route('**/*',async route=>{
     const url=new URL(route.request().url());if(url.origin!==base)return route.abort();
     if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:'<div id="app"></div>'});
     if(url.pathname==='/api/admin/settings'){
-      if(route.request().method()==='PUT'){writes.push(route.request().postDataJSON());mode='failed';return route.fulfill({json:{ok:true}});}
+      if(route.request().method()==='PUT'){writes.push(route.request().postDataJSON());if(failWrite)return route.fulfill({status:503,json:{error:'保存失败，请重试'}});mode='failed';return route.fulfill({json:{ok:true}});}
+      reads++;
       if(mode==='pending')await new Promise(resolve=>releaseRead=resolve);
       if(mode!=='ready')return route.fulfill({status:503,json:{error:'设置读取失败，请重试'}});
       return route.fulfill({json:{settings}});
@@ -33,13 +34,23 @@ test('settings cannot save false defaults while loading or after a failed refres
     await page.getByRole('button',{name:'保存',exact:true}).click();
     await expect.poll(()=>writes.length).toBe(1);
     assert.equal(writes[0].maintenance,true);assert.equal(writes[0].deploy,true);assert.equal(writes[0].relay,true);assert.equal(writes[0].dd,true);assert.equal(writes[0].paywx,false);
+    await expect(page.getByText('设置已保存',{exact:true})).toBeVisible();
     await expect(page.getByText('设置读取失败，请重试',{exact:true})).toBeVisible();
     await expect(page.getByRole('button',{name:'保存',exact:true})).toHaveCount(0);
     await expect(page.getByRole('checkbox')).toHaveCount(0);
     mode='ready';await page.getByRole('button',{name:'重新读取设置',exact:true}).click();
+    await expect(page.getByText('设置已保存',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'保存',exact:true})).toBeVisible();
+    const readsBeforeFailedWrite=reads;
+    failWrite=true;await page.getByRole('button',{name:'保存',exact:true}).click();
+    await expect(page.getByText('保存失败，请重试',{exact:true})).toBeVisible();
+    await expect(page.getByText('设置已保存',{exact:true})).toHaveCount(0);
+    assert.equal(reads,readsBeforeFailedWrite,'a failed write must not refresh or preserve an earlier saved notice');
     await page.getByRole('button',{name:'注册与验证',exact:true}).click();
+    await expect(page.getByText('设置已保存',{exact:true})).toHaveCount(0);
     await expect(page.getByRole('checkbox',{name:'注册时必须验证邮箱',exact:true})).toBeChecked();
-    assert.equal(writes.length,1);
+    await expect(page.getByText('保存失败，请重试',{exact:true})).toHaveCount(0);
+    assert.equal(writes.length,2);
   }finally{releaseRead?.();await browser.close();}
 });
 
