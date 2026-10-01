@@ -36,32 +36,64 @@ caddy_validate() {
   runuser -u caddy -- /usr/bin/caddy validate --config "$CADDY_ROOT/Caddyfile" --adapter caddyfile
 }
 
+# The reviewed official .deb includes the standard service, user and Caddyfile.
+# A pinned release avoids depending on Cloudsmith's mutable repository signing
+# metadata. Never reinstall an existing package or change its shared service.
+caddy_install_package() (
+  local arch hash temp version=2.11.4
+  arch=$(dpkg --print-architecture) || return
+  case "$arch" in
+    amd64) hash=1c6f5404f3622e46d401d81f4af59677d46b886229c6694d60fd936b87c72d3bb5d1fcf42b55c8d555769fa75acf434ab618fc7e0df2c79cf8512ee580d38d06 ;;
+    arm64) hash=c43c62b7b583b31c682b3c3e1a31cf03759fbab01dcb0fc7d7fc3a5ce1bef43403583e26133920634a730a9fe31dae1386af4d3f9f3fc19fcc2c29ebf19de235 ;;
+    *) die 'Caddy 官方固定软件包仅支持 amd64/arm64'; return 1 ;;
+  esac
+  apt-get update || return
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl init-system-helpers passwd || return
+  temp=$(mktemp -d /tmp/msboost-caddy-package.XXXXXXXX) || return
+  trap 'rm -f -- "$temp/caddy.deb"; rmdir -- "$temp"' EXIT
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    --retry 3 --connect-timeout 15 --max-time 180 \
+    "https://github.com/caddyserver/caddy/releases/download/v$version/caddy_${version}_linux_${arch}.deb" -o "$temp/caddy.deb" || return
+  printf '%s  %s\n' "$hash" "$temp/caddy.deb" | sha512sum --check --strict || return
+  [[ $(dpkg-deb --field "$temp/caddy.deb" Package) == caddy &&
+     $(dpkg-deb --field "$temp/caddy.deb" Version) == "$version" &&
+     $(dpkg-deb --field "$temp/caddy.deb" Architecture) == "$arch" ]] || { die 'Caddy 软件包身份或架构不符'; return 1; }
+  # The artifact is public. Let APT's unprivileged sandbox read it without
+  # granting write access to any part of the root-owned temporary directory.
+  chmod 0755 "$temp" && chmod 0644 "$temp/caddy.deb" || return
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$temp/caddy.deb" || return
+)
+
 caddy_ensure() {
-  local key temp fresh=0
+  local temp path unit suffix package_status fresh=0
   if ! command -v ss >/dev/null; then
     apt-get update || return
     DEBIAN_FRONTEND=noninteractive apt-get install -y iproute2 || return
   fi
   if ! command -v caddy >/dev/null; then
-    [[ ! -e /etc/systemd/system/caddy.service && ! -L /etc/systemd/system/caddy.service ]] || { die '发现自定义 Caddy unit，未安装或覆盖'; return 1; }
-    [[ -z $(ss -H -ltn '( sport = :80 or sport = :443 )') ]] || { die '80/443 被其他服务占用，请先处理；不会停止该服务'; return 1; }
-    note '从 Caddy 官方稳定 apt 源安装 systemd 服务（应用和数据库继续使用预构建容器）。'
-    apt-get update || return
-    DEBIAN_FRONTEND=noninteractive apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gpg || return
-    for key in /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list; do
-      [[ ! -e $key && ! -L $key ]] || { die "已有 Caddy 软件源文件，请先核对：$key"; return 1; }
+    # Debian postinst starts the service. Reject orphan units and drop-ins
+    # before package installation, so their hooks cannot run before validation.
+    for path in /etc/systemd/system.control /run/systemd/system.control /run/systemd/transient /run/systemd/generator.early \
+      /etc/systemd/system /etc/systemd/system.attached /run/systemd/system /run/systemd/system.attached /run/systemd/generator \
+      /usr/local/lib/systemd/system /lib/systemd/system /usr/lib/systemd/system /run/systemd/generator.late; do
+      for unit in caddy.service caddy-api.service; do
+        for suffix in '' .d .wants .requires .upholds; do
+          [[ ! -e $path/$unit$suffix && ! -L $path/$unit$suffix ]] || { die "发现已有 Caddy unit 或扩展，未安装或覆盖：$path/$unit$suffix"; return 1; }
+        done
+      done
     done
-    temp=$(mktemp -d /tmp/msboost-caddy-apt.XXXXXXXX) || return
-    if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 https://dl.cloudsmith.io/public/caddy/stable/gpg.key -o "$temp/key.asc" ||
-       ! gpg --batch --dearmor --output "$temp/key.gpg" "$temp/key.asc" ||
-       ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt -o "$temp/source.list"; then
-      rm -f -- "$temp/key.asc" "$temp/key.gpg" "$temp/source.list"; rmdir "$temp"; return 1
-    fi
-    install -m 0644 "$temp/key.gpg" /usr/share/keyrings/caddy-stable-archive-keyring.gpg || return
-    install -m 0644 "$temp/source.list" /etc/apt/sources.list.d/caddy-stable.list || return
-    rm -- "$temp/key.asc" "$temp/key.gpg" "$temp/source.list"; rmdir "$temp"
-    apt-get update || return
-    DEBIAN_FRONTEND=noninteractive apt-get install -y caddy || return
+    for path in /usr/bin/caddy /etc/caddy /var/lib/caddy /var/log/caddy; do
+      [[ ! -e $path && ! -L $path ]] || { die "发现已有 Caddy 资源但命令不可用，未安装或覆盖：$path"; return 1; }
+    done
+    ! getent passwd caddy >/dev/null && ! getent group caddy >/dev/null || { die '已有 Caddy 用户或组但命令不可用，未接管'; return 1; }
+    package_status=$(dpkg-query -W -f='${db:Status-Status}' caddy 2>/dev/null) || {
+      [[ $? == 1 && -z $package_status ]] || { die '无法核对已有 Caddy 软件包状态，未安装'; return 1; }
+    }
+    [[ -z $package_status || $package_status == not-installed ]] || { die '已有 Caddy 软件包但命令不可用，请先人工修复；不会重装或升级共享服务。'; return 1; }
+    ! systemctl is-active --quiet caddy.service && ! systemctl is-active --quiet caddy-api.service || { die '已有 Caddy 服务正在运行，未安装或接管'; return 1; }
+    [[ -z $(ss -H -ltn '( sport = :80 or sport = :443 )') ]] || { die '80/443 被其他服务占用，请先处理；不会停止该服务'; return 1; }
+    note '安装经固定 SHA512 校验的官方 Caddy v2.11.4 软件包和 systemd 服务（应用和数据库继续使用预构建容器）。'
+    caddy_install_package || return
     fresh=1
   fi
   caddy_assert_service || return

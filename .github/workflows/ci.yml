@@ -142,6 +142,7 @@ jobs:
           bash agent.sh --help
           bash deploy/manage_test.sh
           bash deploy/host_caddy_test.sh
+          bash deploy/caddy_package_test.sh
           bash deploy/caddy_restore_retry_test.sh
           bash deploy/bootstrap_test.sh
           bash deploy/backup_activity_recovery_test.sh

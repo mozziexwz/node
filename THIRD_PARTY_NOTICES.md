@@ -4,7 +4,7 @@
 
 ## 1. 用户提供的 MSBOOST 脚本与需求
 
-`installers/node/msboost.sh` 从用户提供的 `mita一键脚本/msboost.sh` 原样导入，没有在该副本中添加本项目许可声明。来源文件未提供可据以给整个工程授权的统一许可；使用或分发前应由权利人明确其授权范围。
+`installers/node/msboost.sh` 以用户提供的 `mita一键脚本/msboost.sh` 为基础，包含本项目的部署事务、安全检查、清理和 v2 全程 TCP 测速修订，没有添加本项目许可声明。测速实现依据用户提供的 v2 服务源码、启动器及整改规划，维护源码为 `installers/node/tcp_probe.py`，同一份 Python 内容内嵌于单文件安装器；它的来源不等同于下方 mihomo 的许可。来源文件未提供可据以给整个工程授权的统一许可；使用或分发前应由权利人明确其授权范围。
 
 UI 样式和产品需求来自用户提供的 `msboost-v4.1-ui` 文件夹及后续补充说明。历史规划和导入记录已从正式版当前目录移除，仍可在仓库旧提交中核对；它们不是运行依赖，也不能作为功能验收证明。
 
@@ -12,7 +12,9 @@ UI 样式和产品需求来自用户提供的 `msboost-v4.1-ui` 文件夹及后�
 
 | 文件 | SHA256 |
 |---|---|
-| `installers/node/msboost.sh` | `593b3f612e7537afe89444252883eb64f64bfa3ec4b0d367c56042d8b461ee24` |
+| `installers/node/msboost.sh` | `895a3d541d3182055c09360857d3b62e683dd76694889bb33490ef2cc02b1f3e` |
+
+测速维护源码 `installers/node/tcp_probe.py` 的 SHA256 为 `981fd3f6b7434849ea6b2fb751527c119e4ada90abef48f594f70b56e9ba1683`。
 
 MSBOOST 脚本运行时使用 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，默认版本 `v1.19.30`，可受 `MSBOOST_ENGINE_VERSION` 环境变量影响；上游 [该版本 LICENSE](https://github.com/MetaCubeX/mihomo/blob/v1.19.30/LICENSE) 为 GPLv3。相应下载、使用与分发应保留上游要求的许可及来源信息。脚本还读取 `meta-rules-dat` 的 [gfw.mrs](https://github.com/MetaCubeX/meta-rules-dat/blob/meta/geo/geosite/gfw.mrs)；该 URL 的资源会随上游分支变化，不能把脚本自身哈希误认为所有运行时资源均已冻结。
 
@@ -64,4 +66,4 @@ FLVX `2.2.0-alpha4` 在需求中作为参考方向；当前工程未声明完成
 | SSH / 密码学、SFTP | [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto)、[pkg/sftp](https://github.com/pkg/sftp)，以所用模块版本许可为准 |
 | TypeScript、Vite、Playwright 等构建测试工具 | 完整列表、版本与许可声明见 npm 锁文件及对应安装包 |
 
-Docker 构建还使用 Node.js、Go、Debian 等基础镜像，Compose 使用 PostgreSQL 和 Caddy 镜像。它们及镜像内系统软件有独立的许可、版权与更新要求；镜像标签不等于不可变摘要。本仓库未提供完整镜像 SBOM 或所有传递依赖的法律审查结论。正式再分发前，应按所交付的精确代码、二进制和镜像版本归档全部适用的许可、通知及需要提供的对应源码。
+Docker 构建还使用 Node.js、Go、Debian 等基础镜像，Compose 使用 PostgreSQL 镜像；Caddy 使用官方系统软件包。首次安装固定 [Caddy v2.11.4](https://github.com/caddyserver/caddy/releases/tag/v2.11.4) 的 amd64/arm64 `.deb`，SHA512 来自官方 [校验清单](https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_checksums.txt)，实际固定值见 `deploy/host-caddy.sh`；上游 [LICENSE](https://github.com/caddyserver/caddy/blob/v2.11.4/LICENSE) 为 Apache 2.0。它们及镜像内系统软件有独立的许可、版权与更新要求；镜像标签不等于不可变摘要。本仓库未提供完整镜像 SBOM 或所有传递依赖的法律审查结论。正式再分发前，应按所交付的精确代码、二进制和镜像版本归档全部适用的许可、通知及需要提供的对应源码。
