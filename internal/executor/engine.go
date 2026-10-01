@@ -149,7 +149,7 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	// installer still snapshots managed files so a failed replacement can roll
 	// back without deleting an existing working node.
 	script += "MSBOOST_FORCE_FRESH=1 bash \"$work/installer.sh\" \"$node_user\" \"$node_pass\" >\"$work/private.log\" 2>&1\n"
-	script += "msboost_phase=service\nsystemctl is-active --quiet msboost.service\nmsboost_phase=config\nprintf 'MSBOOST_CONFIG='\nbase64 -w0 /root/直连.json\nprintf '\\n'\n"
+	script += "msboost_phase=service\nsystemctl is-active --quiet msboost.service\nsystemctl is-active --quiet msboost-tcp-probe.service\nmsboost_phase=config\nprintf 'MSBOOST_CONFIG='\nbase64 -w0 /root/直连.json\nprintf '\\n'\n"
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	r.Health = &Health{BBR: marker(out, "MSBOOST_BBR")}
 	if err != nil {
@@ -168,7 +168,7 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	}
 	r.State = "succeeded"
 	r.Phase = "complete"
-	r.Message = "服务运行及本地代理自测通过；公网 TCP 单独检查，游戏连通性尚未验证"
+	r.Message = "节点服务及全程 TCP 测速协议自测通过；公网 TCP 单独检查，游戏连通性尚未验证"
 	r.Config = data
 	r.Health = &Health{Service: "running", LocalSelfTest: "passed", PublicTCP: e.TCPProbe(ctx, info.TargetHost, info.TargetPort), Game: "not_tested", BBR: marker(out, "MSBOOST_BBR")}
 	return r

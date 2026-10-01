@@ -57,9 +57,13 @@ func validCleanupItem(scope string, item CleanupItem) bool {
 	if scope == "relay" {
 		return cleanupRelayPath.MatchString(item.Path)
 	}
-	for _, path := range []string{"/etc/msboost", "/var/lib/msboost", "/usr/local/bin/msboost", "/etc/systemd/system/msboost.service", "/root/直连.json"} {
+	for _, path := range []string{"/etc/msboost", "/var/lib/msboost", "/usr/local/bin/msboost", "/etc/systemd/system/msboost.service", "/root/直连.json", "/etc/msboost/relay_tcp_probe.py", "/etc/msboost/tcp-probe.json", "/etc/systemd/system/msboost-tcp-probe.service"} {
 		if item.Path == path {
-			return true
+			expectedKind := "file"
+			if path == "/etc/msboost" || path == "/var/lib/msboost" {
+				expectedKind = "directory"
+			}
+			return item.Kind == expectedKind
 		}
 	}
 	return false
@@ -70,6 +74,9 @@ import base64,fcntl,hashlib,json,os,pwd,re,shutil,stat,subprocess,sys
 scope,expected,action=sys.argv[1:4]
 selected=sys.argv[4] if len(sys.argv)>4 else ''
 managed_uid=-1;managed_gid=-1
+probe_present=False
+# This identity is synchronized with the single-file installer's embedded source.
+probe_source_sha256='981fd3f6b7434849ea6b2fb751527c119e4ada90abef48f594f70b56e9ba1683'
 class Rejected(Exception): pass
 def reject(): raise Rejected()
 def run(args):
@@ -80,7 +87,9 @@ def validate(path,allowed={0}):
     current=path
     while current!='/':
         if os.path.lexists(current) and os.path.islink(current): reject()
-        current=os.path.dirname(current)
+        parent=os.path.dirname(current)
+        if parent==current: break
+        current=parent
     if not os.path.lexists(path): return
     paths=[path]
     if os.path.isdir(path):
@@ -127,20 +136,54 @@ def add(path,kind,allowed={0}):
     validate(path,allowed)
     if os.path.exists(path):
         targets.append(path);items.append({'path':path,'kind':kind});records.extend(fingerprint(path))
-def check_unit(unit,path,required):
+def check_unit_links(unit,path):
+    target='multi-user.target' if unit=='msboost.service' else 'msboost.service'
+    def directory(path):
+        current=path
+        while current!='/':
+            if os.path.islink(current): reject()
+            parent=os.path.dirname(current)
+            if parent==current: break
+            current=parent
+        if os.path.lexists(path):
+            info=os.lstat(path)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022: reject()
+    for root in ['/etc/systemd/system','/run/systemd/system']:
+        directory(root);directory(root+'/'+target+'.wants')
+        runtime=root+'/'+unit
+        if runtime!=path and os.path.lexists(runtime): reject()
+        for parent,dirs,files in os.walk(root,followlinks=False):
+            for name in files:
+                link=parent+'/'+name
+                if link==path: continue
+                # disable also removes aliases whose filename differs from unit.
+                if name!=unit and (not os.path.islink(link) or os.path.realpath(link)!=path): continue
+                if link!=root+'/'+target+'.wants/'+unit: reject()
+                info=os.lstat(link)
+                if not os.path.islink(link) or (info.st_uid,info.st_gid)!=(0,0): reject()
+                destination=os.readlink(link)
+                if os.path.abspath(os.path.join(os.path.dirname(link),destination))!=path: reject()
+                records.append([link,info.st_uid,info.st_gid,info.st_mode,hashlib.sha256(('unit-link:'+destination).encode()).hexdigest()])
+                if root=='/run/systemd/system': runtime_units.append(unit)
+def check_unit(unit,path,required=None):
     validate(path)
     if not os.path.isfile(path) or os.path.lexists(path+'.d'): reject()
     text=read(path)
     lines=[line.strip() for line in text.splitlines()]
     if any(line.endswith('\\') for line in lines): reject()
-    values=dict(line.split('=',1) for line in required)
-    credentials=[line.split('=',1)[1] for line in required if line.startswith('LoadCredential=')]
-    expected={'Unit':{'Description':values['Description'],'After':'network-online.target','Wants':'network-online.target'},'Install':{'WantedBy':'multi-user.target'}}
+    values=dict(line.split('=',1) for line in required or [])
+    credentials=[line.split('=',1)[1] for line in required or [] if line.startswith('LoadCredential=')]
+    if unit=='msboost-tcp-probe.service':
+        expected={'Unit':{'Description':'msboost TCP probe v2','After':'msboost.service','PartOf':'msboost.service','BindsTo':'msboost.service'},'Install':{'WantedBy':'msboost.service'},'Service':{'Type':'simple','User':'msboost','Group':'msboost','ExecStart':'/usr/bin/python3 -B /etc/msboost/relay_tcp_probe.py --config /etc/msboost/tcp-probe.json','Restart':'on-failure','RestartSec':'3s','SyslogIdentifier':'msboost-tcp-probe','UMask':'0027','NoNewPrivileges':'true','PrivateTmp':'true','ProtectHome':'true','ProtectSystem':'strict','ProtectKernelTunables':'true','ProtectKernelModules':'true','ProtectControlGroups':'true','RestrictSUIDSGID':'true','LockPersonality':'true','MemoryDenyWriteExecute':'true','RestrictAddressFamilies':'AF_INET','CapabilityBoundingSet':'','MemoryMax':'64M','TasksMax':'8','LimitNOFILE':'64'}}
+    else:
+        expected={'Unit':{'Description':values['Description'],'After':'network-online.target','Wants':'network-online.target'},'Install':{'WantedBy':'multi-user.target'}}
     if scope=='relay':
         expected['Service']={'Type':'simple','DynamicUser':'true','LoadCredential':credentials,'ExecStart':values['ExecStart'],'Restart':'on-failure','RestartSec':'3','NoNewPrivileges':'true','PrivateTmp':'true','ProtectSystem':'strict','ProtectHome':'true','RestrictAddressFamilies':'AF_INET AF_INET6 AF_UNIX'}
         if 'KillMode' in values: expected['Service']['KillMode']=values['KillMode']
-    else:
+    elif unit!='msboost-tcp-probe.service':
         expected['Service']={'Type':'simple','User':'msboost','Group':'msboost','WorkingDirectory':'/var/lib/msboost','ExecStart':values['ExecStart'],'Environment':'SAFE_PATHS=/etc/msboost/ruleset','Restart':'on-failure','RestartSec':'3s','SyslogIdentifier':'msboost','UMask':'0027','LimitNOFILE':'1048576','NoNewPrivileges':'true','PrivateTmp':'true','ProtectHome':'true','ProtectSystem':'strict','ProtectKernelTunables':'true','ProtectKernelModules':'true','ProtectControlGroups':'true','RestrictSUIDSGID':'true','LockPersonality':'true','MemoryDenyWriteExecute':'true','RestrictAddressFamilies':'AF_INET AF_INET6 AF_UNIX AF_NETLINK','CapabilityBoundingSet':'CAP_NET_BIND_SERVICE','AmbientCapabilities':'CAP_NET_BIND_SERVICE','ReadWritePaths':'/var/lib/msboost'}
+        if probe_present and 'Wants=network-online.target msboost-tcp-probe.service' in lines:
+            expected['Unit']['Wants']='network-online.target msboost-tcp-probe.service'
     # Compare the complete normalized template, not merely ExecStart. Added
     # PropagatesStopTo/Also/OnFailure/etc can affect unconfirmed third-party units.
     parsed={};section=None
@@ -161,11 +204,34 @@ def check_unit(unit,path,required):
                 if key in parsed[section] or value!=expected[section][key]: reject()
                 parsed[section][key]=value
     if parsed!=expected: reject()
+    if scope=='msboost': check_unit_links(unit,path)
     fragment=subprocess.check_output(['systemctl','show',unit,'-p','FragmentPath','--value'],text=True,stderr=subprocess.DEVNULL,timeout=15).strip()
     if fragment!=path: reject()
     dropins=subprocess.check_output(['systemctl','show',unit,'-p','DropInPaths','--value'],text=True,stderr=subprocess.DEVNULL,timeout=15).strip()
     if dropins: reject()
     units.append(unit)
+def check_probe_file(path,mode,gid):
+    validate(path)
+    if not os.path.isfile(path): reject()
+    info=os.lstat(path)
+    if info.st_uid!=0 or info.st_gid!=gid or stat.S_IMODE(info.st_mode)!=mode or info.st_nlink!=1: reject()
+def check_probe():
+    source='/etc/msboost/relay_tcp_probe.py';config='/etc/msboost/tcp-probe.json';unitpath='/etc/systemd/system/msboost-tcp-probe.service'
+    check_probe_file(source,0o640,managed_gid);check_probe_file(config,0o640,managed_gid);check_probe_file(unitpath,0o644,0)
+    if fingerprint(source)[0][4]!=probe_source_sha256: reject()
+    def unique(pairs):
+        document={}
+        for key,value in pairs:
+            if key in document: reject()
+            document[key]=value
+        return document
+    if os.lstat(config).st_size>4096: reject()
+    document=json.loads(read(config),object_pairs_hook=unique,parse_float=lambda value:reject(),parse_constant=lambda value:reject())
+    expected={'listen_address':'127.0.0.1','listen_port':20424,'allowed_peer':'127.0.0.1','max_sessions':4,'max_connect_requests':3,'idle_timeout':3,'session_lifetime':15,'connect_timeout':2,'write_timeout':2,'max_line_bytes':4096}
+    if type(document) is not dict or set(document)!=set(expected) or any(type(document[key]) is not type(value) or document[key]!=value for key,value in expected.items()): reject()
+    check_unit('msboost-tcp-probe.service',unitpath)
+    # Explicit resources appear in preview even though APP_DIR also contains them.
+    for path in [source,config,unitpath]: add(path,'file')
 try:
     if os.geteuid()!=0 or scope not in ['msboost','relay'] or action not in ['cleanup','cleanup-preview']: reject()
     if selected and (scope!='relay' or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',selected)): reject()
@@ -174,23 +240,29 @@ try:
         validate(path)
         fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);locks.append(fd)
-    targets=[];units=[];items=[];records=[];firewalls=[]
+    targets=[];units=[];runtime_units=[];items=[];records=[];firewalls=[]
     if scope=='msboost':
         roots=['/etc/msboost','/var/lib/msboost','/usr/local/bin/msboost','/etc/systemd/system/msboost.service','/root/直连.json']
-        if any(os.path.lexists(x) for x in roots):
+        probe_paths=['/etc/msboost/relay_tcp_probe.py','/etc/msboost/tcp-probe.json','/etc/systemd/system/msboost-tcp-probe.service']
+        if os.path.lexists(probe_paths[2]+'.d'): reject()
+        probe_present=any(os.path.lexists(path) for path in probe_paths)
+        if probe_present and not all(os.path.lexists(path) for path in probe_paths): reject()
+        if probe_present or any(os.path.lexists(x) for x in roots):
             validate('/etc/msboost/install.env')
             settings=env('/etc/msboost/install.env')
             if settings.get('MANAGED_BY')!='msboost-installer-v1': reject()
             account=pwd.getpwnam('msboost');uid=account.pw_uid
+            if uid<=0 or account.pw_gid<=0: reject()
             managed_uid=uid;managed_gid=account.pw_gid
             permitted={
-                '/etc/msboost':{'config.yaml','install.env','ruleset'},
+                '/etc/msboost':{'config.yaml','install.env','ruleset','relay_tcp_probe.py','tcp-probe.json'},
                 '/etc/msboost/ruleset':{'msboost-direct.yaml'},
                 '/var/lib/msboost':{'cache.db','cache.db-shm','cache.db-wal','ruleset'},
                 '/var/lib/msboost/ruleset':{'msboost-filter.mrs'},
             }
             for directory,names in permitted.items():
                 if os.path.isdir(directory) and not set(os.listdir(directory)).issubset(names): reject()
+            if probe_present: check_probe()
             if os.path.exists('/root/直连.json'):
                 client=json.loads(read('/root/直连.json'))
                 profiles=client.get('profiles',[])
@@ -264,7 +336,9 @@ try:
         if expected!=digest:
             print('MSBOOST_ERROR_CODE=cleanup_changed',flush=True);sys.exit(1)
         # Recheck every path immediately before mutation; never follow symlinks.
-        for unit in units: run(['systemctl','disable','--now',unit])
+        for unit in units:
+            run(['systemctl','disable','--now',unit])
+            if unit in runtime_units: run(['systemctl','disable','--runtime',unit])
         for mode,zone,port in firewalls:
             if mode=='ufw': run(['ufw','--force','delete','allow',port+'/tcp'])
             else:

@@ -331,11 +331,23 @@ func TestCleanupPythonMSBOOSTOwnershipAndRetainedData(t *testing.T) {
 			write("var/lib/msboost/cache.db", "cache snapshot")
 			_ = os.Chmod(filepath.Join(root, "var/lib/msboost/ruleset"), 0770)
 			write("usr/local/bin/msboost", "managed binary")
-			write("etc/systemd/system/msboost.service", cleanupUnitFixture(t, root, "msboost"))
+			write("etc/systemd/system/msboost.service", cleanupUnitFixture(t, root, "msboost-legacy"))
 			write("root/直连.json", `{"profiles":[{"user":{"name":"node","password":"private-password"}}]}`)
 			write("var/backups/msboost/backup", "keep backup")
 			write("usr/local/bin/gost", "keep third-party binary")
 			write("run/placeholder", "")
+			if os.Getuid() == 0 {
+				// A root CI runner still models the required non-root service
+				// account, including its group-writable runtime directory.
+				if err := filepath.Walk(filepath.Join(root, "var/lib/msboost"), func(path string, _ os.FileInfo, err error) error {
+					if err != nil {
+						return err
+					}
+					return os.Chown(path, 2000, 2050)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			script := cleanupPython
 			for _, prefix := range []string{"/etc/", "/usr/", "/run/", "/root/", "/var/"} {
 				script = strings.ReplaceAll(script, prefix, root+prefix)
@@ -344,8 +356,11 @@ func TestCleanupPythonMSBOOSTOwnershipAndRetainedData(t *testing.T) {
 			script = strings.ReplaceAll(script, "{0}", "{os.getuid()}")
 			script = strings.ReplaceAll(script, "{0,uid}", "{os.getuid(),uid}")
 			script = strings.ReplaceAll(script, "{0,pwd.getpwnam('msboost').pw_uid}", "{os.getuid(),pwd.getpwnam('msboost').pw_uid}")
+			// The real temporary systemd directories belong to the CI runner;
+			// map only this fixture's root identity, preserving production checks.
+			script = strings.ReplaceAll(script, "info.st_uid!=0", "info.st_uid!=os.getuid()")
 			mock := `import types
-pwd.getpwnam=lambda name:types.SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid())
+pwd.getpwnam=lambda name:types.SimpleNamespace(pw_uid=2000 if os.getuid()==0 else os.getuid(),pw_gid=2050 if os.getuid()==0 else os.getgid())
 def fake_check_output(args,**kwargs):
     return '' if 'DropInPaths' in args else ` + strconvQuote(root+"/etc/systemd/system/msboost.service") + `+'\n'
 subprocess.check_output=fake_check_output
@@ -383,7 +398,7 @@ subprocess.run=fake_run
 			case "changed-cache":
 				write("var/lib/msboost/cache.db", "cache changed after preview")
 			case "also-unit", "propagated-stop":
-				unit := cleanupUnitFixture(t, root, "msboost")
+				unit := cleanupUnitFixture(t, root, "msboost-legacy")
 				if scenario == "also-unit" {
 					unit = strings.Replace(unit, "[Install]\n", "[Install]\nAlso=ssh.service\n", 1)
 				} else {
@@ -431,13 +446,16 @@ func cleanupUnitFixture(t *testing.T, root, scope string) string {
 	t.Helper()
 	source := relayInstallScript
 	begin := "cat > \"/etc/systemd/system/$unit\" <<EOF\n"
-	if scope == "msboost" {
+	if strings.HasPrefix(scope, "msboost") {
 		data, err := os.ReadFile(filepath.Join("..", "..", "installers", "node", "msboost.sh"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		source = strings.ReplaceAll(string(data), "\r\n", "\n")
 		begin = "cat > \"${STAGE_DIR}/msboost.service\" <<EOF\n"
+		if !strings.Contains(source, begin) {
+			begin = "write_main_unit() {\n  cat > \"$1\" <<EOF\n"
+		}
 	}
 	_, template, ok := strings.Cut(source, begin)
 	if !ok {
@@ -448,6 +466,10 @@ func cleanupUnitFixture(t *testing.T, root, scope string) string {
 		t.Fatal("unit template terminator missing")
 	}
 	template = strings.NewReplacer("${APP_USER}", "msboost", "${APP_GROUP}", "msboost", "${STATE_DIR}", "/var/lib/msboost", "${APP_DIR}", "/etc/msboost", "${BIN}", "/usr/local/bin/msboost", "${confdir}", "/etc/msboost-free/task1", "${gost_sha}", strings.Repeat("a", 64)).Replace(template)
+	if scope == "msboost-legacy" {
+		// Older managed deployments predate the TCP companion dependency.
+		template = strings.ReplaceAll(template, "Wants=network-online.target msboost-tcp-probe.service", "Wants=network-online.target")
+	}
 	template = strings.ReplaceAll(template, "\\${CREDENTIALS_DIRECTORY}", "${CREDENTIALS_DIRECTORY}")
 	for _, prefix := range []string{"/etc/", "/usr/", "/var/"} {
 		template = strings.ReplaceAll(template, prefix, root+prefix)

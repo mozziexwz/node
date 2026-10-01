@@ -176,7 +176,8 @@ func TestFreshOnlyAndIntegrity(t *testing.T) {
 	e.Execute(context.Background(), Job{ID: "deploy", Request: Request{Kind: "deploy", SSH: testSSH("8.8.8.8"), Mode: "fresh"}, Script: testAsset()})
 	if len(remote.scripts) != 2 || remote.scripts[0] != debianPreflightScript ||
 		!strings.Contains(remote.scripts[1], `"$node_user" "$node_pass"`) ||
-		!strings.Contains(remote.scripts[1], `MSBOOST_FORCE_FRESH=1`) {
+		!strings.Contains(remote.scripts[1], `MSBOOST_FORCE_FRESH=1`) ||
+		!strings.Contains(remote.scripts[1], `systemctl is-active --quiet msboost-tcp-probe.service`) {
 		t.Fatal("fresh mode did not preflight and replace managed credentials/port")
 	}
 	rejected := &fakeRemote{run: func(SSH, string) ([]byte, error) { t.Fatal("repair reached SSH"); return nil, nil }}

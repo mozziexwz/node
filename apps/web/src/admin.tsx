@@ -294,12 +294,12 @@ export function ResourcePage({ kind }: { kind: string }) {
     [blockedAgent, setBlockedAgent] = useState<RecordData | null>(null),
     [deletedAgent, setDeletedAgent] = useState<RecordData | null>(null),
     [cleanupHelp, setCleanupHelp] = useState(false);
-  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.2/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
+  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.3.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
   const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;
   const cleanupRole = kind === "executors" ? "executor" : "relay";
-  const cleanupCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.2/deploy/cleanup-agent.sh -o /tmp/msboost-cleanup-agent.sh && bash /tmp/msboost-cleanup-agent.sh --capability ${cleanupRole} --check`;
+  const cleanupCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.3.0/deploy/cleanup-agent.sh -o /tmp/msboost-cleanup-agent.sh && bash /tmp/msboost-cleanup-agent.sh --capability ${cleanupRole} --check`;
   const relayUninstallCommand = (id: string) =>
-    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.2.2/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
+    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.3.0/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
   async function freshResetAgent(row: RecordData) {
     if (
       !confirm(
@@ -839,7 +839,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             </a>
             <a
               className="btn"
-              href="https://github.com/mozziexwz/node/blob/v2.2.2/docs/relay-recovery.md"
+              href="https://github.com/mozziexwz/node/blob/v2.3.0/docs/relay-recovery.md"
               target="_blank"
               rel="noopener noreferrer"
             >

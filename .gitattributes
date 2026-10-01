@@ -6,3 +6,5 @@
 *.css text eol=lf
 *.md text eol=lf
 *.png binary
+
+*.py text eol=lf

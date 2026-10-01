@@ -16,6 +16,11 @@ readonly STATE_DIR="/var/lib/msboost"
 readonly BIN="/usr/local/bin/msboost"
 readonly UNIT="/etc/systemd/system/msboost.service"
 readonly SERVICE="msboost.service"
+readonly PROBE_SERVICE="msboost-tcp-probe.service"
+readonly PROBE_UNIT="/etc/systemd/system/msboost-tcp-probe.service"
+readonly PROBE_SOURCE="${APP_DIR}/relay_tcp_probe.py"
+readonly PROBE_CONFIG="${APP_DIR}/tcp-probe.json"
+readonly PROBE_PORT=20424
 readonly STATE_FILE="${APP_DIR}/install.env"
 readonly CLIENT_CONFIG="/root/直连.json"
 readonly VERSION="${MSBOOST_ENGINE_VERSION:-v1.19.30}"
@@ -42,6 +47,9 @@ OLD_UNIT=0
 OLD_CLIENT=0
 OLD_ACTIVE=0
 OLD_ENABLE_STATE="missing"
+OLD_PROBE_UNIT=0
+OLD_PROBE_ACTIVE=0
+OLD_PROBE_ENABLE_STATE="missing"
 FW_UFW_ADDED=0
 FW_FIREWALLD_RUNTIME_ADDED=0
 FW_FIREWALLD_PERMANENT_ADDED=0
@@ -123,16 +131,22 @@ rollback_firewall() {
 rollback_install() {
   set +e
   warn "Installation failed; restoring the previous msboost installation."
-  if [[ -e "${UNIT}" ]] || systemctl is-active --quiet "${SERVICE}"; then
-    systemctl disable --now "${SERVICE}" >/dev/null 2>&1 || \
-      rollback_problem "could not stop and disable the failed service deployment."
+  if [[ -e "${PROBE_UNIT}" || -L "${PROBE_UNIT}" ]] || systemctl is-active --quiet "${PROBE_SERVICE}"; then
+    systemctl stop "${PROBE_SERVICE}" >/dev/null 2>&1 || rollback_problem "could not stop the failed TCP probe deployment."
   fi
+  if [[ -e "${UNIT}" || -L "${UNIT}" ]] || systemctl is-active --quiet "${SERVICE}"; then
+    systemctl stop "${SERVICE}" >/dev/null 2>&1 || rollback_problem "could not stop the failed service deployment."
+  fi
+  clear_unit_links "${PROBE_SERVICE}" || rollback_problem "could not clear new companion enable/mask links."
+  clear_unit_links "${SERVICE}" || rollback_problem "could not clear new main enable/mask links."
+
   rollback_firewall
 
   rm -f -- "${BIN}" || rollback_problem "could not remove the new executable."
   rm -rf -- "${APP_DIR}" || rollback_problem "could not remove the new configuration directory."
   rm -rf -- "${STATE_DIR}" || rollback_problem "could not remove the new state directory."
   rm -f -- "${UNIT}" || rollback_problem "could not remove the new systemd unit."
+  rm -f -- "${PROBE_UNIT}" || rollback_problem "could not remove the new TCP probe unit."
   rm -f -- "${CLIENT_CONFIG}" || rollback_problem "could not remove the new client configuration."
 
   if (( OLD_BIN )); then
@@ -145,29 +159,55 @@ rollback_install() {
     cp -a -- "${BACKUP_DIR}/state" "${STATE_DIR}" || rollback_problem "could not restore the prior state directory."
   fi
   if (( OLD_UNIT )); then
-    cp -a -- "${BACKUP_DIR}/unit" "${UNIT}" || rollback_problem "could not restore the prior systemd unit."
+    if [[ -L "${BACKUP_DIR}/unit" ]]; then
+      install -m 0644 -o root -g root "${STAGE_DIR}/msboost.service" "${UNIT}" || rollback_problem "could not restore verified main template temporarily."
+    else
+      cp -a -- "${BACKUP_DIR}/unit" "${UNIT}" || rollback_problem "could not restore the prior systemd unit."
+    fi
   fi
   if (( OLD_CLIENT )); then
     cp -a -- "${BACKUP_DIR}/client.json" "${CLIENT_CONFIG}" || rollback_problem "could not restore the prior client configuration."
   fi
+  if (( OLD_PROBE_UNIT )); then
+    if [[ -L "${BACKUP_DIR}/probe-unit" ]]; then
+      install -m 0644 -o root -g root "${STAGE_DIR}/msboost-tcp-probe.service" "${PROBE_UNIT}" || rollback_problem "could not restore verified companion template temporarily."
+    else
+      cp -a -- "${BACKUP_DIR}/probe-unit" "${PROBE_UNIT}" || rollback_problem "could not restore the prior TCP probe unit."
+    fi
+  fi
+  restore_unit_links "${SERVICE}" 0 || rollback_problem "could not restore main enable links."
+  restore_unit_links "${PROBE_SERVICE}" 0 || rollback_problem "could not restore companion enable links."
 
   systemctl daemon-reload >/dev/null 2>&1 || rollback_problem "systemd could not reload restored unit files."
-  case "${OLD_ENABLE_STATE}" in
-    enabled) systemctl enable "${SERVICE}" >/dev/null 2>&1 || rollback_problem "could not restore the enabled service state." ;;
-    enabled-runtime) systemctl enable --runtime "${SERVICE}" >/dev/null 2>&1 || rollback_problem "could not restore the runtime-enabled service state." ;;
-    masked) systemctl mask "${SERVICE}" >/dev/null 2>&1 || rollback_problem "could not restore the masked service state." ;;
-    masked-runtime) systemctl mask --runtime "${SERVICE}" >/dev/null 2>&1 || rollback_problem "could not restore the runtime-masked service state." ;;
-    disabled) systemctl disable "${SERVICE}" >/dev/null 2>&1 || rollback_problem "could not restore the disabled service state." ;;
-  esac
   if (( OLD_ACTIVE )); then
-    systemctl restart "${SERVICE}" >/dev/null 2>&1 || rollback_problem "could not restart the prior service."
+    systemctl start "${SERVICE}" >/dev/null 2>&1 || rollback_problem "could not start the prior service."
     systemctl is-active --quiet "${SERVICE}" || rollback_problem "the prior service is not active after rollback."
   else
     systemctl stop "${SERVICE}" >/dev/null 2>&1 || true
-    if systemctl is-active --quiet "${SERVICE}"; then
-      rollback_problem "the service is still active although it was inactive before installation."
-    fi
+    systemctl is-active --quiet "${SERVICE}" && rollback_problem "the prior main service should be inactive."
   fi
+  if (( OLD_PROBE_ACTIVE )); then
+    systemctl start "${PROBE_SERVICE}" >/dev/null 2>&1 || rollback_problem "could not start the prior TCP probe."
+    systemctl is-active --quiet "${PROBE_SERVICE}" || rollback_problem "the prior TCP probe is not active after rollback."
+  else
+    systemctl stop "${PROBE_SERVICE}" >/dev/null 2>&1 || true
+    systemctl is-active --quiet "${PROBE_SERVICE}" && rollback_problem "the prior TCP probe should be inactive."
+  fi
+  # Restore runtime masks only after active services have been recovered. This
+  # also preserves simultaneous persistent and runtime enables exactly.
+  restore_unit_links "${SERVICE}" 1 || rollback_problem "could not restore main mask links."
+  restore_unit_links "${PROBE_SERVICE}" 1 || rollback_problem "could not restore companion mask links."
+  if (( OLD_UNIT )) && [[ -L "${BACKUP_DIR}/unit" ]]; then
+    rm -f -- "${UNIT}"
+    cp -a -- "${BACKUP_DIR}/unit" "${UNIT}" || rollback_problem "could not restore the persisted main mask."
+  fi
+  if (( OLD_PROBE_UNIT )) && [[ -L "${BACKUP_DIR}/probe-unit" ]]; then
+    rm -f -- "${PROBE_UNIT}"
+    cp -a -- "${BACKUP_DIR}/probe-unit" "${PROBE_UNIT}" || rollback_problem "could not restore the persisted companion mask."
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || rollback_problem "systemd could not reload restored masks."
+  verify_restored_unit_state "${SERVICE}" "${OLD_ACTIVE}" "${OLD_ENABLE_STATE}"
+  verify_restored_unit_state "${PROBE_SERVICE}" "${OLD_PROBE_ACTIVE}" "${OLD_PROBE_ENABLE_STATE}"
   if (( CREATED_USER )); then
     userdel "${APP_USER}" >/dev/null 2>&1 || rollback_problem "could not remove the newly created service user."
   fi
@@ -221,13 +261,17 @@ fi
 
 verify_target_ownership() {
   local path marker="" found=0 key value
-  for path in "${BIN}" "${APP_DIR}" "${STATE_DIR}" "${UNIT}" "${CLIENT_CONFIG}"; do
-    if [[ -e "${path}" || -L "${path}" ]]; then
+  for path in "${BIN}" "${APP_DIR}" "${STATE_DIR}" "${UNIT}" "${PROBE_UNIT}" "${CLIENT_CONFIG}"; do
+    if [[ -L "${path}" ]]; then
+      [[ ( "${path}" == "${UNIT}" || "${path}" == "${PROBE_UNIT}" ) && "$(readlink "${path}")" == /dev/null ]] || fail "Refusing a symbolic link at managed target ${path}."
+      # Persisted masks are accepted later only with exact saved template hashes.
+    fi
+    if [[ -e "${path}" ]]; then
       found=1
-      break
     fi
   done
   if (( found )); then
+    [[ ! -L "${STATE_FILE}" ]] || fail "Refusing a symbolic-link installation marker."
     if [[ -f "${STATE_FILE}" ]]; then
       while IFS='=' read -r key value; do
         if [[ "${key}" == "MANAGED_BY" ]]; then
@@ -318,6 +362,10 @@ install_dependencies() {
     command -v "${required}" >/dev/null 2>&1 || fail "Required command is unavailable after package installation: ${required}"
   done
   [[ -d /run/systemd/system ]] || fail "A running systemd instance is required (not merely the systemctl command)."
+  [[ -x /usr/bin/python3 ]] || fail "The companion requires /usr/bin/python3."
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' || fail "Python 3.8 or newer is required."
+  SYSTEMD_VERSION="$(systemctl --version | awk 'NR == 1 { print $2; exit }')"
+  [[ "${SYSTEMD_VERSION}" =~ ^[0-9]+$ ]] && (( SYSTEMD_VERSION >= 231 )) || fail "systemd 231 or newer is required for service hardening."
 }
 
 install_dependencies
@@ -498,6 +546,7 @@ random_free_port() {
   for attempt in $(seq 1 100); do
     raw="$(od -An -N2 -tu2 /dev/urandom | tr -d ' \n')"
     candidate=$((20000 + raw % 40000))
+    (( candidate != PROBE_PORT )) || continue
     if [[ "${MSBOOST_FORCE_FRESH:-0}" == 1 && -n "${OLD_CONFIG_PORT}" && "${candidate}" == "${OLD_CONFIG_PORT}" ]]; then
       continue
     fi
@@ -517,6 +566,8 @@ else
   PORT="$(random_free_port)" || fail "Could not choose an unused TCP port."
 fi
 
+(( PORT != PROBE_PORT )) || fail "TCP/${PROBE_PORT} is reserved for the loopback TCP probe."
+
 if (( PORT < 1024 )); then
   SYSTEMD_VERSION="$(systemctl --version | awk 'NR == 1 { print $2; exit }')"
   [[ "${SYSTEMD_VERSION}" =~ ^[0-9]+$ ]] || fail "Could not determine the systemd version required for a privileged port."
@@ -530,7 +581,7 @@ ensure_service_user() {
   local nologin_shell existing_uid existing_gid passwd_entry existing_home existing_shell
   if getent group "${APP_GROUP}" >/dev/null 2>&1; then
     existing_gid="$(getent group "${APP_GROUP}" | awk -F: '{print $3; exit}')"
-    [[ "${existing_gid}" =~ ^[0-9]+$ ]] && (( existing_gid < 1000 )) || \
+    [[ "${existing_gid}" =~ ^[0-9]+$ ]] && (( existing_gid > 0 && existing_gid < 1000 )) || \
       fail "The name ${APP_GROUP} is already used by a non-system group."
   else
     groupadd --system "${APP_GROUP}"
@@ -538,14 +589,12 @@ ensure_service_user() {
   fi
   if id -u "${APP_USER}" >/dev/null 2>&1; then
     existing_uid="$(id -u "${APP_USER}")"
-    (( existing_uid < 1000 )) || fail "The name ${APP_USER} is already used by a non-system account."
-    if (( ! MANAGED_INSTALL )); then
-      passwd_entry="$(getent passwd "${APP_USER}")"
-      existing_home="$(printf '%s\n' "${passwd_entry}" | awk -F: '{print $6}')"
-      existing_shell="$(printf '%s\n' "${passwd_entry}" | awk -F: '{print $7}')"
-      [[ "${existing_home}" == "${STATE_DIR}" && "${existing_shell}" =~ /(nologin|false)$ ]] || \
-        fail "The existing ${APP_USER} account does not look like an msboost service account."
-    fi
+    (( existing_uid > 0 && existing_uid < 1000 )) || fail "The name ${APP_USER} is already used by a non-system account."
+    passwd_entry="$(getent passwd "${APP_USER}")"
+    existing_home="$(printf '%s\n' "${passwd_entry}" | awk -F: '{print $6}')"
+    existing_shell="$(printf '%s\n' "${passwd_entry}" | awk -F: '{print $7}')"
+    [[ "${existing_home}" == "${STATE_DIR}" && "${existing_shell}" =~ /(nologin|false)$ && "$(id -g "${APP_USER}")" == "${existing_gid}" ]] || \
+      fail "The existing ${APP_USER} account does not look like an msboost service account."
   else
     nologin_shell="$(command -v nologin 2>/dev/null || true)"
     [[ -n "${nologin_shell}" ]] || nologin_shell="/usr/sbin/nologin"
@@ -816,16 +865,17 @@ FIREWALL_UFW_OWNED=${NEW_FW_UFW_OWNED}
 FIREWALLD_RUNTIME_OWNED=${NEW_FW_FIREWALLD_RUNTIME_OWNED}
 FIREWALLD_PERMANENT_OWNED=${NEW_FW_FIREWALLD_PERMANENT_OWNED}
 FIREWALLD_ZONE=${FW_FIREWALLD_ZONE}
+MAIN_UNIT_SHA256=$(sha256sum "${STAGE_DIR}/msboost.service" | awk '{print $1}')
+TCP_PROBE_UNIT_SHA256=$(sha256sum "${STAGE_DIR}/msboost-tcp-probe.service" | awk '{print $1}')
 EOF
 }
 
-write_install_state "${STAGE_DIR}/app/install.env"
-
-cat > "${STAGE_DIR}/msboost.service" <<EOF
+write_main_unit() {
+  cat > "$1" <<EOF
 [Unit]
 Description=msboost service
 After=network-online.target
-Wants=network-online.target
+Wants=network-online.target msboost-tcp-probe.service
 
 [Service]
 Type=simple
@@ -857,6 +907,419 @@ ReadWritePaths=${STATE_DIR}
 [Install]
 WantedBy=multi-user.target
 EOF
+
+}
+
+write_probe_unit() {
+  cat > "$1" <<'MSBOOST_TCP_PROBE_UNIT'
+[Unit]
+Description=msboost TCP probe v2
+After=msboost.service
+PartOf=msboost.service
+BindsTo=msboost.service
+
+[Service]
+Type=simple
+User=msboost
+Group=msboost
+ExecStart=/usr/bin/python3 -B /etc/msboost/relay_tcp_probe.py --config /etc/msboost/tcp-probe.json
+Restart=on-failure
+RestartSec=3s
+SyslogIdentifier=msboost-tcp-probe
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET
+CapabilityBoundingSet=
+MemoryMax=64M
+TasksMax=8
+LimitNOFILE=64
+
+[Install]
+WantedBy=msboost.service
+MSBOOST_TCP_PROBE_UNIT
+}
+
+write_probe_files() {
+  # Fixed, reviewed source: no second installer or remote code download.
+  cat > "${STAGE_DIR}/app/relay_tcp_probe.py" <<'MSBOOST_TCP_PROBE_PY'
+#!/usr/bin/env python3
+# Managed by msboost-installer-v1: tcp-probe-v2
+"""MSBOOST v2 full-path TCP probe, Python 3.7+, standard library only.
+
+The production command accepts only the fixed loopback configuration. Targets
+arrive over an authenticated MSBOOST path and are checked against a stable IPv4
+policy. A successful reply means a real TCP connect completed; game data is
+never read. All durations are measured by the client, not returned here.
+"""
+
+import argparse
+import collections
+import errno
+import json
+import logging
+import re
+import signal
+import socket
+import threading
+import time
+import uuid
+
+
+MAX_LINE_BYTES = 4096
+Limits = collections.namedtuple(
+    "Limits", "idle lifetime connect write max_sessions max_connects",
+    defaults=(3.0, 15.0, 2.0, 2.0, 4, 3))
+DEFAULT_LIMITS = Limits()
+NONCE = re.compile(r"\A[0-9a-f]{32}\Z")
+SCALAR = r'(?:"[A-Za-z0-9_.-]*"|true|false|-?(?:0|[1-9][0-9]*))'
+FIELD = r'"[A-Za-z0-9_.-]*"[ \t\r]*:[ \t\r]*' + SCALAR
+FLAT_JSON = re.compile(r'\A[ \t\r]*\{[ \t\r]*' + FIELD +
+                       r'(?:[ \t\r]*,[ \t\r]*' + FIELD +
+                       r')*[ \t\r]*\}[ \t\r]*\Z')
+HELLO_FIELDS = frozenset(("version", "operation", "nonce"))
+CONNECT_FIELDS = HELLO_FIELDS | frozenset(("target_address", "target_port"))
+
+IPV4 = re.compile(r"\A(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\."
+                  r"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\Z")
+
+# Fixed numeric prefix policy; no Python-version-dependent is_global/private
+# classification or DNS lookup. Entire special-purpose/deprecated blocks are
+# rejected conservatively, including 192.0.0.9/10 anycast exceptions.
+DENIED_IPV4 = (
+    (0x00000000, 8), (0x0a000000, 8), (0x64400000, 10),
+    (0x7f000000, 8), (0xa9fe0000, 16), (0xac100000, 12),
+    (0xc0000000, 24), (0xc0000200, 24), (0xc0586300, 24),
+    (0xc0a80000, 16), (0xc6120000, 15), (0xc6336400, 24),
+    (0xcb007100, 24), (0xe0000000, 4), (0xf0000000, 4))
+
+# Production values are fixed, rather than accepting user-controlled budgets,
+# additional peers, or listener addresses through a configuration file.
+EXPECTED_CONFIG = {
+    "listen_address": "127.0.0.1", "listen_port": 20424,
+    "allowed_peer": "127.0.0.1", "max_sessions": 4,
+    "max_connect_requests": 3, "idle_timeout": 3,
+    "session_lifetime": 15, "connect_timeout": 2,
+    "write_timeout": 2, "max_line_bytes": MAX_LINE_BYTES}
+
+
+class ProtocolError(ValueError):
+    """The connection must be discarded without probing a target."""
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ProtocolError("duplicate field")
+        result[key] = value
+    return result
+
+
+def canonical_ipv4(value):
+    if type(value) is not str:
+        raise ProtocolError("invalid IPv4 type")
+    match = IPV4.fullmatch(value)
+    if match is None:
+        raise ProtocolError("invalid IPv4")
+    octets = tuple(int(part) for part in match.groups())
+    if any(part > 255 for part in octets):
+        raise ProtocolError("invalid IPv4 octet")
+    address = 0
+    for part in octets:
+        address = (address << 8) | part
+    return address
+
+
+def public_unicast_ipv4(value):
+    address = canonical_ipv4(value)
+    return not any(address >> (32 - prefix) == network >> (32 - prefix)
+                   for network, prefix in DENIED_IPV4)
+
+
+def parse_request(payload):
+    if len(payload) > MAX_LINE_BYTES:
+        raise ProtocolError("line too long")
+    try:
+        text = payload.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        raise ProtocolError("invalid UTF-8")
+    if FLAT_JSON.fullmatch(text) is None:
+        raise ProtocolError("invalid flat JSON")
+    try:
+        request = json.loads(text, object_pairs_hook=unique_object)
+    except (ValueError, TypeError) as error:
+        raise ProtocolError(str(error))
+    if type(request.get("version")) is not int or request["version"] != 2:
+        raise ProtocolError("invalid version")
+    if not isinstance(request.get("nonce"), str) or NONCE.fullmatch(request["nonce"]) is None:
+        raise ProtocolError("invalid nonce")
+    operation = request.get("operation")
+    if operation == "hello":
+        fields = HELLO_FIELDS
+    elif operation == "connect":
+        fields = CONNECT_FIELDS
+        canonical_ipv4(request.get("target_address"))
+        port = request.get("target_port")
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ProtocolError("invalid target port")
+    else:
+        raise ProtocolError("invalid operation")
+    if frozenset(request) != fields:
+        raise ProtocolError("unknown or missing field")
+    return request
+
+
+def remaining(deadline, clock=time.monotonic):
+    timeout = deadline - clock()
+    if timeout <= 0:
+        raise socket.timeout("deadline exceeded")
+    return timeout
+
+
+def read_line(stream, deadline, clock=time.monotonic):
+    payload = bytearray()
+    while True:
+        stream.settimeout(remaining(deadline, clock))
+        chunk = stream.recv(min(512, MAX_LINE_BYTES + 1 - len(payload)))
+        # A late successful OS return still cannot exceed the shared deadline.
+        remaining(deadline, clock)
+        if not chunk:
+            raise EOFError("peer closed connection")
+        newline = chunk.find(b"\n")
+        if newline >= 0:
+            if newline != len(chunk) - 1:
+                raise ProtocolError("unsolicited bytes after line")
+            payload.extend(chunk[:newline])
+            if len(payload) > MAX_LINE_BYTES:
+                raise ProtocolError("line too long")
+            return bytes(payload)
+        payload.extend(chunk)
+        if len(payload) > MAX_LINE_BYTES:
+            raise ProtocolError("line too long")
+
+
+def write_reply(stream, reply, deadline, clock=time.monotonic):
+    wire = json.dumps(reply, ensure_ascii=True, separators=(",", ":")).encode("ascii") + b"\n"
+    stream.settimeout(remaining(deadline, clock))
+    stream.sendall(wire)
+    remaining(deadline, clock)
+
+
+def tcp_connect(address, port, timeout):
+    # Numeric canonical IPv4 + an AF_INET socket: no DNS and no application IO.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as target:
+        target.settimeout(timeout)
+        target.connect((address, port))
+
+
+def connect_error(error):
+    if isinstance(error, (socket.timeout, TimeoutError)) or getattr(error, "errno", None) == errno.ETIMEDOUT:
+        return "timeout"
+    code = getattr(error, "errno", None)
+    if code == errno.ECONNREFUSED:
+        return "refused"
+    if code in (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
+                getattr(errno, "EHOSTDOWN", -1), errno.EADDRNOTAVAIL):
+        return "unreachable"
+    return "failed"
+
+
+class ProbeServer:
+    """Bounded loopback server. Constructor seams are for local unit tests only."""
+
+    def __init__(self, listen_address="127.0.0.1", listen_port=20424,
+                 connector=tcp_connect, limits=DEFAULT_LIMITS, clock=time.monotonic):
+        if listen_address != "127.0.0.1" or type(listen_port) is not int or not 0 <= listen_port <= 65535:
+            raise ValueError("loopback IPv4 binding required")
+        self.node_id = uuid.uuid4().hex
+        self.connector = connector
+        self.limits = limits
+        self.clock = clock
+        self.stop_event = threading.Event()
+        self.slots = threading.BoundedSemaphore(limits.max_sessions)
+        # A Python signal handler may request_stop on this same thread while
+        # acceptance is being registered. Reentrancy avoids a signal deadlock.
+        self.lock = threading.RLock()
+        self.clients = set()
+        self.workers = set()
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.listener.bind((listen_address, listen_port))
+            self.listener.listen(limits.max_sessions)
+            self.listener.settimeout(0.25)
+            self.address = self.listener.getsockname()
+        except BaseException:
+            self.listener.close()
+            raise
+
+    def serve_forever(self):
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    client, peer = self.listener.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    if self.stop_event.is_set():
+                        break
+                    raise
+                if peer[0] != "127.0.0.1" or not self.slots.acquire(blocking=False):
+                    client.close()
+                    continue
+                deadline = self.clock() + self.limits.lifetime
+                worker = threading.Thread(target=self._run_session, args=(client, deadline), daemon=True)
+                with self.lock:
+                    if self.stop_event.is_set():
+                        client.close()
+                        self.slots.release()
+                        break
+                    self.clients.add(client)
+                    self.workers.add(worker)
+                    # Stop/join snapshots cannot observe an unstarted worker.
+                    try:
+                        worker.start()
+                    except BaseException:
+                        self.clients.discard(client)
+                        self.workers.discard(worker)
+                        client.close()
+                        self.slots.release()
+                        raise
+        finally:
+            self.request_stop()
+            self.join_workers()
+
+    def _run_session(self, client, deadline):
+        try:
+            client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self._handle_session(client, deadline)
+        except (ProtocolError, EOFError, OSError, ValueError):
+            # Malformed/expired sessions close without exposing arbitrary text.
+            pass
+        finally:
+            client.close()
+            with self.lock:
+                self.clients.discard(client)
+                self.workers.discard(threading.current_thread())
+            self.slots.release()
+
+    def _handle_session(self, client, deadline):
+        seen_nonces = set()
+        hello = parse_request(read_line(client, min(deadline, self.clock() + self.limits.idle), self.clock))
+        if hello["operation"] != "hello":
+            raise ProtocolError("hello required")
+        seen_nonces.add(hello["nonce"])
+        self._reply(client, hello, True, deadline)
+        for unused in range(self.limits.max_connects):
+            request = parse_request(read_line(client, min(deadline, self.clock() + self.limits.idle), self.clock))
+            if request["operation"] != "connect" or request["nonce"] in seen_nonces:
+                raise ProtocolError("invalid session order or repeated nonce")
+            seen_nonces.add(request["nonce"])
+            if not public_unicast_ipv4(request["target_address"]):
+                self._reply(client, request, False, deadline, "target_not_allowed")
+                continue
+            try:
+                connect_deadline = min(deadline, self.clock() + self.limits.connect)
+                self.connector(request["target_address"], request["target_port"],
+                               remaining(connect_deadline, self.clock))
+                remaining(connect_deadline, self.clock)
+            except OSError as error:
+                self._reply(client, request, False, deadline, connect_error(error))
+            else:
+                self._reply(client, request, True, deadline)
+
+    def _reply(self, client, request, success, deadline, error=None):
+        reply = dict(request)
+        reply["node_id"] = self.node_id
+        reply["success"] = success
+        if error is not None:
+            reply["error"] = error
+        write_reply(client, reply, min(deadline, self.clock() + self.limits.write), self.clock)
+
+    def request_stop(self):
+        self.stop_event.set()
+        self.listener.close()
+        with self.lock:
+            clients = tuple(self.clients)
+        for client in clients:
+            try:
+                client.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def join_workers(self):
+        deadline = time.monotonic() + self.limits.connect + 0.5
+        with self.lock:
+            workers = tuple(self.workers)
+        for worker in workers:
+            worker.join(max(0, deadline - time.monotonic()))
+
+
+def load_config(path):
+    with open(path, "r", encoding="utf-8") as source:
+        config = json.load(source, object_pairs_hook=unique_object)
+    if type(config) is not dict or set(config) != set(EXPECTED_CONFIG):
+        raise ValueError("unknown or missing configuration field")
+    for key, expected in EXPECTED_CONFIG.items():
+        if type(config[key]) is not type(expected) or config[key] != expected:
+            raise ValueError("fixed loopback configuration and limits required")
+    return config
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--validate-config", action="store_true",
+                        help="validate fixed configuration without binding a socket")
+    arguments = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    try:
+        config = load_config(arguments.config)
+        if arguments.validate_config:
+            return 0
+        server = ProbeServer(config["listen_address"], config["listen_port"])
+    except (OSError, ValueError) as error:
+        logging.error("Unable to start v2 probe: %s", error)
+        return 1
+
+    def stop(signum, frame):
+        server.request_stop()
+
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    logging.info("MSBOOST TCP probe v2 listening on 127.0.0.1:20424")
+    server.serve_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+MSBOOST_TCP_PROBE_PY
+  cat > "${STAGE_DIR}/app/tcp-probe.json" <<'MSBOOST_TCP_PROBE_CONFIG'
+{"listen_address":"127.0.0.1","listen_port":20424,"allowed_peer":"127.0.0.1","max_sessions":4,"max_connect_requests":3,"idle_timeout":3,"session_lifetime":15,"connect_timeout":2,"write_timeout":2,"max_line_bytes":4096}
+MSBOOST_TCP_PROBE_CONFIG
+}
+
+write_main_unit "${STAGE_DIR}/msboost.service"
+write_probe_unit "${STAGE_DIR}/msboost-tcp-probe.service"
+write_probe_files
+write_install_state "${STAGE_DIR}/app/install.env"
+python3 - "${STAGE_DIR}/app/relay_tcp_probe.py" <<'PY'
+import ast
+import sys
+with open(sys.argv[1], 'rb') as source:
+    ast.parse(source.read(), filename=sys.argv[1])
+PY
+python3 -B "${STAGE_DIR}/app/relay_tcp_probe.py" --config "${STAGE_DIR}/app/tcp-probe.json" --validate-config
 
 note "Validating the staged configuration before deployment"
 "${STAGE_DIR}/msboost" -d "${STAGE_DIR}/runtime" -f "${STAGE_DIR}/validate.yaml" -t
@@ -929,6 +1392,261 @@ cat > "${STAGE_DIR}/client.json" <<EOF
 EOF
 python3 -m json.tool "${STAGE_DIR}/client.json" >/dev/null
 
+verify_existing_resources() {
+  python3 - "${STAGE_DIR}" "${MANAGED_INSTALL}" <<'MSBOOST_IDENTITY_PY'
+import hashlib
+import os
+import pwd
+import grp
+import stat
+import subprocess
+import sys
+
+stage, managed = sys.argv[1:]
+def reject(reason):
+    raise SystemExit("ERROR: Refusing to overwrite unknown resources: " + reason)
+def read(path):
+    with open(path, 'rb') as source:
+        return source.read()
+def check(path, owners=(0,), exact=None):
+    current = path
+    while current != '/':
+        if os.path.islink(current):
+            reject('symlink ' + current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    if not os.path.lexists(path):
+        return
+    value = os.lstat(path)
+    if (not (stat.S_ISREG(value.st_mode) or stat.S_ISDIR(value.st_mode)) or
+            value.st_uid not in owners or value.st_mode & 0o002 or os.path.ismount(path) or
+            (stat.S_ISREG(value.st_mode) and value.st_nlink != 1)):
+        reject('unsafe owner/type/mode ' + path)
+    if exact and (value.st_uid, value.st_gid, stat.S_IMODE(value.st_mode)) != exact:
+        reject('unexpected owner/mode ' + path)
+    if value.st_mode & 0o020 and (value.st_uid, value.st_gid) != (uid, gid):
+        reject('unsafe group write ' + path)
+
+uid = gid = -1
+try:
+    group = grp.getgrnam('msboost')
+    gid = group.gr_gid
+    if not 0 < gid < 1000:
+        reject('non-system msboost group')
+except KeyError:
+    pass
+try:
+    account = pwd.getpwnam('msboost')
+    uid = account.pw_uid
+    if (not 0 < uid < 1000 or account.pw_gid != gid or account.pw_dir != '/var/lib/msboost' or
+            account.pw_shell.rsplit('/', 1)[-1] not in ('nologin', 'false')):
+        reject('msboost account identity')
+except KeyError:
+    pass
+if managed == '1' and (uid < 0 or gid < 0):
+    reject('managed service account missing')
+
+allowed = {
+    '/etc/msboost': {'config.yaml', 'install.env', 'ruleset', 'relay_tcp_probe.py', 'tcp-probe.json'},
+    '/etc/msboost/ruleset': {'msboost-direct.yaml'},
+    '/var/lib/msboost': {'cache.db', 'cache.db-shm', 'cache.db-wal', 'ruleset'},
+    '/var/lib/msboost/ruleset': {'msboost-filter.mrs'},
+}
+for directory, names in allowed.items():
+    check(directory, (0, uid))
+    if os.path.lexists(directory):
+        if not os.path.isdir(directory) or not set(os.listdir(directory)) <= names:
+            reject('unknown directory contents ' + directory)
+        for name in os.listdir(directory):
+            path = directory + '/' + name
+            check(path, (0, uid))
+            if os.path.isdir(path) and path not in allowed:
+                reject('unexpected directory ' + path)
+for path in ('/usr/local/bin/msboost', '/root/直连.json', '/etc/msboost/install.env'):
+    check(path)
+settings = {}
+state_path = '/etc/msboost/install.env'
+if os.path.lexists(state_path):
+    check(state_path, exact=(0, 0, 0o600))
+    for line in read(state_path).decode('utf-8').splitlines():
+        if '=' not in line:
+            reject('invalid installation state line')
+        key, value = line.split('=', 1)
+        if key in settings:
+            reject('duplicate installation state field')
+        settings[key] = value
+    if settings.get('MANAGED_BY') != 'msboost-installer-v1':
+        reject('installation state marker')
+probe_paths = ('/etc/msboost/relay_tcp_probe.py', '/etc/msboost/tcp-probe.json',
+               '/etc/systemd/system/msboost-tcp-probe.service')
+probe_present = any(os.path.lexists(path) for path in probe_paths)
+if probe_present and not all(os.path.lexists(path) for path in probe_paths):
+    reject('incomplete companion resource set')
+
+def unit_identity(path, expected, key, legacy=None):
+    if os.path.islink(path):
+        value = os.lstat(path)
+        check(os.path.dirname(path))
+        if (os.readlink(path) != '/dev/null' or (value.st_uid, value.st_gid) != (0, 0) or
+                not probe_present or settings.get(key) != hashlib.sha256(expected).hexdigest()):
+            reject('unverifiable persisted mask ' + path)
+    else:
+        check(path, exact=(0, 0, 0o644))
+        if os.path.lexists(path) and read(path) not in (expected, legacy):
+            reject('unit template ' + path)
+
+if probe_present:
+    for path, expected in zip(probe_paths[:2], (stage + '/app/relay_tcp_probe.py', stage + '/app/tcp-probe.json')):
+        check(path, exact=(0, gid, 0o640))
+        if read(path) != read(expected):
+            reject('companion source/config identity ' + path)
+    unit_identity(probe_paths[2], read(stage + '/msboost-tcp-probe.service'), 'TCP_PROBE_UNIT_SHA256')
+main_path = '/etc/systemd/system/msboost.service'
+expected = read(stage + '/msboost.service')
+legacy = expected.replace(b'Wants=network-online.target msboost-tcp-probe.service', b'Wants=network-online.target')
+unit_identity(main_path, expected, 'MAIN_UNIT_SHA256', legacy)
+if os.path.lexists(main_path) and not os.path.islink(main_path):
+    if read(main_path) == expected and not probe_present:
+        reject('main dependency missing companion')
+
+for unit in ('msboost.service', 'msboost-tcp-probe.service'):
+    unit_path = '/etc/systemd/system/' + unit
+    for root in ('/etc/systemd/system', '/run/systemd/system', '/usr/lib/systemd/system', '/lib/systemd/system'):
+        if os.path.lexists(root + '/' + unit + '.d'):
+            reject('unit drop-in ' + unit)
+    runtime = '/run/systemd/system/' + unit
+    if os.path.lexists(runtime):
+        if not os.path.islink(runtime) or os.readlink(runtime) != '/dev/null' or not os.path.lexists(unit_path):
+            reject('unknown runtime unit/mask ' + unit)
+        value = os.lstat(runtime)
+        if (value.st_uid, value.st_gid) != (0, 0):
+            reject('runtime mask owner ' + unit)
+    properties = {}
+    for key in ('FragmentPath', 'DropInPaths', 'LoadState'):
+        properties[key] = subprocess.check_output(['systemctl', 'show', unit, '-p', key, '--value'],
+                stderr=subprocess.DEVNULL, universal_newlines=True, timeout=15).strip()
+    if properties['DropInPaths']:
+        reject('loaded drop-in ' + unit)
+    accepted = (unit_path, runtime) if os.path.islink(runtime) else (unit_path,)
+    if os.path.islink(runtime) or os.path.islink(unit_path):
+        accepted += ('/dev/null',)
+    if properties['FragmentPath'] and properties['FragmentPath'] not in accepted:
+        reject('unexpected loaded unit fragment ' + unit)
+    if not os.path.lexists(unit_path) and (properties['FragmentPath'] or properties['LoadState'] not in ('', 'not-found') or subprocess.call(['systemctl', 'is-active', '--quiet', unit]) == 0):
+        reject('unowned loaded unit ' + unit)
+    target = 'multi-user.target' if unit == 'msboost.service' else 'msboost.service'
+    for root in ('/etc/systemd/system', '/run/systemd/system'):
+        check(root)
+        check(root + '/' + target + '.wants')
+        if os.path.lexists(root + '/' + target + '.wants') and not os.path.isdir(root + '/' + target + '.wants'):
+            reject('enable-link parent is not a directory')
+        for directory, dirs, files in os.walk(root, followlinks=False):
+            for filename in files:
+                candidate = directory + '/' + filename
+                if filename != unit and os.path.islink(candidate) and os.path.abspath(os.path.join(directory, os.readlink(candidate))) == unit_path:
+                    reject('unexpected unit alias ' + candidate)
+            if unit not in files:
+                continue
+            link = directory + '/' + unit
+            if link in (unit_path, runtime):
+                continue
+            if link != root + '/' + target + '.wants/' + unit:
+                reject('unexpected enable link ' + link)
+            if not os.path.islink(link) or os.path.abspath(os.path.join(os.path.dirname(link), os.readlink(link))) != unit_path or (os.lstat(link).st_uid, os.lstat(link).st_gid) != (0, 0):
+                reject('unknown enable link ' + link)
+if subprocess.call(['systemctl', 'is-active', '--quiet', 'msboost-tcp-probe.service']) == 0:
+    if not probe_present or subprocess.call(['systemctl', 'is-active', '--quiet', 'msboost.service']) != 0:
+        reject('inconsistent companion activity')
+MSBOOST_IDENTITY_PY
+}
+
+verify_probe_port_owner() {
+  local sockets pid commandline expected_pid
+  sockets="$(ss -H -ltnp "sport = :${PROBE_PORT}")" || fail "Could not inspect TCP/${PROBE_PORT}."
+  [[ -n "${sockets}" ]] || return 0
+  [[ -e "${PROBE_UNIT}" || -L "${PROBE_UNIT}" ]] && systemctl is-active --quiet "${PROBE_SERVICE}" || fail "TCP/${PROBE_PORT} is occupied by an unknown process."
+  expected_pid="$(systemctl show "${PROBE_SERVICE}" -p MainPID --value)"
+  [[ "${expected_pid}" =~ ^[1-9][0-9]*$ ]] || fail "The companion has no verifiable MainPID."
+  python3 - "${sockets}" "${expected_pid}" "${APP_USER}" <<'PY'
+import os
+import pwd
+import re
+import sys
+rows, expected, username = sys.argv[1:]
+for row in rows.splitlines():
+    fields = row.split()
+    if len(fields) < 5 or fields[3] != '127.0.0.1:20424':
+        raise SystemExit('ERROR: Probe port has an unexpected listening address.')
+    pids = re.findall(r'pid=([0-9]+)', row)
+    if not pids or set(pids) != {expected}:
+        raise SystemExit('ERROR: Probe port is not exclusively owned by its service.')
+with open('/proc/' + expected + '/cmdline', 'rb') as handle:
+    command = handle.read().rstrip(b'\0').split(b'\0')
+if command != [b'/usr/bin/python3', b'-B', b'/etc/msboost/relay_tcp_probe.py', b'--config', b'/etc/msboost/tcp-probe.json']:
+    raise SystemExit('ERROR: Probe process command identity does not match.')
+if os.stat('/proc/' + expected).st_uid != pwd.getpwnam(username).pw_uid:
+    raise SystemExit('ERROR: Probe process owner does not match.')
+PY
+}
+
+unit_state_paths() {
+  local service=$1 target
+  [[ "${service}" == "${SERVICE}" ]] && target="multi-user.target" || target="msboost.service"
+  printf '%s\n' "/run/systemd/system/${service}" "/etc/systemd/system/${target}.wants/${service}" "/run/systemd/system/${target}.wants/${service}"
+}
+
+snapshot_unit_links() {
+  local service=$1 path index=0
+  install -d -m 0700 "${BACKUP_DIR}/${service}.links"
+  while IFS= read -r path; do
+    if [[ -e "${path}" || -L "${path}" ]]; then
+      cp -a -- "${path}" "${BACKUP_DIR}/${service}.links/${index}"
+    fi
+    index=$((index + 1))
+  done < <(unit_state_paths "${service}")
+}
+
+clear_unit_links() {
+  local service=$1 path
+  while IFS= read -r path; do
+    rm -f -- "${path}" || return
+  done < <(unit_state_paths "${service}")
+}
+
+restore_unit_links() {
+  local service=$1 include_mask=$2 path saved index=0
+  while IFS= read -r path; do
+    saved="${BACKUP_DIR}/${service}.links/${index}"
+    if [[ -e "${saved}" || -L "${saved}" ]]; then
+      if [[ "${include_mask}" == 1 || "$(readlink "${saved}" 2>/dev/null || true)" != /dev/null ]]; then
+        install -d -m 0755 "$(dirname "${path}")" || return
+        rm -f -- "${path}" || return
+        cp -a -- "${saved}" "${path}" || return
+      fi
+    fi
+    index=$((index + 1))
+  done < <(unit_state_paths "${service}")
+}
+
+verify_restored_unit_state() {
+  local service=$1 active=$2 enabled=$3 actual
+  actual="$(systemctl is-enabled "${service}" 2>/dev/null || true)"
+  [[ -n "${actual}" ]] || actual="missing"
+  [[ "${actual}" == "${enabled}" ]] || rollback_problem "${service} enable/mask state did not restore (${actual}; expected ${enabled})."
+  if (( active )); then
+    systemctl is-active --quiet "${service}" || rollback_problem "${service} prior activity did not restore."
+  else
+    if systemctl is-active --quiet "${service}"; then
+      rollback_problem "${service} should remain inactive after rollback."
+    fi
+  fi
+}
+
+verify_existing_resources
+verify_probe_port_owner
+
 snapshot_existing_installation() {
   install -d -m 0700 "${BACKUP_ROOT}"
   BACKUP_DIR="$(mktemp -d "${BACKUP_ROOT}/transaction.XXXXXX")"
@@ -952,14 +1670,29 @@ snapshot_existing_installation() {
     cp -a -- "${CLIENT_CONFIG}" "${BACKUP_DIR}/client.json"
     OLD_CLIENT=1
   fi
+  if [[ -e "${PROBE_UNIT}" || -L "${PROBE_UNIT}" ]]; then
+    cp -a -- "${PROBE_UNIT}" "${BACKUP_DIR}/probe-unit"
+    OLD_PROBE_UNIT=1
+  fi
+  snapshot_unit_links "${SERVICE}"
+  snapshot_unit_links "${PROBE_SERVICE}"
+  systemctl is-active --quiet "${PROBE_SERVICE}" && OLD_PROBE_ACTIVE=1 || true
+  OLD_PROBE_ENABLE_STATE="$(systemctl is-enabled "${PROBE_SERVICE}" 2>/dev/null || true)"
+  [[ -n "${OLD_PROBE_ENABLE_STATE}" ]] || OLD_PROBE_ENABLE_STATE="missing"
   systemctl is-active --quiet "${SERVICE}" && OLD_ACTIVE=1 || true
   OLD_ENABLE_STATE="$(systemctl is-enabled "${SERVICE}" 2>/dev/null || true)"
   [[ -n "${OLD_ENABLE_STATE}" ]] || OLD_ENABLE_STATE="missing"
 }
 
 snapshot_existing_installation
+verify_existing_resources
+verify_probe_port_owner
 TX_ACTIVE=1
 ensure_service_user
+if (( OLD_PROBE_UNIT || OLD_PROBE_ACTIVE )); then
+  systemctl stop "${PROBE_SERVICE}" || fail "Could not stop the previous TCP probe."
+  systemctl is-active --quiet "${PROBE_SERVICE}" && fail "The previous TCP probe did not stop."
+fi
 if (( OLD_UNIT || OLD_ACTIVE )); then
   systemctl stop "${SERVICE}" || fail "Could not stop the previous msboost service."
   for _ in $(seq 1 20); do
@@ -975,8 +1708,16 @@ for _ in $(seq 1 20); do
 done
 port_in_use "${PORT}" && fail "TCP port ${PORT} is already occupied by another process."
 
+for _ in $(seq 1 20); do
+  ! port_in_use "${PROBE_PORT}" && break
+  sleep 0.25
+done
+port_in_use "${PROBE_PORT}" && fail "Loopback probe TCP/${PROBE_PORT} is still occupied."
+
 note "Deploying msboost transactionally"
-rm -f -- "${BIN}" "${UNIT}" "${CLIENT_CONFIG}"
+clear_unit_links "${SERVICE}"
+clear_unit_links "${PROBE_SERVICE}"
+rm -f -- "${BIN}" "${UNIT}" "${PROBE_UNIT}" "${CLIENT_CONFIG}"
 install -m 0755 "${STAGE_DIR}/msboost" "${BIN}"
 rm -rf -- "${APP_DIR}"
 rm -rf -- "${STATE_DIR}"
@@ -988,25 +1729,129 @@ install -m 0640 -o root -g "${APP_GROUP}" "${STAGE_DIR}/app/config.yaml" "${APP_
 install -m 0640 -o root -g "${APP_GROUP}" "${STAGE_DIR}/runtime/ruleset/msboost-direct.yaml" "${APP_DIR}/ruleset/msboost-direct.yaml"
 install -m 0640 -o "${APP_USER}" -g "${APP_GROUP}" "${STAGE_DIR}/runtime/ruleset/msboost-filter.mrs" "${STATE_DIR}/ruleset/msboost-filter.mrs"
 install -m 0600 -o root -g root "${STAGE_DIR}/app/install.env" "${STATE_FILE}"
+install -m 0640 -o root -g "${APP_GROUP}" "${STAGE_DIR}/app/relay_tcp_probe.py" "${PROBE_SOURCE}"
+install -m 0640 -o root -g "${APP_GROUP}" "${STAGE_DIR}/app/tcp-probe.json" "${PROBE_CONFIG}"
 install -m 0644 -o root -g root "${STAGE_DIR}/msboost.service" "${UNIT}"
+install -m 0644 -o root -g root "${STAGE_DIR}/msboost-tcp-probe.service" "${PROBE_UNIT}"
 install -m 0600 -o root -g root "${STAGE_DIR}/client.json" "${CLIENT_CONFIG}"
 
 SAFE_PATHS="${APP_DIR}/ruleset" "${BIN}" -d "${STATE_DIR}" -f "${APP_DIR}/config.yaml" -t
 systemctl daemon-reload
-systemctl unmask "${SERVICE}" >/dev/null 2>&1 || true
-systemctl enable "${SERVICE}" >/dev/null
+systemctl enable "${SERVICE}" "${PROBE_SERVICE}" >/dev/null
 systemctl restart "${SERVICE}"
 
 for _ in $(seq 1 30); do
-  if systemctl is-active --quiet "${SERVICE}" && port_in_use "${PORT}"; then
+  if systemctl is-active --quiet "${SERVICE}" && systemctl is-active --quiet "${PROBE_SERVICE}" && port_in_use "${PORT}" && port_in_use "${PROBE_PORT}"; then
     break
   fi
   sleep 1
 done
-if ! systemctl is-active --quiet "${SERVICE}" || ! port_in_use "${PORT}"; then
-  journalctl -u "${SERVICE}" -n 100 --no-pager >&2 || true
+if ! systemctl is-active --quiet "${SERVICE}" || ! systemctl is-active --quiet "${PROBE_SERVICE}" || ! port_in_use "${PORT}" || ! port_in_use "${PROBE_PORT}"; then
+  journalctl -u "${SERVICE}" -u "${PROBE_SERVICE}" -n 100 --no-pager >&2 || true
   fail "msboost did not become healthy."
 fi
+
+probe_hello() {
+  # One deadline covers SOCKS5 and hello, including fragmented replies.
+  python3 - "$1" <<'MSBOOST_PROBE_HELLO_PY'
+import json
+import re
+import socket
+import sys
+import time
+import uuid
+
+socks_port = int(sys.argv[1])
+deadline = time.monotonic() + 5
+stream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+def budget():
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError('probe hello warm-up deadline exceeded')
+    stream.settimeout(left)
+def send(payload):
+    budget()
+    stream.sendall(payload)
+def exact(size):
+    result = bytearray()
+    while len(result) < size:
+        budget()
+        part = stream.recv(size - len(result))
+        if not part:
+            raise ValueError('premature EOF in SOCKS5 reply')
+        result.extend(part)
+    return bytes(result)
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate JSON field')
+        result[key] = value
+    return result
+try:
+    budget()
+    stream.connect(('127.0.0.1', socks_port or 20424))
+    if socks_port:
+        send(b'\x05\x01\x00')
+        if exact(2) != b'\x05\x00':
+            raise ValueError('SOCKS5 authentication unsupported or invalid')
+        send(b'\x05\x01\x00\x01\x7f\x00\x00\x01' + (20424).to_bytes(2, 'big'))
+        header = exact(4)
+        if header[:3] != b'\x05\x00\x00':
+            raise ValueError('SOCKS5 CONNECT failed or invalid')
+        if header[3] == 1:
+            exact(4)
+        elif header[3] == 4:
+            exact(16)
+        elif header[3] == 3:
+            length = exact(1)[0]
+            if not length:
+                raise ValueError('empty SOCKS5 bound hostname')
+            exact(length)
+        else:
+            raise ValueError('invalid SOCKS5 bound address type')
+        exact(2)
+    nonce = uuid.uuid4().hex
+    request = {'version': 2, 'operation': 'hello', 'nonce': nonce}
+    send(json.dumps(request, separators=(',', ':')).encode('ascii') + b'\n')
+    received = bytearray()
+    while True:
+        budget()
+        part = stream.recv(4098 - len(received))
+        if not part:
+            raise ValueError('premature EOF in probe hello')
+        received.extend(part)
+        offset = received.find(b'\n')
+        if offset >= 0:
+            if offset > 4096 or offset != len(received) - 1:
+                raise ValueError('invalid hello line boundary')
+            raw = bytes(received[:offset])
+            budget()
+            break
+        if len(received) > 4096:
+            raise ValueError('probe hello exceeds 4096 bytes')
+    text = raw.decode('utf-8', errors='strict')
+    scalar = r'(?:"[A-Za-z0-9_.-]*"|true|false|0|[1-9][0-9]*)'
+    field = r'"[a-z_]+"[ \t\r]*:[ \t\r]*' + scalar
+    if not re.fullmatch(r'[ \t\r]*\{[ \t\r]*' + field + r'(?:[ \t\r]*,[ \t\r]*' + field + r')*[ \t\r]*\}[ \t\r]*', text):
+        raise ValueError('invalid raw hello JSON')
+    response = json.loads(text, object_pairs_hook=unique)
+    if (set(response) != {'version', 'operation', 'nonce', 'node_id', 'success'} or
+            type(response['version']) is not int or response['version'] != 2 or
+            response['operation'] != 'hello' or response['nonce'] != nonce or
+            type(response['node_id']) is not str or not re.fullmatch('[0-9a-f]{32}', response['node_id']) or
+            response['success'] is not True):
+        raise ValueError('probe hello identity or fields mismatch')
+    budget()
+except (OSError, ValueError, TypeError) as error:
+    raise SystemExit('ERROR: TCP probe hello self-test failed: ' + str(error))
+finally:
+    stream.close()
+MSBOOST_PROBE_HELLO_PY
+}
+
+note "Validating the loopback TCP probe health"
+probe_hello 0
 
 note "Running a local end-to-end proxy self-test"
 SELFTEST_PORT="$(random_free_port)" || fail "Could not choose a local self-test port."
@@ -1049,6 +1894,10 @@ done
 if (( ! SELFTEST_OK )); then
   cat "${STAGE_DIR}/selftest/msboost-selftest.log" >&2 || true
   fail "The local end-to-end proxy self-test failed."
+fi
+if ! probe_hello "${SELFTEST_PORT}"; then
+  cat "${STAGE_DIR}/selftest/msboost-selftest.log" >&2 || true
+  fail "The SOCKS5 -> Mieru -> loopback TCP probe self-test failed."
 fi
 cleanup_test
 
