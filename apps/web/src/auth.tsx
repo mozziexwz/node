@@ -398,7 +398,7 @@ export function AuthPage({
             [
               Route,
               "一键配置中转服务器",
-              "与朋友共享你的服务器，但不共享你的IP",
+              "与朋友共享你的VPS线路，但不共享你的IP",
             ],
             [RefreshCw, "一键DD系统", "在线重装系统"],
           ].map(([Icon, title, sub]) => {

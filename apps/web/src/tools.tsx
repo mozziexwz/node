@@ -315,6 +315,15 @@ const states: Record<string, string> = {
   interrupted: "已中断",
   executed: "已执行 DD 操作",
 };
+const taskKinds: Record<string, string> = {
+  deploy: "部署 MSBOOST",
+  relay: "自备中转",
+  dd: "DD 系统",
+  fingerprint: "验证指纹",
+  front: "前置机",
+  "cleanup-preview": "卸载检查",
+  cleanup: "卸载组件",
+};
 const phases: Record<string, string> = {
   queued: "等待执行机",
   executing: "执行中",
@@ -726,6 +735,7 @@ export function ToolPage({
                   value={ssh}
                   onChange={setSSH}
                 />
+                {kind === "deploy" && <ErrorNotice error={error} />}
                 {kind === "deploy" && (
                   <>
                     <Notice tone="orange">
@@ -842,7 +852,7 @@ export function ToolPage({
                     />
                   </>
                 )}
-                <ErrorNotice error={error} />
+                {kind !== "deploy" && <ErrorNotice error={error} />}
                 {(kind === "deploy" || kind === "relay") && (
                   <Notice tone="orange">
                     仅支持 Debian 11、12、13，不支持其他发行版或版本。
@@ -1069,19 +1079,27 @@ export function TasksPage({
   user: RecordData;
   settings: RecordData;
 }) {
+  const isAdmin = user.role === "admin";
+  const [search, setSearch] = useState(""),
+    [query, setQuery] = useState(""),
+    [kind, setKind] = useState("");
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  if (kind) params.set("kind", kind);
+  const auditURL = "/api/admin/tasks" + (params.size ? "?" + params : "");
   const { data, error, loading, reload } = useData(
-    user.role === "admin" ? "/api/admin/tasks" : "/api/tasks",
+    isAdmin ? auditURL : "/api/tasks",
   );
   const [selected, setSelected] = useState<RecordData | null>(null),
     [message, setMessage] = useState(""),
     [files, setFiles] = useState<Record<string, boolean>>({}),
     [restoring, setRestoring] = useState<RecordData | null>(null),
     [restoreConfig, setRestoreConfig] = useState<RecordData | null>(null);
-  const tasks = array(data, "tasks");
+  const tasks = loading || error ? [] : array(data, "tasks");
   useEffect(() => {
     let alive = true;
     Promise.all(
-      tasks.map(async (t) => [
+      array(data, "tasks").map(async (t) => [
         t.id,
         !!(await getLocal(user.id, t.id).catch(() => null)),
       ]),
@@ -1104,94 +1122,166 @@ export function TasksPage({
       >
         <Button onClick={reload}>刷新</Button>
       </Header>
+      {isAdmin && (
+        <form
+          className="card form-grid"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setMessage("");
+            const next = search.trim();
+            if (next === query) reload();
+            else setQuery(next);
+          }}
+        >
+          <Field
+            label="搜索任务"
+            placeholder="搜索邮箱 / 用户 ID / 任务编号 / 服务器 / 备注"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <Select
+            label="任务类型"
+            value={kind}
+            onChange={(e) => {
+              setMessage("");
+              setQuery(search.trim());
+              setKind(e.target.value);
+            }}
+          >
+            <option value="">全部类型</option>
+            {Object.entries(taskKinds).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
+          <div className="actions">
+            <Button type="submit" primary>
+              搜索
+            </Button>
+            <Button
+              onClick={() => {
+                setSearch("");
+                setQuery("");
+                setKind("");
+                setMessage("");
+              }}
+            >
+              清空筛选
+            </Button>
+          </div>
+        </form>
+      )}
       <ErrorNotice error={error || message} />
       <Notice tone="orange">
         免费配置请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复；捐赠权益线路文件请到线路页使用“中转配置下载”。
       </Notice>
       <div className="card flush mt24">
-        <Table
-          loading={loading}
-          error={error}
-          headers={["任务 / 时间", "服务器", "状态", "配置", "操作"]}
-          rows={tasks.map((t) => [
-            <>
-              {(
-                {
-                  deploy: "部署 MSBOOST",
-                  relay: "自备中转",
-                  dd: "DD 系统",
-                  fingerprint: "验证指纹",
-                  "cleanup-preview": "卸载检查",
-                  cleanup: "卸载组件",
-                } as Record<string, string>
-              )[t.kind] || t.kind}
-              <small>{date(t.createdAt)}</small>
-            </>,
-            t.host,
-            <Badge
-              tone={
-                ["failed", "unknown", "interrupted"].includes(t.state)
-                  ? "red"
-                  : "orange"
-              }
-            >
-              {states[t.state] || t.state}
-            </Badge>,
-            ["dd", "fingerprint", "cleanup", "cleanup-preview"].includes(t.kind)
-              ? "不生成配置"
-              : files[t.id]
-                ? "已存当前浏览器"
-                : t.configAvailable
-                  ? "临时交付可用"
-                  : "本机无文件",
-            <div className="actions">
-              <Button onClick={() => setSelected(t)}>详情</Button>
-              {!files[t.id] &&
-                t.kind !== "dd" &&
-                t.configHost &&
-                user.role !== "admin" && (
-                  <Button
-                    onClick={() => {
-                      setRestoring(t);
-                      setRestoreConfig(null);
-                    }}
-                  >
-                    导入恢复
-                  </Button>
-                )}
-              {files[t.id] && (
-                <>
-                  <Button
-                    onClick={async () => {
-                      try {
-                        const f = await getLocal(user.id, t.id);
-                        if (f) download(f.data, f.name);
-                      } catch (e) {
-                        setMessage((e as Error).message);
-                      }
-                    }}
-                  >
-                    下载
-                  </Button>
-                  <Button
-                    onClick={async () => {
-                      if (
-                        !confirm(
-                          "删除当前浏览器中的这份配置？请确认已有下载备份。",
+        {!loading && !error && !tasks.length ? (
+          <Empty>
+            {isAdmin
+              ? query || kind
+                ? "没有符合条件的任务。请调整搜索或任务类型。"
+                : "暂无任务记录。"
+              : "还没有任务。请从一项免费工具开始。"}
+          </Empty>
+        ) : (
+          <Table
+            loading={loading}
+            error={error}
+            headers={[
+              "任务 / 时间",
+              ...(isAdmin ? ["操作用户名"] : []),
+              "服务器",
+              "状态",
+              "配置",
+              "操作",
+            ]}
+            rows={tasks.map((t) => [
+              <>
+                {taskKinds[t.kind] || t.kind}
+                <small>{date(t.createdAt)}</small>
+              </>,
+              ...(isAdmin
+                ? [
+                    <>
+                      <span>{t.userName || "未知用户"}</span>
+                      {t.userId && <small>用户 ID：{t.userId}</small>}
+                    </>,
+                  ]
+                : []),
+              t.host,
+              <Badge
+                tone={
+                  ["failed", "unknown", "interrupted"].includes(t.state)
+                    ? "red"
+                    : "orange"
+                }
+              >
+                {states[t.state] || t.state}
+              </Badge>,
+              [
+                "dd",
+                "fingerprint",
+                "front",
+                "cleanup",
+                "cleanup-preview",
+              ].includes(t.kind)
+                ? "不生成配置"
+                : files[t.id]
+                  ? "已存当前浏览器"
+                  : t.configAvailable
+                    ? "临时交付可用"
+                    : "本机无文件",
+              <div className="actions">
+                <Button onClick={() => setSelected(t)}>详情</Button>
+                {!files[t.id] &&
+                  t.kind !== "dd" &&
+                  t.configHost &&
+                  user.role !== "admin" && (
+                    <Button
+                      onClick={() => {
+                        setRestoring(t);
+                        setRestoreConfig(null);
+                      }}
+                    >
+                      导入恢复
+                    </Button>
+                  )}
+                {files[t.id] && (
+                  <>
+                    <Button
+                      onClick={async () => {
+                        try {
+                          const f = await getLocal(user.id, t.id);
+                          if (f) download(f.data, f.name);
+                        } catch (e) {
+                          setMessage((e as Error).message);
+                        }
+                      }}
+                    >
+                      下载
+                    </Button>
+                    <Button
+                      onClick={async () => {
+                        if (
+                          !confirm(
+                            "删除当前浏览器中的这份配置？请确认已有下载备份。",
+                          )
                         )
-                      )
-                        return;
-                      await deleteLocal(user.id, t.id);
-                      setFiles({ ...files, [t.id]: false });
-                    }}
-                  >
-                    删除本地
-                  </Button>
-                </>
-              )}
-            </div>,
-          ])}
-        />
+                          return;
+                        await deleteLocal(user.id, t.id);
+                        setFiles({ ...files, [t.id]: false });
+                      }}
+                    >
+                      删除本地
+                    </Button>
+                  </>
+                )}
+              </div>,
+            ])}
+          />
+        )}
       </div>
       {selected && (
         <TaskDetail
@@ -1249,9 +1339,6 @@ export function TasksPage({
             保存到当前浏览器
           </Button>
         </Modal>
-      )}
-      {!loading && !tasks.length && !error && (
-        <Empty>还没有任务。请从一项免费工具开始。</Empty>
       )}
     </>
   );

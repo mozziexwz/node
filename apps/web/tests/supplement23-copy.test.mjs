@@ -181,7 +181,7 @@ test(
             ]);
             await expect(cards.locator("p")).toHaveText([
               "部署你的独立IP游戏节点",
-              "与朋友共享你的服务器，但不共享你的IP",
+              "与朋友共享你的VPS线路，但不共享你的IP",
               "在线重装系统",
             ]);
             const contact = page.locator(".public-footer .public-contact");

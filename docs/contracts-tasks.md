@@ -27,7 +27,14 @@
 | `dd` | `ssh`；`dd:{confirmErase:true,portMode:"keep"\|"new",newPort?,passwordMode:"keep"\|"new",newPassword?}`，仅固定 Debian 12 重装流程 |
 | `cleanup-preview` / `cleanup` | 见下节；不接受前置机、客户端配置或 DD 参数 |
 
-`GET /api/tasks/{id}` 返回元数据，所有者和管理员可审计；管理员不能读取其他用户的临时配置。`GET /api/admin/tasks` 返回 `{tasks:Task[]}`。
+`GET /api/tasks/{id}` 返回元数据，所有者和管理员可审计；管理员不能读取其他用户的临时配置。
+
+`GET /api/admin/tasks` 仅管理员可读，返回 `{tasks:[{...Task,userName}]}`，按 `createdAt` 从新到旧排列。`userName` 显示操作人的当前登录邮箱；关联账号已删除或缺失时为“已删除用户”，账号邮箱为空时为“未设置邮箱”。原 `userId` 保留，便于核对同名或已删除用户；显示名称仅在读取审计列表时计算，不写回历史任务，也不加入普通用户任务 API。
+
+- `q`：可选关键词，去除首尾空白后，不区分大小写地匹配 `userName,userId,id,host,kind,state,remark` 中任一字段的子串；为空时不限制。
+- `kind`：去除首尾空白后，精确匹配 `deploy,relay,dd,fingerprint,front,cleanup-preview,cleanup`；省略或为空时显示全部，未知类型返回 HTTP 400。
+- 同时提供 `q` 和 `kind` 时取交集，不增加分页或总数字段；无匹配项返回 `{tasks:[]}`。先核验管理员权限，再校验参数和读取任务；普通用户或未登录请求返回 HTTP 403。
+- 搜索仅检查上述公开审计字段，不读取密码、执行信封或客户端配置。`configAvailable` 仍仅对任务所有者且临时配置未过期时为真；管理员不能凭审计结果下载其他用户的配置。
 
 Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,phase,message,errorCode?,nextStep?,createdAt,updatedAt,configAvailable,configHost?,configPort?,health?,hops?,cleanup?`。指纹是公钥摘要，不是私钥；内部幂等摘要和租约不属于普通审计字段。
 

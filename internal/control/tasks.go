@@ -684,8 +684,25 @@ func (t *TaskService) adminTasks(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 403, "需要管理员权限")
 		return
 	}
-	rows := []Task{}
-	if err := t.app.Store.View(func(s *State) error { rows = ListDocs[Task](s, "tasks"); return nil }); err != nil {
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	if !validTaskAuditKind(kind) {
+		Fail(w, 400, "任务类型筛选无效")
+		return
+	}
+	rows := []adminTask{}
+	if err := t.app.Store.View(func(s *State) error {
+		for _, task := range ListDocs[Task](s, "tasks") {
+			if kind != "" && task.Kind != kind {
+				continue
+			}
+			row := adminTask{Task: task, UserName: adminTaskUserName(s.Users[task.UserID])}
+			if adminTaskMatchesQuery(row, query) {
+				rows = append(rows, row)
+			}
+		}
+		return nil
+	}); err != nil {
 		Fail(w, 500, "任务记录读取失败")
 		return
 	}
