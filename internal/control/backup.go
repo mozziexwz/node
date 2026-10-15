@@ -835,6 +835,8 @@ func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 409, err.Error())
 		return
 	}
+	// Restored articles and site settings replace the cached public pages now.
+	b.app.invalidatePublic()
 	message := "安全恢复完成；当前用户、财务、流量与转发关联已保留。请重新登录并重新关联Agent，核对线路后解除维护。恢复前的私有回滚副本已保护，不会自动清理。"
 	if recoveryRequired {
 		message = "数据安全恢复完成，节点需恢复管理连接。旧节点可能仍在转发，请保持维护，在面板服务器运行 msboost relay-reconnect，按向导选择节点并核对。配置一致的转发可保留；配置不一致或记录不完整时，向导会列出影响，再由你确认中断或重新部署。不要直接释放端口或重复安装。恢复前的私有回滚副本已保护。"

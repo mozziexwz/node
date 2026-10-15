@@ -149,6 +149,8 @@ func relayEnrollmentBlockReason(s *State, agent RelayAgent) string {
 	return ""
 }
 
+var errRelayEnrollmentInvalid = errors.New("注册令牌无效、已使用或已过期")
+
 func (a *App) relayRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		EnrollmentToken string `json:"enrollmentToken"`
@@ -164,6 +166,11 @@ func (a *App) relayRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.RequestID != "" && !relayV2Identifier(in.RequestID) {
 		Fail(w, 400, "安装请求编号无效")
+		return
+	}
+	enrollment := commerceHash(in.EnrollmentToken)
+	if err := a.agentCredential(r, func(i *credentialIndex) bool { return i.enrollment[enrollment] > time.Now().UnixMilli() }); err != nil {
+		agentAuthFail(w, err, errRelayEnrollmentInvalid.Error())
 		return
 	}
 	token := commerceID() + commerceID()
@@ -204,9 +211,12 @@ func (a *App) relayRegisterAgent(w http.ResponseWriter, r *http.Request) {
 				return SaveDoc(s, "relay_agents", agent.ID, agent)
 			}
 		}
-		return errors.New("注册令牌无效、已使用或已过期")
+		return errRelayEnrollmentInvalid
 	})
 	if err != nil {
+		if errors.Is(err, errRelayEnrollmentInvalid) {
+			a.agentAuthFailed(r)
+		}
 		commerceError(w, 401, err)
 		return
 	}

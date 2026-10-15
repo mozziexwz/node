@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,8 @@ type App struct {
 	relayWorkCtx     context.Context
 	relayWorkCancel  context.CancelFunc
 	relayWorkClosed  bool
+	public           publicCache
+	credentials      credentialCache
 }
 
 func New(c Config) (*App, error) {
@@ -277,10 +280,14 @@ func (a *App) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
+		api := strings.HasPrefix(r.URL.Path, "/api/")
+		// Anonymous public reads are answered from an in-memory snapshot and use
+		// no identity, so they skip both whole-state reads below.
+		publicRead := (r.Method == "GET" || r.Method == "HEAD") && strings.HasPrefix(r.URL.Path, "/api/public/")
 		// Cover GET-based payment callbacks and executor polling as well as
 		// ordinary writes. Store.Update remains the authoritative race barrier
 		// for requests and workers already in flight when the gate was acquired.
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		if api && !publicRead {
 			gateErr := a.Store.View(func(s *State) error {
 				if backupPauseGatePresent(s) {
 					return ErrBackupPauseActive
@@ -308,6 +315,11 @@ func (a *App) Authenticate(next http.Handler) http.Handler {
 				Fail(w, http.StatusForbidden, "请求来源校验失败")
 				return
 			}
+		}
+		// Static files and pages need no session; only API handlers read it.
+		if !api || publicRead {
+			next.ServeHTTP(w, r)
+			return
 		}
 		identity, err := a.identity(r)
 		if err == nil {
@@ -363,34 +375,102 @@ func (a *App) clientIP(r *http.Request) string {
 	return peer
 }
 
+// IPv6 clients usually control at least a /64, so per-address limits group
+// the whole prefix instead of granting one bucket per address.
+func (a *App) rateIP(r *http.Request) string {
+	raw := a.clientIP(r)
+	ip := net.ParseIP(raw)
+	if ip == nil || ip.To4() != nil {
+		return raw
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
+const (
+	rateCompactKeys = 10000
+	rateMaxKeys     = 20000
+)
+
 // Rate limits do not trust X-Forwarded-For; configure the reverse proxy to
 // preserve a safe source address instead of accepting a client-supplied IP.
 func (a *App) allow(key string, maximum int, window time.Duration) bool {
 	a.rateMu.Lock()
 	defer a.rateMu.Unlock()
-	now, cutoff := time.Now().UnixMilli(), time.Now().Add(-window).UnixMilli()
-	if len(a.rates) > 10000 {
-		for k, events := range a.rates {
-			if len(events) == 0 || events[len(events)-1] <= now-int64(time.Hour/time.Millisecond) {
-				delete(a.rates, k)
-			}
-		}
-		if len(a.rates) > 20000 {
-			return false
-		}
+	if !a.rateAvailableLocked(key, maximum, window) {
+		return false
 	}
+	a.rateRecordLocked(key)
+	return true
+}
+
+// limited checks a bucket without consuming it and record adds one event.
+// Login uses the pair so only failed passwords count against an account.
+func (a *App) limited(key string, maximum int, window time.Duration) bool {
+	a.rateMu.Lock()
+	defer a.rateMu.Unlock()
+	return !a.rateAvailableLocked(key, maximum, window)
+}
+
+func (a *App) record(key string) {
+	a.rateMu.Lock()
+	defer a.rateMu.Unlock()
+	a.rateRecordLocked(key)
+}
+
+func (a *App) forget(key string) {
+	a.rateMu.Lock()
+	defer a.rateMu.Unlock()
+	delete(a.rates, key)
+}
+
+func (a *App) rateAvailableLocked(key string, maximum int, window time.Duration) bool {
+	cutoff := time.Now().Add(-window).UnixMilli()
 	valid := a.rates[key][:0]
 	for _, at := range a.rates[key] {
 		if at > cutoff {
 			valid = append(valid, at)
 		}
 	}
-	if len(valid) >= maximum {
+	if len(valid) == 0 {
+		delete(a.rates, key)
+	} else {
 		a.rates[key] = valid
-		return false
 	}
-	a.rates[key] = append(valid, now)
-	return true
+	return len(valid) < maximum
+}
+
+func (a *App) rateRecordLocked(key string) {
+	now := time.Now().UnixMilli()
+	if _, exists := a.rates[key]; !exists && len(a.rates) >= rateCompactKeys {
+		a.compactRatesLocked(now)
+	}
+	a.rates[key] = append(a.rates[key], now)
+}
+
+// A full table never refuses everyone: idle buckets go first, then the least
+// recently active ones, so a flood of attacker-chosen keys cannot lock out
+// unrelated logins.
+func (a *App) compactRatesLocked(now int64) {
+	for k, events := range a.rates {
+		if len(events) == 0 || events[len(events)-1] <= now-int64(time.Hour/time.Millisecond) {
+			delete(a.rates, k)
+		}
+	}
+	if len(a.rates) < rateMaxKeys {
+		return
+	}
+	type bucket struct {
+		key  string
+		last int64
+	}
+	buckets := make([]bucket, 0, len(a.rates))
+	for k, events := range a.rates {
+		buckets = append(buckets, bucket{key: k, last: events[len(events)-1]})
+	}
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i].last < buckets[j].last })
+	for _, b := range buckets[:len(buckets)-rateMaxKeys*3/4] {
+		delete(a.rates, b.key)
+	}
 }
 
 func boolSetting(s *State, key string) bool { v, _ := s.Settings[key].(bool); return v }

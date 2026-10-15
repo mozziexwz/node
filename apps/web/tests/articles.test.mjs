@@ -388,3 +388,62 @@ test(
     });
   },
 );
+
+test(
+  "article management: guest visibility toggles through the visibility endpoint",
+  { timeout: 30000 },
+  async () => {
+    await articleBrowser(async ({ page, base, setHandler }) => {
+      let article = {
+        id: "guide",
+        title: "部署教程",
+        category: "教程",
+        published: true,
+        public: false,
+        pinned: false,
+        body: "正文",
+        attachments: [],
+      };
+      const changes = [];
+      setHandler(async (route, path) => {
+        const method = route.request().method();
+        if (path === "/api/admin/articles" && method === "GET") {
+          await route.fulfill({ json: { articles: [article] } });
+          return true;
+        }
+        if (path === "/api/admin/articles/guide/visibility" && method === "POST") {
+          const change = route.request().postDataJSON();
+          changes.push(change);
+          assert.equal(
+            route.request().headers()["x-csrf-token"],
+            "isolated-fixture",
+          );
+          article = { ...article, ...change };
+          await route.fulfill({ json: { articles: [article] } });
+          return true;
+        }
+        return false;
+      });
+      await page.goto(base + "/#tutorials");
+      const row = page.locator("tbody tr", { hasText: "部署教程" });
+      await expect(row.getByText("仅会员", { exact: true })).toBeVisible();
+      await expect(row.getByRole("link", { name: /查看公开页/ })).toHaveCount(0);
+      await row.getByRole("button", { name: "公开到文章页", exact: true }).click();
+      await expect(row.getByText("公开", { exact: true })).toBeVisible();
+      await expect(row.getByRole("link", { name: /查看公开页/ })).toHaveAttribute(
+        "href",
+        "/news/guide",
+      );
+      await row.getByRole("button", { name: "取消发布", exact: true }).click();
+      await expect(row.getByText("公开（未发布）", { exact: true })).toBeVisible();
+      await expect(row.getByRole("link", { name: /查看公开页/ })).toHaveCount(0);
+      // Only the flags travel; a stale title or body can never be written back.
+      assert.deepEqual(changes, [{ public: true }, { published: false }]);
+      await row.getByRole("button", { name: "编辑", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(
+        dialog.getByLabel("同时公开到主页和文章页（访客无需登录）"),
+      ).toBeDisabled();
+    });
+  },
+);

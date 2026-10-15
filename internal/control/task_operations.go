@@ -88,8 +88,6 @@ func (t *TaskService) reconcile(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "请先在 VPS 控制台确认原操作已经结束；此操作不会停止远程命令")
 		return
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	err = t.app.Store.Update(func(s *State) error {
 		job, ok := LoadDoc[Task](s, "tasks", r.PathValue("id"))
 		if !ok || (job.UserID != u.ID && u.Role != "admin") {
@@ -121,7 +119,9 @@ func (t *TaskService) reconcile(w http.ResponseWriter, r *http.Request) {
 	// A revoked executor can leave a claimed in-memory envelope. Clear it
 	// only after the explicit reconciliation transaction commits; otherwise
 	// targetBusy's fallback would contradict the durable resolved state.
+	t.mu.Lock()
 	delete(t.envelopes, r.PathValue("id"))
+	t.mu.Unlock()
 	WriteJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -138,8 +138,8 @@ func (t *TaskService) revokeExecutor(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "紧急撤销不会停止远端任务，并会使未回传结果失效；请明确确认")
 		return
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	// Claims and results re-check the executor record inside their own
+	// transactions, so revocation needs no in-memory lock.
 	err = t.app.Store.Update(func(s *State) error {
 		a, ok := LoadDoc[ExecutorRecord](s, "executors", r.PathValue("id"))
 		if !ok {

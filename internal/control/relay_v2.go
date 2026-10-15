@@ -403,6 +403,19 @@ func (a *App) relaySyncAgentV2(w http.ResponseWriter, r *http.Request) {
 		commerceError(w, 400, errors.New("invalid v2 sync envelope"))
 		return
 	}
+	// Unknown tokens are rejected from memory before the serialized store is
+	// touched; relayAgentIdentity below remains the authoritative check.
+	token, ok := bearerToken(r)
+	if !ok || len(token) < 40 {
+		a.agentAuthFailed(r)
+		commerceError(w, 401, errors.New("relay authentication failed"))
+		return
+	}
+	hash := commerceHash(token)
+	if err := a.agentCredential(r, func(i *credentialIndex) bool { return i.relay[hash] == in.AgentID }); err != nil {
+		agentAuthFail(w, err, "relay authentication failed")
+		return
+	}
 	now := time.Now().UnixMilli()
 	out := relayruntime.V2SyncResponse{ProtocolVersion: relayruntime.ProtocolV2, AgentID: in.AgentID, RequestID: in.RequestID, PreviousRevision: in.AppliedRevision, OfflinePolicy: relayruntime.KeepLast, Status: "ready", Commands: []relayruntime.V2Command{}, TrafficAcks: []relayruntime.V2TrafficAck{}}
 	authFailure := false
@@ -592,6 +605,7 @@ func (a *App) relaySyncAgentV2(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if authFailure {
+			a.agentAuthFailed(r)
 			commerceError(w, 401, errors.New("relay authentication failed"))
 		} else {
 			commerceError(w, 503, errors.New("控制面同步未提交，保留最后配置并重试"))

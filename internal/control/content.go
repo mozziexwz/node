@@ -8,13 +8,16 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const attachmentMaxBytes = 10 << 20
 const ticketMaxMessages = 200
+const articleSummaryMaxRunes = 300
 
 type Article struct {
 	ID          string       `json:"id"`
@@ -22,6 +25,8 @@ type Article struct {
 	Category    string       `json:"category"`
 	Body        string       `json:"body"`
 	Published   bool         `json:"published"`
+	Public      bool         `json:"public"`
+	Summary     string       `json:"summary"`
 	Pinned      bool         `json:"pinned"`
 	Sort        int          `json:"sort"`
 	CreatedAt   int64        `json:"createdAt"`
@@ -71,6 +76,7 @@ func (a *App) RegisterContent(m *http.ServeMux) {
 	m.HandleFunc("PUT /api/admin/articles/{id}", a.saveArticle)
 	m.HandleFunc("POST /api/admin/articles/{id}/move", a.moveArticle)
 	m.HandleFunc("POST /api/admin/articles/{id}/pin", a.pinArticle)
+	m.HandleFunc("POST /api/admin/articles/{id}/visibility", a.articleVisibility)
 	m.HandleFunc("DELETE /api/admin/articles/{id}", a.deleteArticle)
 	m.HandleFunc("POST /api/admin/articles/{id}/attachments", a.uploadAttachment)
 	m.HandleFunc("GET /api/articles/{article}/attachments/{id}", a.downloadAttachment)
@@ -92,11 +98,13 @@ func (a *App) listArticles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Guests read only per-article public content through /api/public.
+	if user == nil {
+		Fail(w, 401, "请登录后阅读")
+		return
+	}
 	out := []Article{}
 	err := a.Store.View(func(s *State) error {
-		if !admin && !boolSetting(s, "publicArticles") && user == nil {
-			return errors.New("请登录后阅读")
-		}
 		for _, v := range ListDocs[Article](s, "articles") {
 			if admin || v.Published {
 				out = append(out, v)
@@ -124,6 +132,11 @@ func (a *App) saveArticle(w http.ResponseWriter, r *http.Request) {
 	}
 	v.Title = strings.TrimSpace(v.Title)
 	v.Category = strings.TrimSpace(v.Category)
+	v.Summary = strings.TrimSpace(v.Summary)
+	if utf8.RuneCountInString(v.Summary) > articleSummaryMaxRunes || strings.IndexFunc(v.Summary, unicode.IsControl) >= 0 {
+		Fail(w, 400, "文章摘要不能超过 300 字，且不能包含控制字符")
+		return
+	}
 	v.ID = r.PathValue("id")
 	if v.ID == "" {
 		v.ID = ID()
@@ -166,7 +179,53 @@ func (a *App) saveArticle(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 409, err.Error())
 		return
 	}
+	a.invalidatePublic()
 	WriteJSON(w, 200, v)
+}
+
+// Visibility flags change independently so a stale list row cannot overwrite
+// another administrator's newer title or body.
+func (a *App) articleVisibility(w http.ResponseWriter, r *http.Request) {
+	u, err := a.Admin(r)
+	if err != nil {
+		Fail(w, 403, err.Error())
+		return
+	}
+	var in struct {
+		Published *bool `json:"published"`
+		Public    *bool `json:"public"`
+	}
+	if Decode(r, &in) != nil || (in.Published == nil && in.Public == nil) {
+		Fail(w, 400, "请选择发布或公开状态")
+		return
+	}
+	var out []Article
+	err = a.Store.Update(func(s *State) error {
+		v, ok := LoadDoc[Article](s, "articles", r.PathValue("id"))
+		if !ok {
+			return errors.New("文章不存在")
+		}
+		if in.Published != nil {
+			v.Published = *in.Published
+		}
+		if in.Public != nil {
+			v.Public = *in.Public
+		}
+		v.UpdatedAt = time.Now().UnixMilli()
+		if err := SaveDoc(s, "articles", v.ID, v); err != nil {
+			return err
+		}
+		contentAudit(s, u.ID, "article.visibility", v.ID)
+		out = ListDocs[Article](s, "articles")
+		sortArticles(out)
+		return nil
+	})
+	if err != nil {
+		Fail(w, 409, err.Error())
+		return
+	}
+	a.invalidatePublic()
+	WriteJSON(w, 200, map[string]any{"articles": out})
 }
 
 func sortArticles(articles []Article) {
@@ -257,6 +316,7 @@ func (a *App) moveArticle(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 409, err.Error())
 		return
 	}
+	a.invalidatePublic()
 	WriteJSON(w, 200, map[string]any{"articles": out})
 }
 
@@ -322,6 +382,7 @@ func (a *App) pinArticle(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 409, err.Error())
 		return
 	}
+	a.invalidatePublic()
 	WriteJSON(w, 200, map[string]any{"articles": out})
 }
 func (a *App) deleteArticle(w http.ResponseWriter, r *http.Request) {
@@ -349,6 +410,7 @@ func (a *App) deleteArticle(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 404, err.Error())
 		return
 	}
+	a.invalidatePublic()
 	WriteJSON(w, 200, map[string]bool{"ok": true})
 }
 func (a *App) uploadAttachment(w http.ResponseWriter, r *http.Request) {
@@ -421,6 +483,7 @@ func (a *App) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 409, err.Error())
 		return
 	}
+	a.invalidatePublic()
 	WriteJSON(w, 201, v)
 }
 func (a *App) downloadAttachment(w http.ResponseWriter, r *http.Request) {
@@ -435,7 +498,7 @@ func (a *App) downloadAttachment(w http.ResponseWriter, r *http.Request) {
 			return errors.New("请登录")
 		}
 		article, ok := LoadDoc[Article](s, "articles", r.PathValue("article"))
-		if !ok || (!article.Published && !admin) {
+		if !ok || (!article.Published && !admin) || (u == nil && !article.Public) {
 			return errors.New("文章不存在")
 		}
 		file, ok = LoadDoc[attachmentObject](s, "attachments", r.PathValue("id"))
@@ -491,6 +554,7 @@ func (a *App) deleteAttachment(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 404, err.Error())
 		return
 	}
+	a.invalidatePublic()
 	WriteJSON(w, 200, map[string]bool{"ok": true})
 }
 func (a *App) listTickets(w http.ResponseWriter, r *http.Request) {
@@ -710,6 +774,7 @@ func ticketPriority(t Ticket) int {
 }
 func contentAudit(s *State, uid, action, id string) {
 	_ = SaveDoc(s, "content_audit", ID(), map[string]any{"userId": uid, "action": action, "objectId": id, "createdAt": time.Now().UnixMilli()})
+	pruneAudit(s, "content_audit")
 }
 func (a *App) overview(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.Admin(r); err != nil {
@@ -738,11 +803,24 @@ func (a *App) auditList(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 403, err.Error())
 		return
 	}
-	items := []json.RawMessage{}
+	limit := 500
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 2000 {
+			Fail(w, 400, "limit 需为 1–2000")
+			return
+		}
+		limit = n
+	}
+	type event struct {
+		raw       json.RawMessage
+		createdAt int64
+	}
+	events := []event{}
 	err := a.Store.View(func(s *State) error {
 		for _, col := range []string{"content_audit", "audit", "commerce_audit"} {
 			for _, raw := range s.Docs[col] {
-				items = append(items, raw)
+				events = append(events, event{raw: raw, createdAt: auditCreatedAt(raw)})
 			}
 		}
 		return nil
@@ -751,5 +829,11 @@ func (a *App) auditList(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 500, "审计记录读取失败")
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"events": items})
+	// Newest first; the bounded response stays usable as audit history grows.
+	sort.SliceStable(events, func(i, j int) bool { return events[i].createdAt > events[j].createdAt })
+	items := make([]json.RawMessage, 0, min(limit, len(events)))
+	for _, e := range events[:min(limit, len(events))] {
+		items = append(items, e.raw)
+	}
+	WriteJSON(w, 200, map[string]any{"events": items, "total": len(events)})
 }

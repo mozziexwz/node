@@ -122,7 +122,7 @@ func TestTaskOperationFrontHostFenceAndExplicitReconciliation(t *testing.T) {
 	restarted := NewTaskService(a)
 	restarted.Start(ctx)
 	_ = a.Store.View(func(s *State) error {
-		if !restarted.targetBusy(s, "1.1.1.1") {
+		if !taskTargetBusy(restarted, s, "1.1.1.1") {
 			t.Fatal("front host unlocked")
 		}
 		return nil
@@ -139,7 +139,7 @@ func TestTaskOperationFrontHostFenceAndExplicitReconciliation(t *testing.T) {
 		}
 	}
 	_ = a.Store.View(func(s *State) error {
-		if restarted.targetBusy(s, "1.1.1.1") {
+		if taskTargetBusy(restarted, s, "1.1.1.1") {
 			t.Fatal("confirmed operation still fenced")
 		}
 		return nil
@@ -300,7 +300,7 @@ func TestTaskOperationRevocationReconciliationReleasesMemoryFence(t *testing.T) 
 		t.Fatal(w.Body.String())
 	}
 	_ = a.Store.View(func(s *State) error {
-		if !service.targetBusy(s, job.Request.SSH.Host) {
+		if !taskTargetBusy(service, s, job.Request.SSH.Host) {
 			t.Fatal("revocation alone released an unverified remote operation")
 		}
 		return nil
@@ -313,7 +313,7 @@ func TestTaskOperationRevocationReconciliationReleasesMemoryFence(t *testing.T) 
 		t.Fatal(w.Body.String())
 	}
 	_ = a.Store.View(func(s *State) error {
-		if service.targetBusy(s, job.Request.SSH.Host) {
+		if taskTargetBusy(service, s, job.Request.SSH.Host) {
 			t.Fatal("confirmed revoked operation retained a stale in-memory host fence")
 		}
 		return nil
@@ -339,4 +339,12 @@ func TestTaskOperationSanitizesBothHostsWithoutMutatingEnvelope(t *testing.T) {
 	if e.Job.Request.Front.Password != front.Password || e.Job.Request.SSH.Password == "" || e.Job.Request.ClientConfig == nil {
 		t.Fatal("sanitizing destroyed one-time execution credentials")
 	}
+}
+
+// taskTargetBusy combines the durable and in-memory checks that task creation
+// applies to one server.
+func taskTargetBusy(service *TaskService, s *State, host string) bool {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	return operationsBusy(s, host) || service.envelopesBusyLocked(host)
 }

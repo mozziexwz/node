@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"mime"
 	"net/http"
 	"net/netip"
@@ -238,10 +239,22 @@ func (t *TaskService) Start(ctx context.Context) {
 		}
 	}()
 }
+
+type expiredEnvelope struct {
+	id        string
+	envelope  *taskEnvelope
+	agentID   string
+	claimedAt time.Time
+}
+
+// expire decides under t.mu, persists without it, and forgets an envelope only
+// after its durable state is settled. A failed write (for example during a
+// whole-site backup) keeps the envelope so the next tick retries instead of
+// leaving the task running until a restart.
 func (t *TaskService) expire() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	now := time.Now()
+	var due []expiredEnvelope
+	t.mu.Lock()
 	for id, c := range t.configs {
 		if now.After(c.Expires) {
 			delete(t.configs, id)
@@ -262,37 +275,60 @@ func (t *TaskService) expire() {
 			started = e.ClaimedAt
 		}
 		if now.Sub(started) > limit {
-			delete(t.envelopes, id)
-			_ = t.app.Store.Update(func(s *State) error {
-				v, ok := LoadDoc[Task](s, "tasks", id)
-				if ok && (v.State == "running" || v.State == "queued") {
-					o, exists := LoadDoc[taskOperation](s, "task_operations", id)
-					if exists {
-						o.Status = "resolved"
-						if !e.ClaimedAt.IsZero() && v.Kind != "fingerprint" {
-							o.Status = "review"
-							v.NeedsReview = true
-						}
-						if err := SaveDoc(s, "task_operations", id, o); err != nil {
-							return err
-						}
-					}
-					v.State = "interrupted"
-					if v.Kind == "dd" {
-						v.State = "unknown"
-					}
-					v.Phase = "executor_timeout"
-					d := executor.PublicDiagnostic("executor_offline", "executor")
-					v.ErrorCode, v.Message, v.NextStep = d.Code, d.Message, d.NextStep
-					v.UpdatedAt = now.UnixMilli()
-					if err := SaveDoc(s, "tasks", id, v); err != nil {
-						return err
-					}
-					return finishExecutorDrain(s, e.AgentID)
-				}
-				return nil
-			})
+			due = append(due, expiredEnvelope{id: id, envelope: e, agentID: e.AgentID, claimedAt: e.ClaimedAt})
 		}
+	}
+	t.mu.Unlock()
+	for _, item := range due {
+		claimed := !item.claimedAt.IsZero()
+		superseded := false
+		err := t.app.Store.Update(func(s *State) error {
+			v, ok := LoadDoc[Task](s, "tasks", item.id)
+			if !ok || (v.State != "running" && v.State != "queued") {
+				return nil
+			}
+			// Decided as unclaimed, but an executor claimed it meanwhile: the
+			// longer claimed deadline now applies, so leave both records alone.
+			if !claimed && v.State != "queued" {
+				superseded = true
+				return nil
+			}
+			o, exists := LoadDoc[taskOperation](s, "task_operations", item.id)
+			if exists {
+				o.Status = "resolved"
+				if claimed && v.Kind != "fingerprint" {
+					o.Status = "review"
+					v.NeedsReview = true
+				}
+				if err := SaveDoc(s, "task_operations", item.id, o); err != nil {
+					return err
+				}
+			}
+			v.State = "interrupted"
+			if v.Kind == "dd" {
+				v.State = "unknown"
+			}
+			v.Phase = "executor_timeout"
+			d := executor.PublicDiagnostic("executor_offline", "executor")
+			v.ErrorCode, v.Message, v.NextStep = d.Code, d.Message, d.NextStep
+			v.UpdatedAt = now.UnixMilli()
+			if err := SaveDoc(s, "tasks", item.id, v); err != nil {
+				return err
+			}
+			return finishExecutorDrain(s, item.agentID)
+		})
+		if err != nil {
+			log.Printf("task %s expiry deferred to the next check: %v", item.id, err)
+			continue
+		}
+		if superseded {
+			continue
+		}
+		t.mu.Lock()
+		if current := t.envelopes[item.id]; current == item.envelope && current.ClaimedAt.Equal(item.claimedAt) {
+			delete(t.envelopes, item.id)
+		}
+		t.mu.Unlock()
 	}
 }
 
@@ -466,7 +502,12 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 	keySum := sha256.Sum256([]byte(u.ID + ":" + key))
 	idemID := hex.EncodeToString(keySum[:])
 	duplicate := false
+	// Capture the in-memory facts first so the transaction runs without t.mu.
+	// Concurrent submissions are still serialized by the durable busy check.
 	t.mu.Lock()
+	probed := t.confirmedProbe(u.ID, request.SSH) && (request.Front == nil || t.confirmedProbe(u.ID, *request.Front))
+	memoryBusy := t.envelopesBusyLocked(request.SSH.Host) || (request.Front != nil && t.envelopesBusyLocked(request.Front.Host))
+	t.mu.Unlock()
 	err = t.app.Store.Update(func(s *State) error {
 		fresh, ok := s.Users[u.ID]
 		if !ok {
@@ -483,7 +524,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 			duplicate = true
 			return nil
 		}
-		if !t.confirmedProbe(u.ID, request.SSH) || (request.Front != nil && !t.confirmedProbe(u.ID, *request.Front)) {
+		if !probed {
 			return errors.New("请先检查并确认每台 SSH 服务器的真实指纹，指纹检查有效期为 30 分钟")
 		}
 		if request.Cleanup != nil {
@@ -523,7 +564,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if t.targetBusy(s, request.SSH.Host) || (request.Front != nil && t.targetBusy(s, request.Front.Host)) {
+		if memoryBusy || operationsBusy(s, request.SSH.Host) || (request.Front != nil && operationsBusy(s, request.Front.Host)) {
 			return errors.New("该服务器已有未结束任务，请先核实其结果")
 		}
 		if !t.hasExecutorFor(s, request.Kind) {
@@ -552,9 +593,10 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		return SaveDoc(s, "task_idempotency", idemID, taskIdempotency{TaskID: job.ID, Digest: digest})
 	})
 	if err == nil && !duplicate {
+		t.mu.Lock()
 		t.envelopes[job.ID] = envelope
+		t.mu.Unlock()
 	}
-	t.mu.Unlock()
 	if err != nil {
 		Fail(w, 409, err.Error())
 		return
@@ -565,7 +607,10 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, 202, job)
 	}
 }
-func (t *TaskService) targetBusy(s *State, host string) bool {
+
+// operationsBusy is the durable busy check. It runs inside the creating
+// transaction, which serializes concurrent submissions for one server.
+func operationsBusy(s *State, host string) bool {
 	for _, o := range ListDocs[taskOperation](s, "task_operations") {
 		if operationBusy(o) {
 			for _, target := range o.Hosts {
@@ -575,6 +620,12 @@ func (t *TaskService) targetBusy(s *State, host string) bool {
 			}
 		}
 	}
+	return false
+}
+
+// envelopesBusyLocked also treats in-memory envelopes as busy, covering one
+// left behind after its durable operation was resolved. Callers hold t.mu.
+func (t *TaskService) envelopesBusyLocked(host string) bool {
 	parsed, _ := netip.ParseAddr(host)
 	for _, e := range t.envelopes {
 		if e.Job.Request.Kind == "fingerprint" {
@@ -745,7 +796,6 @@ func (t *TaskService) fingerprint(w http.ResponseWriter, r *http.Request) {
 	job := Task{ID: ID(), UserID: u.ID, Host: input.Host, Kind: "fingerprint", State: "queued", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli()}
 	result := make(chan executor.Result, 1)
 	envelope := &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: executor.Request{Kind: "fingerprint", SSH: executor.SSH{Host: input.Host, Port: input.Port}}, Deadline: now.Add(25 * time.Second).UnixMilli()}, UserID: u.ID, QueuedAt: now, Result: result}
-	t.mu.Lock()
 	err = t.app.Store.Update(func(s *State) error {
 		if !t.hasExecutor(s) {
 			return errors.New("没有在线执行机，无法检查真实 SSH 指纹")
@@ -758,14 +808,13 @@ func (t *TaskService) fingerprint(w http.ResponseWriter, r *http.Request) {
 		}
 		return saveTaskOperation(s, envelope)
 	})
-	if err == nil {
-		t.envelopes[job.ID] = envelope
-	}
-	t.mu.Unlock()
 	if err != nil {
 		Fail(w, 409, err.Error())
 		return
 	}
+	t.mu.Lock()
+	t.envelopes[job.ID] = envelope
+	t.mu.Unlock()
 	select {
 	case out := <-result:
 		if out.State != "succeeded" {
@@ -788,13 +837,22 @@ func (t *TaskService) fingerprint(w http.ResponseWriter, r *http.Request) {
 
 func (t *TaskService) executorAuth(r *http.Request) (ExecutorRecord, error) {
 	var found ExecutorRecord
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if token == "" || token == r.Header.Get("Authorization") {
+	token, ok := bearerToken(r)
+	if !ok {
+		t.app.agentAuthFailed(r)
 		return found, errors.New("unauthorized")
 	}
 	sum := sha256.Sum256([]byte(token))
 	hash := hex.EncodeToString(sum[:])
-	_ = t.app.Store.View(func(s *State) error {
+	resultPath := r.URL.Path == "/api/executor/result"
+	// Unknown tokens never reach the store; the read below stays authoritative.
+	if err := t.app.agentCredential(r, func(i *credentialIndex) bool {
+		status, known := i.executor[hash]
+		return known && (status == "active" || status == "draining" || (status == "disabled" && resultPath))
+	}); err != nil {
+		return found, err
+	}
+	err := t.app.Store.View(func(s *State) error {
 		for _, a := range ListDocs[ExecutorRecord](s, "executors") {
 			if (a.Status == "active" || a.Status == "draining" || (a.Status == "disabled" && r.URL.Path == "/api/executor/result")) && a.TokenHash != "" && subtle.ConstantTimeCompare([]byte(hash), []byte(a.TokenHash)) == 1 {
 				found = a
@@ -803,7 +861,11 @@ func (t *TaskService) executorAuth(r *http.Request) (ExecutorRecord, error) {
 		}
 		return nil
 	})
+	if err != nil {
+		return found, errAgentAuthUnavailable
+	}
 	if found.ID == "" {
+		t.app.agentAuthFailed(r)
 		return found, errors.New("unauthorized")
 	}
 	return found, nil
@@ -811,7 +873,7 @@ func (t *TaskService) executorAuth(r *http.Request) (ExecutorRecord, error) {
 func (t *TaskService) heartbeat(w http.ResponseWriter, r *http.Request) {
 	a, err := t.executorAuth(r)
 	if err != nil {
-		Fail(w, 401, "执行机令牌无效")
+		agentAuthFail(w, err, "执行机令牌无效")
 		return
 	}
 	var in struct {
@@ -857,7 +919,7 @@ func (t *TaskService) heartbeat(w http.ResponseWriter, r *http.Request) {
 func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 	a, err := t.executorAuth(r)
 	if err != nil {
-		Fail(w, 401, "执行机令牌无效")
+		agentAuthFail(w, err, "执行机令牌无效")
 		return
 	}
 	if a.Status == "draining" {
@@ -893,7 +955,11 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if next != nil {
+			// Reserve the envelope so other executors skip it, then claim it
+			// durably without holding t.mu across the transaction.
+			next.AgentID = a.ID
 			job := next.Job
+			t.mu.Unlock()
 			err := t.app.Store.Update(func(s *State) error {
 				current, enabled := LoadDoc[ExecutorRecord](s, "executors", a.ID)
 				if !enabled || current.Status != "active" || current.TokenHash != a.TokenHash {
@@ -919,12 +985,15 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 				}
 				return SaveDoc(s, "tasks", v.ID, v)
 			})
+			t.mu.Lock()
 			if err != nil {
+				if next.AgentID == a.ID && next.ClaimedAt.IsZero() {
+					next.AgentID = ""
+				}
 				t.mu.Unlock()
 				Fail(w, 409, "任务授权状态已变化，未交付执行")
 				return
 			}
-			next.AgentID = a.ID
 			next.ClaimedAt = time.Now()
 			next.Job.Request.SSH.Password = ""
 			if next.Job.Request.Front != nil {
@@ -954,7 +1023,7 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 	a, err := t.executorAuth(r)
 	if err != nil {
-		Fail(w, 401, "执行机令牌无效")
+		agentAuthFail(w, err, "执行机令牌无效")
 		return
 	}
 	var out executor.Result
@@ -962,9 +1031,17 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "结果格式无效")
 		return
 	}
+	// t.mu guards only the memory maps. The transactions below settle races
+	// between concurrent deliveries, expiry and revocation, so the lock is
+	// never held while waiting for the store.
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	envelope, ok := t.envelopes[out.ID]
+	memory, ok := t.envelopes[out.ID]
+	var envelope *taskEnvelope
+	if ok {
+		snapshot := *memory
+		envelope = &snapshot
+	}
+	t.mu.Unlock()
 	var operation taskOperation
 	var task Task
 	if err = t.app.Store.View(func(s *State) error {
@@ -982,7 +1059,9 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		// never extend the original ten-minute sensitive-config retention.
 		expires := time.UnixMilli(task.UpdatedAt).Add(10 * time.Minute)
 		if len(out.Config) > 0 && task.State == "succeeded" && time.Now().Before(expires) {
+			t.mu.Lock()
 			t.configs[out.ID] = taskConfig{Data: append([]byte(nil), out.Config...), UserID: task.UserID, Expires: expires}
+			t.mu.Unlock()
 		}
 		WriteJSON(w, 200, map[string]bool{"ok": true, "duplicate": true})
 		return
@@ -1021,12 +1100,14 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "成功结果缺少客户端配置")
 		return
 	}
+	// A probe is remembered only once its result has been committed.
+	var probe *taskProbe
 	if envelope.Job.Request.Kind == "fingerprint" && out.State == "succeeded" {
 		if len(out.Fingerprint) != 50 || !strings.HasPrefix(out.Fingerprint, "SHA256:") || len(out.Algorithm) > 80 {
 			Fail(w, 400, "主机指纹格式无效")
 			return
 		}
-		t.probes[taskProbeKey(envelope.UserID, envelope.Job.Request.SSH)] = taskProbe{Fingerprint: out.Fingerprint, Expires: time.Now().Add(30 * time.Minute)}
+		probe = &taskProbe{Fingerprint: out.Fingerprint, Expires: time.Now().Add(30 * time.Minute)}
 	}
 	if envelope.Job.Request.Kind != "dd" && (out.State == "executed" || out.State == "unknown") {
 		Fail(w, 400, "任务结果类型不匹配")
@@ -1061,6 +1142,14 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 	}
 	err = t.app.Store.Update(func(s *State) error {
 		current, exists := LoadDoc[taskOperation](s, "task_operations", out.ID)
+		// An overlapping retry of the same delivery committed first.
+		if exists && current.AgentID == a.ID && current.LeaseHash == operation.LeaseHash && current.Receipt == receipt {
+			return errTaskResultDuplicate
+		}
+		// Revocation may commit between authentication and this transaction.
+		if record, found := LoadDoc[ExecutorRecord](s, "executors", a.ID); !found || record.TokenHash != a.TokenHash || record.Status == "disabled" {
+			return errTaskResultRevoked
+		}
 		if !exists || current.AgentID != a.ID || current.LeaseHash != operation.LeaseHash || current.Status == "resolved" {
 			return errors.New("任务核对状态已变化")
 		}
@@ -1128,12 +1217,23 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		}
 		return finishExecutorDrain(s, a.ID)
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, errTaskResultDuplicate):
+		WriteJSON(w, 200, map[string]bool{"ok": true, "duplicate": true})
+		return
+	case errors.Is(err, errTaskResultRevoked):
+		Fail(w, 409, "任务已核对或授权失效；没有再次执行远程命令，请检查原任务记录")
+		return
+	case err != nil:
 		Fail(w, 500, "结果保存失败")
 		return
 	}
+	t.mu.Lock()
 	if len(out.Config) > 0 {
 		t.configs[out.ID] = taskConfig{Data: append([]byte(nil), out.Config...), UserID: envelope.UserID, Expires: time.Now().Add(10 * time.Minute)}
+	}
+	if probe != nil {
+		t.probes[taskProbeKey(envelope.UserID, envelope.Job.Request.SSH)] = *probe
 	}
 	if envelope.Result != nil {
 		select {
@@ -1141,9 +1241,18 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 	}
-	delete(t.envelopes, out.ID)
+	if ok && t.envelopes[out.ID] == memory {
+		delete(t.envelopes, out.ID)
+	}
+	t.mu.Unlock()
 	WriteJSON(w, 200, map[string]bool{"ok": true})
 }
+
+var (
+	errTaskResultDuplicate = errors.New("result already recorded")
+	errTaskResultRevoked   = errors.New("executor credential no longer valid")
+)
+
 func cleanTaskHealth(in *executor.Health) *executor.Health {
 	if in == nil {
 		return nil
@@ -1207,12 +1316,18 @@ func (t *TaskService) renewExecutor(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	busy := false
 	for _, envelope := range t.envelopes {
 		if envelope.AgentID == id {
-			Fail(w, 409, "执行机仍有待确认任务，请等待任务结束后重置令牌")
-			return
+			busy = true
+			break
 		}
+	}
+	t.mu.Unlock()
+	// A claim racing this check is caught by executorPending in the transaction.
+	if busy {
+		Fail(w, 409, "执行机仍有待确认任务，请等待任务结束后重置令牌")
+		return
 	}
 	token := ID() + ID()
 	sum := sha256.Sum256([]byte(token))

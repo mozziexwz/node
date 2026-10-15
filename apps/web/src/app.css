@@ -10,3 +10,11 @@
 .tabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:4px}.tabs button{padding:9px 13px;border-radius:8px;font-size:13px}.tabs button.active{color:var(--orange-dark);background:var(--pale);font-weight:650}.drawer-backdrop{display:none}.drawer-close{align-self:flex-end;margin-bottom:8px}
 @media(max-width:850px){.sidebar:not(.open){visibility:hidden}.sidebar.open{box-shadow:none}.drawer-backdrop{display:block;position:fixed;inset:0;background:#0005;z-index:39}.auth-card .actions .btn{width:100%}}
 @media(max-width:650px){.diagnosis-path+.mini-grid{grid-template-columns:1fr}}
+/* Site switcher shared by the public pages, sign-in page and console top bar. */
+.site-switcher{display:inline-flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);border-radius:9px;background:#fff;flex-shrink:0}
+.site-switcher a{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 11px;border-radius:6px;color:var(--sub);font-size:12px;font-weight:600;white-space:nowrap;transition:background .15s,color .15s}
+.site-switcher a:hover{color:var(--ink);background:var(--soft)}
+.site-switcher a.active{background:var(--pale);color:var(--orange-dark)}
+.site-switcher a:focus-visible{outline:2px solid var(--orange);outline-offset:1px}
+.crash-card{max-width:600px;margin:80px auto}
+@media(max-width:760px){.site-switcher a{padding:0 8px}.site-switcher a span{display:none}.topbar>.flex{min-width:0}.crumb{min-width:0;overflow:hidden}.crumb b{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.crumb-root{display:none}}

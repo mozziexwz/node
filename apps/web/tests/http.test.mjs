@@ -31,7 +31,12 @@ test('HTTP integration: real auth, admin CRUD, financial idempotency and permiss
   assert.equal((await admin('/api/admin/invitations/batch',{ids,action:'disable'})).status,200);
   const title='API验收 '+Date.now();
   const article=await admin('/api/admin/articles',{title,body:'# 本地文章',published:true,sort:0});assert.equal(article.status,200);
-  const publicArticles=await member('/api/articles');assert.ok(publicArticles.body.articles.some(a=>a.id===article.body.id));
+  assert.equal((await member('/api/articles')).status,401,'guests read only the public article API');
+  const listed=async()=>(await member('/api/public/articles')).body.articles.some(a=>a.id===article.body.id);
+  assert.equal(await listed(),false,'published members-only article reached guests');
+  assert.equal((await admin('/api/admin/articles/'+article.body.id+'/visibility',{public:true})).status,200);
+  assert.ok(await listed(),'public article missing from the guest list');
+  assert.equal((await member('/api/public/articles/'+article.body.id)).status,200);
   assert.equal((await admin('/api/admin/articles/'+article.body.id,undefined,'DELETE')).status,200);
   const signup=await member('/api/auth/register',{email:String(Date.now()).slice(-10)+'@qq.com',password:'Local-Acceptance-Alpha!',agree:true});
   assert.equal(signup.status,201,JSON.stringify(signup.body));assert.equal(signup.body.user.emailVerifiedAt,0);assert.ok(!signup.body.user.passwordHash);

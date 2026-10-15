@@ -79,7 +79,7 @@ func recoverableMember(u *User) bool {
 
 func (a *App) passwordResetRequest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if !a.allow("password-reset-ip:"+a.clientIP(r), 20, time.Hour) || !a.allow("password-reset-global", 100, time.Minute) {
+	if !a.allow("password-reset-ip:"+a.rateIP(r), 20, time.Hour) || !a.allow("password-reset-global", 100, time.Minute) {
 		Fail(w, 429, "申请过于频繁，请稍后重试")
 		return
 	}
@@ -183,7 +183,7 @@ func (a *App) issuePasswordReset(ctx context.Context, email string) {
 
 func (a *App) passwordResetConfirm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if !a.allow("password-reset-confirm-ip:"+a.clientIP(r), 30, 15*time.Minute) || !a.allow("password-reset-confirm-global", 100, time.Minute) {
+	if !a.allow("password-reset-confirm-ip:"+a.rateIP(r), 30, 15*time.Minute) || !a.allow("password-reset-confirm-global", 100, time.Minute) {
 		Fail(w, 429, "尝试过于频繁，请稍后重试")
 		return
 	}

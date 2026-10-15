@@ -25,7 +25,11 @@ func articleManagementCreate(t *testing.T, mux *http.ServeMux, admin *User, titl
 func articleManagementList(t *testing.T, mux *http.ServeMux, user *User) []Article {
 	t.Helper()
 	path := "/api/articles"
-	if user != nil && user.Role == "admin" {
+	if user == nil {
+		// The reader view belongs to signed-in members; guests use /api/public.
+		user = &User{ID: "content-member", Role: "user", Status: "active"}
+	}
+	if user.Role == "admin" {
 		path = "/api/admin/articles"
 	}
 	w := contentCall(t, mux, user, "GET", path, nil)
@@ -185,8 +189,18 @@ func TestArticleManagementDraftAttachmentsStayPrivateUntilExplicitPublish(t *tes
 	if len(visible) != 1 || len(visible[0].Attachments) != 1 || visible[0].Attachments[0].ID != attachment.ID {
 		t.Fatal("draft publish lost attachment")
 	}
-	if w := contentCall(t, mux, nil, "GET", path, nil); w.Code != 200 || w.Body.String() != "private draft" {
+	if w := contentCall(t, mux, member, "GET", path, nil); w.Code != 200 || w.Body.String() != "private draft" {
 		t.Fatal("explicit publish unavailable")
+	}
+	// Publishing reaches members only; guests need the separate public flag.
+	if w := contentCall(t, mux, nil, "GET", path, nil); w.Code != 403 {
+		t.Fatal("published members-only attachment reached guests")
+	}
+	if w := contentCall(t, mux, admin, "POST", "/api/admin/articles/"+draft.ID+"/visibility", map[string]bool{"public": true}); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	if w := contentCall(t, mux, nil, "GET", path, nil); w.Code != 200 || w.Body.String() != "private draft" {
+		t.Fatal("public article attachment unavailable to guests")
 	}
 }
 

@@ -236,7 +236,8 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) login(w http.ResponseWriter, r *http.Request) {
-	if !a.allow("login-ip:"+a.clientIP(r), 20, 15*time.Minute) {
+	ip := a.rateIP(r)
+	if !a.allow("login-ip:"+ip, 20, 15*time.Minute) {
 		Fail(w, 429, "登录尝试过于频繁，请稍后重试")
 		return
 	}
@@ -251,7 +252,11 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(in.Email))
-	if !a.allow("login-email:"+email, 10, 15*time.Minute) {
+	// Only failed passwords count against an account. Per-source failures stop
+	// guessing early, while the wider account ceiling only slows distributed
+	// guessing, so a stranger's attempts cannot lock the owner out from elsewhere.
+	sourceFailures, accountFailures := "login-fail:"+email+"|"+ip, "login-fail:"+email
+	if a.limited(sourceFailures, 10, 15*time.Minute) || a.limited(accountFailures, 50, 15*time.Minute) {
 		Fail(w, 429, "登录尝试过于频繁，请稍后重试")
 		return
 	}
@@ -278,6 +283,8 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		hash = found.PasswordHash
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil || found == nil || found.Status != "active" {
+		a.record(sourceFailures)
+		a.record(accountFailures)
 		Fail(w, 401, "邮箱或密码错误，或账号已停用")
 		return
 	}
@@ -296,6 +303,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 401, err.Error())
 		return
 	}
+	a.forget(sourceFailures)
 	a.setCookie(w, token, 7*24*3600)
 	WriteJSON(w, 200, map[string]any{"user": out, "csrfToken": csrf})
 }
@@ -341,7 +349,7 @@ func qqEmail(email string) bool {
 }
 
 func (a *App) register(w http.ResponseWriter, r *http.Request) {
-	if !a.allow("register:"+a.clientIP(r), 10, time.Hour) {
+	if !a.allow("register:"+a.rateIP(r), 10, time.Hour) {
 		Fail(w, 429, "注册过于频繁，请稍后重试")
 		return
 	}
@@ -484,7 +492,7 @@ func smtpReady(s *State) bool {
 }
 
 func (a *App) emailSend(w http.ResponseWriter, r *http.Request) {
-	if !a.allow("email-ip:"+a.clientIP(r), 20, time.Hour) {
+	if !a.allow("email-ip:"+a.rateIP(r), 20, time.Hour) {
 		Fail(w, 429, "验证码发送过于频繁")
 		return
 	}
@@ -801,6 +809,8 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) {
 			Fail(w, 400, err.Error())
 			return
 		}
+		// Article area and attachment switches feed the public snapshot.
+		a.invalidatePublic()
 	}
 	var out map[string]any
 	err = a.Store.View(func(s *State) error { out = filteredSettings(s, true); return nil })
@@ -1202,7 +1212,11 @@ func revokeSessions(s *State, id string) {
 }
 func identityAudit(s *State, actor, action, target, reason string) error {
 	id := ID()
-	return SaveDoc(s, "audit", id, map[string]any{"id": id, "actor": actor, "action": action, "target": target, "reason": reason, "createdAt": time.Now().UnixMilli()})
+	if err := SaveDoc(s, "audit", id, map[string]any{"id": id, "actor": actor, "action": action, "target": target, "reason": reason, "createdAt": time.Now().UnixMilli()}); err != nil {
+		return err
+	}
+	pruneAudit(s, "audit")
+	return nil
 }
 
 func (a *App) adminPassword(w http.ResponseWriter, r *http.Request) {

@@ -115,6 +115,7 @@ GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/
 - 执行机以 `Authorization: Bearer ...` 调用 `GET /api/executor/next`，长轮询 25 秒，无任务返回 204。带唯一租约的信封仅交付一次，丢失响应不能重新执行。
 - `POST /api/executor/result` 正常返回 200；同一执行机、授权及完全相同的已保存结果重复回传也返回 200，内容不同或授权失效返回 409。执行机在内存中最多保留结果 30 分钟，指数退避重试期间不领取下一任务，只补报结果、不再次执行命令；进程退出后不能从磁盘恢复敏感配置。
 - `POST /api/executor/heartbeat` 每 20 秒更新心跳，长任务期间仍发送。
+- 执行机与 relay Agent 接口（`/api/executor/*`、`/api/relay-agent/register`、`/api/relay-agent/v2/sync`、`/api/relay-agent/enrollment-check`）先在内存中核对令牌哈希，未知令牌不进入数据库事务；已知令牌仍在各自事务内再次校验，撤销立即生效。同一来源（IPv6 按 /64）10 分钟内鉴权失败 30 次后，后续未知令牌返回 429 并带 `Retry-After`，有效令牌不受影响；控制面暂时无法核对时返回 503。两者均应稍后重试，只有 401 表示令牌被拒绝。
 
 执行机以 `msboost-agent --capability executor` 运行，配置 `MSBOOST_SERVER_URL`、`MSBOOST_EXECUTOR_TOKEN` 和两架构的 `GOST_*_URL` / `GOST_*_SHA256`。控制面要求 HTTPS，仅 loopback 开发允许 HTTP。GOST 使用固定官方 `go-gost/gost` Release，不使用 `latest`。远端免费中转要求 root SSH、systemd 247+ / `LoadCredential`；安装可在 Debian/Ubuntu 补齐 Python 3、curl、tar，其他系统需预先准备。清理预览不安装依赖。
 

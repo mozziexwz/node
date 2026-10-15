@@ -20,7 +20,7 @@ import (
 	"github.com/mozziexwz/node/internal/control"
 )
 
-var version = "2.3.3-dev"
+var version = "2.4.0-dev"
 
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -72,6 +72,7 @@ func main() {
 	app.RegisterCommerce(mux)
 	app.RegisterRelay(mux)
 	app.RegisterContent(mux)
+	app.RegisterPublicSite(mux)
 	tasks := control.NewTaskService(app)
 	tasks.Register(mux)
 	tasks.Start(ctx)
@@ -85,28 +86,7 @@ func main() {
 		control.WriteJSON(w, 200, map[string]any{"status": "ok", "version": version})
 	})
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { control.Fail(w, 404, "接口不存在") })
-	webDir := env("WEB_DIR", "apps/web/dist")
-	files := http.FileServer(http.Dir(webDir))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" && r.Method != "HEAD" {
-			http.Error(w, "Method not allowed", 405)
-			return
-		}
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; connect-src 'self'; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
-		w.Header().Set("X-Frame-Options", "DENY")
-		p := filepath.Clean(r.URL.Path)
-		if strings.HasPrefix(p, "..") {
-			http.NotFound(w, r)
-			return
-		}
-		if _, err := os.Stat(filepath.Join(webDir, p)); err != nil {
-			r.URL.Path = "/"
-		}
-		if r.URL.Path == "/" {
-			w.Header().Set("Cache-Control", "no-cache")
-		}
-		files.ServeHTTP(w, r)
-	})
+	app.RegisterWeb(mux, env("WEB_DIR", "apps/web/dist"))
 	server := &http.Server{Addr: env("LISTEN_ADDR", "127.0.0.1:8080"), Handler: app.Authenticate(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 10 * time.Minute, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {
 		<-ctx.Done()

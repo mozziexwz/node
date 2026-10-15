@@ -26,6 +26,9 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 	job.SSHPort, job.SSHFingerprint = ssh.Port, ssh.Fingerprint
 	envelope := &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: executor.Request{Kind: "front", SSH: ssh, ForwardTarget: &executor.Target{Host: targetHost, Port: targetPort}}, Deadline: now.Add(4 * time.Minute).UnixMilli()}, UserID: userID, QueuedAt: now, Result: result}
 	t.mu.Lock()
+	probed := t.confirmedProbe(userID, ssh)
+	memoryBusy := t.envelopesBusyLocked(ssh.Host)
+	t.mu.Unlock()
 	err := t.app.Store.Update(func(s *State) error {
 		if maintenance, _ := s.Settings["maintenance"].(bool); maintenance {
 			return errors.New("系统维护中，暂停创建新的前置机任务")
@@ -34,10 +37,10 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 		if u == nil || u.Status != "active" || u.ExpiresAt <= now.UnixMilli() {
 			return errors.New("权益已失效")
 		}
-		if !t.confirmedProbe(userID, ssh) {
+		if !probed {
 			return errors.New("请先检查并确认前置机的真实 SSH 指纹")
 		}
-		if t.targetBusy(s, ssh.Host) {
+		if memoryBusy || operationsBusy(s, ssh.Host) {
 			return errors.New("该前置机已有未结束任务")
 		}
 		if !t.hasExecutorFor(s, "front") {
@@ -59,13 +62,12 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 		}
 		return saveTaskOperation(s, envelope)
 	})
-	if err == nil {
-		t.envelopes[job.ID] = envelope
-	}
-	t.mu.Unlock()
 	if err != nil {
 		return zero, err
 	}
+	t.mu.Lock()
+	t.envelopes[job.ID] = envelope
+	t.mu.Unlock()
 	select {
 	case out := <-result:
 		if out.State != "succeeded" || len(out.Hops) != 1 {

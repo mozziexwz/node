@@ -8,6 +8,7 @@ import {
   relayStatus,
 } from "./relay-status";
 import { RelayStatusDetail } from "./relay-status-view";
+import { SiteSettings } from "./site-settings";
 import {
   Header,
   Button,
@@ -294,12 +295,12 @@ export function ResourcePage({ kind }: { kind: string }) {
     [blockedAgent, setBlockedAgent] = useState<RecordData | null>(null),
     [deletedAgent, setDeletedAgent] = useState<RecordData | null>(null),
     [cleanupHelp, setCleanupHelp] = useState(false);
-  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.3.3/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
+  const agentBootstrapCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.4.0/agent.sh -o /tmp/msboost-agent-install.sh && bash /tmp/msboost-agent-install.sh --capability ${kind === "executors" ? "executor" : "relay"} --server '${location.origin}'${kind === "executors" ? "" : " --offline-policy keep_last"}`;
   const relayFreshResetCommand = `${agentBootstrapCommand} --fresh-reset --acknowledge-relay-restart`;
   const cleanupRole = kind === "executors" ? "executor" : "relay";
-  const cleanupCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.3.3/deploy/cleanup-agent.sh -o /tmp/msboost-cleanup-agent.sh && bash /tmp/msboost-cleanup-agent.sh --capability ${cleanupRole} --check`;
+  const cleanupCommand = `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.4.0/deploy/cleanup-agent.sh -o /tmp/msboost-cleanup-agent.sh && bash /tmp/msboost-cleanup-agent.sh --capability ${cleanupRole} --check`;
   const relayUninstallCommand = (id: string) =>
-    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.3.3/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
+    `curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/mozziexwz/node/v2.4.0/deploy/uninstall-agent.sh -o /tmp/msboost-relay-uninstall.sh && bash /tmp/msboost-relay-uninstall.sh --agent-id '${id}' --server '${location.origin}' --acknowledge-stop`;
   async function freshResetAgent(row: RecordData) {
     if (
       !confirm(
@@ -839,7 +840,7 @@ export function ResourcePage({ kind }: { kind: string }) {
             </a>
             <a
               className="btn"
-              href="https://github.com/mozziexwz/node/blob/v2.3.3/docs/relay-recovery.md"
+              href="https://github.com/mozziexwz/node/blob/v2.4.0/docs/relay-recovery.md"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -1280,7 +1281,7 @@ const featureNames: Record<string, string> = {
   payali: "支付宝支付",
   monitor: "用户线路监控",
   localSave: "免费配置本机自动保存",
-  publicArticles: "公开阅读文章",
+  publicArticles: "公开文章区（主页 / 文章页）",
   attachments: "文章附件下载",
   maintenance: "维护模式",
   registrationEmailVerificationRequired: "注册时必须验证邮箱",
@@ -1353,6 +1354,7 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           ["captcha", "人机验证"],
           ["smtp", "SMTP 邮箱"],
           ["limits", "操作限额"],
+          ["site", "主页与 SEO"],
         ].map(([k, t]) => (
           <button
             className={tab === k ? "active" : ""}
@@ -1367,7 +1369,9 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
         ))}
       </div>
       <div className="card mt16" key={tab}>
-        {tab === "captcha" ? (
+        {tab === "site" ? (
+          <SiteSettings onSaved={() => settingsSaved(false)} />
+        ) : tab === "captcha" ? (
           <AsyncForm
             onSubmit={async (f) => {
               setSaved(false);

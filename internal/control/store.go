@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -29,6 +30,9 @@ type Store struct {
 	db      *sql.DB
 	dialect string
 	mu      sync.Mutex
+	// writes counts payload changes committed by this process. In-memory
+	// indexes compare it to know when they must be rebuilt.
+	writes atomic.Int64
 }
 
 func newState() *State {
@@ -82,6 +86,9 @@ func openStore(c Config) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// Writes reports how many changed payloads this process has committed.
+func (s *Store) Writes() int64 { return s.writes.Load() }
 
 func (s *Store) View(fn func(*State) error) error   { return s.transaction(false, fn) }
 func (s *Store) Update(fn func(*State) error) error { return s.transaction(true, fn) }
@@ -138,24 +145,33 @@ func (s *Store) transactionWithBackupPause(write, gateOperation bool, fn func(*S
 	if err = fn(state); err != nil {
 		return err
 	}
+	changed := false
 	if write {
 		var encoded []byte
 		if encoded, err = json.Marshal(state); err != nil {
 			return err
 		}
-		if backupPackedBudget(len(encoded)) > backupMaxBytes && len(encoded) >= len(raw) {
-			return errBackupStateCapacity
-		}
-		query = "UPDATE control_state SET payload=?,revision=revision+1 WHERE id=1"
-		if s.dialect == "postgres" {
-			query = "UPDATE control_state SET payload=$1,revision=revision+1 WHERE id=1"
-		}
-		if _, err = conn.ExecContext(ctx, query, string(encoded)); err != nil {
-			return err
+		// Periodic maintenance and agent polling mostly change nothing. Encoding is
+		// deterministic, so identical bytes mean there is nothing to persist.
+		changed = string(encoded) != raw
+		if changed {
+			if backupPackedBudget(len(encoded)) > backupMaxBytes && len(encoded) >= len(raw) {
+				return errBackupStateCapacity
+			}
+			query = "UPDATE control_state SET payload=?,revision=revision+1 WHERE id=1"
+			if s.dialect == "postgres" {
+				query = "UPDATE control_state SET payload=$1,revision=revision+1 WHERE id=1"
+			}
+			if _, err = conn.ExecContext(ctx, query, string(encoded)); err != nil {
+				return err
+			}
 		}
 	}
 	_, err = conn.ExecContext(ctx, "COMMIT")
 	committed = err == nil
+	if committed && changed {
+		s.writes.Add(1)
+	}
 	return err
 }
 

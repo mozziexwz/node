@@ -447,8 +447,9 @@ func TestIdentityRateLimitAndTrustedProxyBoundary(t *testing.T) {
 	if trusted.clientIP(r) != "203.0.113.80" {
 		t.Fatal("failed to stop at nearest untrusted proxy hop")
 	}
-	for i := 0; i < 10; i++ {
-		a.allow("login-email:12345678@qq.com", 10, 15*time.Minute)
+	// The account-wide failure ceiling still stops distributed guessing.
+	for i := 0; i < 50; i++ {
+		a.record("login-fail:12345678@qq.com")
 	}
 	identityResponse(t, identityRequest(h, "POST", "/api/auth/login", map[string]any{"email": "12345678@qq.com", "password": "wrong"}, nil, ""), 429)
 }

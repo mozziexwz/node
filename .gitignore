@@ -19,3 +19,6 @@ data/
 coverage/
 playwright-report/
 test-results/
+# Local planning documents and generated research output stay outside the repository.
+规划/
+output/

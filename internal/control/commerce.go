@@ -153,7 +153,11 @@ func commerceID() string {
 }
 func commerceHash(v string) string { h := sha256.Sum256([]byte(v)); return hex.EncodeToString(h[:]) }
 func commerceAudit(s *State, user, action, object string) error {
-	return SaveDoc(s, "commerce_audit", commerceID(), map[string]any{"userId": user, "action": action, "objectId": object, "createdAt": time.Now().UnixMilli()})
+	if err := SaveDoc(s, "commerce_audit", commerceID(), map[string]any{"userId": user, "action": action, "objectId": object, "createdAt": time.Now().UnixMilli()}); err != nil {
+		return err
+	}
+	pruneAudit(s, "commerce_audit")
+	return nil
 }
 func commerceError(w http.ResponseWriter, status int, err error) {
 	WriteJSON(w, status, map[string]any{"error": err.Error()})

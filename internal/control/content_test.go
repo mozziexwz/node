@@ -107,7 +107,7 @@ func TestContentArticleVisibilityAndAdminMutation(t *testing.T) {
 		path  string
 		want  int
 		count int
-	}{{nil, "/api/articles", 200, 1}, {member, "/api/articles", 200, 1}, {admin, "/api/admin/articles", 200, 2}, {member, "/api/admin/articles", 403, 0}} {
+	}{{nil, "/api/articles", 401, 0}, {member, "/api/articles", 200, 1}, {admin, "/api/admin/articles", 200, 2}, {member, "/api/admin/articles", 403, 0}} {
 		w := contentCall(t, mux, test.user, "GET", test.path, nil)
 		if w.Code != test.want {
 			t.Fatalf("%s: %d %s", test.path, w.Code, w.Body.String())
@@ -126,10 +126,10 @@ func TestContentArticleVisibilityAndAdminMutation(t *testing.T) {
 	if w.Code != 403 {
 		t.Fatal("ordinary member deleted article")
 	}
+	// The public article switch governs guests only; members keep the console list.
 	_ = a.Store.Update(func(s *State) error { s.Settings["publicArticles"] = false; return nil })
-	w = contentCall(t, mux, nil, "GET", "/api/articles", nil)
-	if w.Code != 401 {
-		t.Fatal("anonymous article gate bypassed")
+	if w = contentCall(t, mux, member, "GET", "/api/articles", nil); w.Code != 200 {
+		t.Fatal("member article list depends on the guest switch")
 	}
 }
 func TestContentAttachmentLimitAndAssociation(t *testing.T) {
@@ -155,14 +155,14 @@ func TestContentAttachmentLimitAndAssociation(t *testing.T) {
 	if attached.Size != attachmentMaxBytes {
 		t.Fatal("attachment was truncated")
 	}
-	w = contentCall(t, mux, nil, "GET", "/api/articles/files/attachments/"+attached.ID, nil)
+	w = contentCall(t, mux, member, "GET", "/api/articles/files/attachments/"+attached.ID, nil)
 	if w.Code != 200 || !bytes.Equal(w.Body.Bytes(), data) {
 		t.Fatal("download bytes changed")
 	}
 	if w.Header().Get("Content-Type") != "application/octet-stream" || w.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.HasPrefix(w.Header().Get("Content-Disposition"), "attachment;") {
 		t.Fatal("attachment could be rendered as same-origin executable content")
 	}
-	w = contentCall(t, mux, nil, "GET", "/api/articles/other/attachments/"+attached.ID, nil)
+	w = contentCall(t, mux, member, "GET", "/api/articles/other/attachments/"+attached.ID, nil)
 	if w.Code != 403 {
 		t.Fatal("attachment was accessible through unrelated article")
 	}
@@ -178,13 +178,13 @@ func TestContentAttachmentLimitAndAssociation(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	w = contentCall(t, mux, nil, "GET", "/api/articles/files/attachments/"+attached.ID, nil)
+	w = contentCall(t, mux, member, "GET", "/api/articles/files/attachments/"+attached.ID, nil)
 	if w.Code != 403 {
 		t.Fatal("deleted attachment still downloadable")
 	}
 }
 func TestContentDeletePreservesForeignAttachment(t *testing.T) {
-	a, mux, admin, _ := contentFixture(t)
+	a, mux, admin, member := contentFixture(t)
 	f := Attachment{ID: "foreign-file", Name: "file.txt", Type: "text/plain", Size: 4}
 	_ = a.Store.Update(func(s *State) error {
 		_ = SaveDoc(s, "articles", "a", Article{ID: "a", Title: "A", Published: true, Attachments: []Attachment{f}})
@@ -199,7 +199,7 @@ func TestContentDeletePreservesForeignAttachment(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	w = contentCall(t, mux, nil, "GET", "/api/articles/b/attachments/foreign-file", nil)
+	w = contentCall(t, mux, member, "GET", "/api/articles/b/attachments/foreign-file", nil)
 	if w.Code != 200 || w.Body.String() != "data" {
 		t.Fatal("deleting stale article reference removed another article's file")
 	}
@@ -269,7 +269,7 @@ func TestContentArticleMoveAtomicAndStaleEditPreservesOrder(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	w = contentCall(t, mux, nil, "GET", "/api/articles", nil)
+	w = contentCall(t, mux, member, "GET", "/api/articles", nil)
 	var out struct {
 		Articles []Article `json:"articles"`
 	}

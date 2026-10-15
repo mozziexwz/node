@@ -18,6 +18,9 @@
   background: var(--pale);
   color: var(--orange-dark);
 }
+.article-category {
+  white-space: nowrap;
+}
 .article-pin-inline {
   color: var(--orange-dark);
   margin-right: 5px;

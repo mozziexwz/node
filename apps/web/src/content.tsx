@@ -22,6 +22,7 @@ import {
   Maximize,
   Minimize,
   Pin,
+  ExternalLink,
 } from "lucide-react";
 import { api, post, array, downloadFile, RecordData } from "./api";
 import {
@@ -126,6 +127,27 @@ export function Articles({ admin = false }: { admin?: boolean }) {
       setMoving(false);
     }
   }
+  // Publishing and guest visibility change through a dedicated endpoint so a
+  // list row can never write a stale title or body back.
+  async function visibility(
+    article: RecordData,
+    change: { published?: boolean; public?: boolean },
+  ) {
+    if (moving) return;
+    setMoving(true);
+    setMessage("");
+    try {
+      const result = await post(
+        `/api/admin/articles/${article.id}/visibility`,
+        change,
+      );
+      setData(result);
+    } catch (e) {
+      setMessage((e as Error).message);
+    } finally {
+      setMoving(false);
+    }
+  }
   async function pin(article: RecordData) {
     if (moving) return;
     setMoving(true);
@@ -162,7 +184,9 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                 title: "",
                 body: "",
                 category: "教程",
+                summary: "",
                 published: false,
+                public: false,
                 sort: 0,
               });
               history.current = [];
@@ -177,7 +201,7 @@ export function Articles({ admin = false }: { admin?: boolean }) {
       {admin ? (
         <div className="card flush">
           <Table
-            headers={["标题", "分类", "状态", "更新", "操作"]}
+            headers={["标题", "分类", "状态", "访客可见", "更新", "操作"]}
             rows={items.map((a, index) => [
               <div className="article-title-cell">
                 <div className="article-reorder">
@@ -245,9 +269,12 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                   </span>
                 )}
               </div>,
-              `[${a.category}]`,
+              <span className="article-category">[{a.category}]</span>,
               <Badge tone={a.published ? "green" : ""}>
                 {a.published ? "已发布" : "草稿"}
+              </Badge>,
+              <Badge tone={a.public && a.published ? "orange" : ""}>
+                {a.public ? (a.published ? "公开" : "公开（未发布）") : "仅会员"}
               </Badge>,
               date(a.updatedAt),
               <div className="actions">
@@ -268,21 +295,28 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                   {a.pinned ? "取消固定" : "固定到顶部"}
                 </Button>
                 <Button
-                  onClick={async () => {
-                    try {
-                      await post(
-                        "/api/admin/articles/" + a.id,
-                        { ...a, published: !a.published },
-                        "PUT",
-                      );
-                      reload();
-                    } catch (e) {
-                      setMessage((e as Error).message);
-                    }
-                  }}
+                  disabled={moving}
+                  onClick={() => void visibility(a, { published: !a.published })}
                 >
                   {a.published ? "取消发布" : "发布"}
                 </Button>
+                <Button
+                  disabled={moving}
+                  onClick={() => void visibility(a, { public: !a.public })}
+                >
+                  {a.public ? "取消公开" : "公开到文章页"}
+                </Button>
+                {a.public && a.published && (
+                  <a
+                    className="btn"
+                    href={`/news/${a.id}`}
+                    target="_blank"
+                    rel="noopener"
+                    aria-label={`查看公开页 ${a.title}`}
+                  >
+                    查看 <ExternalLink size={13} aria-hidden="true" />
+                  </a>
+                )}
                 <Button onClick={() => void remove(a)}>删除</Button>
               </div>,
             ])}
@@ -574,13 +608,33 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                   行
                 </small>
               </section>
-              <div className="form-grid mt16">
+              <label className="field mt16">
+                <span>摘要（可选）</span>
+                <textarea
+                  rows={2}
+                  maxLength={300}
+                  value={editing.summary || ""}
+                  placeholder="用于文章列表和分享预览；留空则自动截取正文开头"
+                  onChange={(e) =>
+                    setEditing({ ...editing, summary: e.target.value })
+                  }
+                />
+              </label>
+              <div className="form-grid">
                 <Check
                   checked={editing.published}
                   onChange={(e) =>
                     setEditing({ ...editing, published: e.target.checked })
                   }
                   label="发布给用户"
+                />
+                <Check
+                  checked={!!editing.public}
+                  disabled={!editing.published}
+                  onChange={(e) =>
+                    setEditing({ ...editing, public: e.target.checked })
+                  }
+                  label="同时公开到主页和文章页（访客无需登录）"
                 />
               </div>
             </AsyncForm>
