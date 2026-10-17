@@ -12,7 +12,7 @@ UI 样式和产品需求来自用户提供的 `msboost-v4.1-ui` 文件夹及后�
 
 | 文件 | SHA256 |
 |---|---|
-| `installers/node/msboost.sh` | `895a3d541d3182055c09360857d3b62e683dd76694889bb33490ef2cc02b1f3e` |
+| `installers/node/msboost.sh` | `c2bc6697ddff17819569a7599d3156f65323a823c248243680c82fd04afdf783` |
 
 测速维护源码 `installers/node/tcp_probe.py` 的 SHA256 为 `981fd3f6b7434849ea6b2fb751527c119e4ada90abef48f594f70b56e9ba1683`。
 

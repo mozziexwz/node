@@ -1,5 +1,13 @@
 # 发布说明
 
+## v2.4.1 · 节点放行清单补充
+
+- 节点放行清单新增 `DOMAIN,www.gstatic.com`。Nexon 账号登录页的人机验证（reCAPTCHA）从这里加载脚本和样式，此前被 GFW 列表中的 `gstatic.com` 拦截，加速时点击 LOG IN 可能一直转圈。只放行这一个主机，`fonts.gstatic.com`、`google.com` 等仍按列表拒绝。
+- 预防性放行 `recaptcha.net`（人机验证主域名）和 `nexonstatic.com`（Nexon 静态资源）。两者目前不在 GFW 列表中，放行后不再受列表每日变化影响。
+- 放行清单审核日期更新为 2026-10-17，第三方声明中的节点脚本哈希同步更新。
+
+放行清单保存在节点上，升级面板只影响之后新部署的节点。已部署的节点请在节点上以 root 不带参数重新运行同版本的 `installers/node/msboost.sh`：脚本沿用原用户名、密码和端口，玩家的客户端配置不变，校验失败会自动回滚，服务会短暂重启；多 IP 或 NAT 的机器可加 `MSBOOST_SERVER_IP=原入口IP`。也可以只替换 `/etc/msboost/ruleset/msboost-direct.yaml` 后执行 `systemctl restart msboost`。不要对已有节点使用面板「部署 MSBOOST」，它会生成新的凭据。面板其他功能、执行机和中转 Agent 无需改动。验证使用本地隔离环境和 GitHub CI。
+
 ## v2.4.0 · 公开主页、文章页与登录限流修复
 
 - 新增访客无需登录即可访问的主页 `/home` 和文章页 `/news`、`/news/{id}`。控制台仍在 `/`，三处页面右上角都有「主页 / 文章 / 控制台」切换。

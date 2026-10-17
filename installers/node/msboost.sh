@@ -674,7 +674,7 @@ download_file "${RULE_URL}" "${STAGE_DIR}/runtime/ruleset/msboost-filter.mrs"
 [[ -s "${STAGE_DIR}/runtime/ruleset/msboost-filter.mrs" ]] || fail "The downloaded GFW rule data is empty."
 
 cat > "${STAGE_DIR}/runtime/ruleset/msboost-direct.yaml" <<'EOF'
-# Reviewed snapshot: 2026-09-09. Rules are evaluated before msboost-filter.
+# Reviewed snapshot: 2026-10-17. Rules are evaluated before msboost-filter.
 # Literal destination IPs already fall through to MATCH,DIRECT; static CDN IPs
 # are deliberately omitted because they are shared and change frequently.
 payload:
@@ -712,6 +712,7 @@ payload:
   - DOMAIN-SUFFIX,nexon.co.kr
   - DOMAIN-SUFFIX,nexoncdn.co.kr
   - DOMAIN-SUFFIX,nexongames.co.kr
+  - DOMAIN-SUFFIX,nexonstatic.com
   - DOMAIN-SUFFIX,maplestory.com
   - DOMAIN-SUFFIX,maplesea.com
   - DOMAIN-SUFFIX,asiasoftsea.com
@@ -720,6 +721,12 @@ payload:
   - DOMAIN-SUFFIX,beanfun.com
   - DOMAIN-SUFFIX,gamania.com
   - DOMAIN-SUFFIX,sdo.com
+
+  # reCAPTCHA on the Nexon account login page: api.js on recaptcha.net loads
+  # its script and styles from www.gstatic.com. Only that host is allowed,
+  # not the rest of gstatic.com or google.com.
+  - DOMAIN-SUFFIX,recaptcha.net
+  - DOMAIN,www.gstatic.com
 
   # Steam and first-party Valve services.
   - DOMAIN-SUFFIX,dota2.com

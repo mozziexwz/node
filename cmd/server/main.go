@@ -20,7 +20,7 @@ import (
 	"github.com/mozziexwz/node/internal/control"
 )
 
-var version = "2.4.0-dev"
+var version = "2.4.1-dev"
 
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
