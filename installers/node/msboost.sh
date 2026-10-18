@@ -3,6 +3,8 @@
 # Usage: sudo bash msboost.sh [username] [password] [tcp_port]
 # Standalone use reuses omitted values. The managed fresh workflow sets
 # MSBOOST_FORCE_FRESH=1 so prior credentials and port cannot be inherited.
+# MSBOOST_LOW_ENTROPY=off|56|48|40|32 selects the Mieru low-entropy level.
+# New credentials default to 48; a rerun keeps the recorded level, or off.
 
 set -Eeuo pipefail
 umask 077
@@ -23,7 +25,8 @@ readonly PROBE_CONFIG="${APP_DIR}/tcp-probe.json"
 readonly PROBE_PORT=20424
 readonly STATE_FILE="${APP_DIR}/install.env"
 readonly CLIENT_CONFIG="/root/直连.json"
-readonly VERSION="${MSBOOST_ENGINE_VERSION:-v1.19.30}"
+readonly PINNED_ENGINE_VERSION="v1.19.32"
+readonly VERSION="${MSBOOST_ENGINE_VERSION:-${PINNED_ENGINE_VERSION}}"
 readonly RULE_URL="https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/gfw.mrs"
 readonly TIMEZONE="Asia/Shanghai"
 readonly LOCK_FILE="/run/msboost-installer.lock"
@@ -69,6 +72,8 @@ OLD_FW_FIREWALLD_PERMANENT_REMOVED_OFFLINE=0
 TIME_STATUS="not checked"
 FIREWALL_STATUS="not checked"
 ROLLBACK_FAILED=0
+LOW_ENTROPY=""
+TRAFFIC_PATTERN=""
 
 fail() {
   echo "ERROR: $*" >&2
@@ -253,6 +258,31 @@ trap 'exit 143' TERM
 [[ "${BACKUP_ROOT}" == "/var/backups/msboost" ]] || fail "Internal backup-path safety check failed."
 [[ "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Invalid engine version: ${VERSION}"
 
+valid_low_entropy() {
+  case "$1" in
+    off|56|48|40|32) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Mieru TrafficPattern protobuf, base64: field 6 (lowEntropy) holding field 1
+# (mode). LOW_ENTROPY_MODE_32/40/48/56 are enum values 1/2/3/4 in base.proto.
+low_entropy_pattern() {
+  case "$1" in
+    56) printf '%s' 'MgIIBA==' ;;
+    48) printf '%s' 'MgIIAw==' ;;
+    40) printf '%s' 'MgIIAg==' ;;
+    32) printf '%s' 'MgIIAQ==' ;;
+    off) ;;
+    *) return 1 ;;
+  esac
+}
+
+# Reject an explicit value before anything on the host is changed.
+if [[ -n "${MSBOOST_LOW_ENTROPY+set}" ]] && ! valid_low_entropy "${MSBOOST_LOW_ENTROPY}"; then
+  fail "MSBOOST_LOW_ENTROPY must be off, 56, 48, 40, or 32."
+fi
+
 if command -v flock >/dev/null 2>&1; then
   exec 9>"${LOCK_FILE}"
   flock -n 9 || fail "Another msboost installation is already running."
@@ -286,6 +316,40 @@ verify_target_ownership() {
   fi
 }
 
+state_value() {
+  local key=$1
+  [[ -f "${STATE_FILE}" ]] || return 0
+  awk -F= -v wanted="${key}" '$1 == wanted { sub(/^[^=]*=/, ""); print; exit }' "${STATE_FILE}"
+}
+
+state_flag() {
+  [[ "$(state_value "$1")" == "1" ]] && printf '1' || printf '0'
+}
+
+# New credentials get the default level. A rerun that reuses an installation
+# keeps its recorded level, and an installation from before the switch keeps
+# its original behavior (off). An explicit MSBOOST_LOW_ENTROPY always wins.
+resolve_low_entropy() {
+  local recorded
+  if [[ -n "${MSBOOST_LOW_ENTROPY+set}" ]]; then
+    LOW_ENTROPY="${MSBOOST_LOW_ENTROPY}"
+  elif [[ "${MSBOOST_FORCE_FRESH:-0}" == 1 ]]; then
+    LOW_ENTROPY=48
+  else
+    recorded="$(state_value LOW_ENTROPY)"
+    if [[ -n "${recorded}" ]]; then
+      valid_low_entropy "${recorded}" || fail \
+        "The recorded LOW_ENTROPY value is invalid; rerun with MSBOOST_LOW_ENTROPY=off, 56, 48, 40, or 32."
+      LOW_ENTROPY="${recorded}"
+    elif (( MANAGED_INSTALL )); then
+      LOW_ENTROPY=off
+    else
+      LOW_ENTROPY=48
+    fi
+  fi
+  TRAFFIC_PATTERN="$(low_entropy_pattern "${LOW_ENTROPY}")"
+}
+
 preflight_checks() {
   local supplied_user="${1:-}" supplied_password="${2:-}" supplied_port="${3:-}"
 
@@ -312,6 +376,7 @@ preflight_checks() {
   fi
 
   verify_target_ownership
+  resolve_low_entropy
 }
 
 preflight_checks "$@"
@@ -467,16 +532,6 @@ configure_time() {
   fail "The clock did not synchronize within 60 seconds; refusing an installation that could fail authentication."
 }
 
-state_value() {
-  local key=$1
-  [[ -f "${STATE_FILE}" ]] || return 0
-  awk -F= -v wanted="${key}" '$1 == wanted { sub(/^[^=]*=/, ""); print; exit }' "${STATE_FILE}"
-}
-
-state_flag() {
-  [[ "$(state_value "$1")" == "1" ]] && printf '1' || printf '0'
-}
-
 OLD_FW_PORT="$(state_value FIREWALL_PORT)"
 if [[ "${OLD_FW_PORT}" =~ ^[0-9]{1,5}$ ]]; then
   OLD_FW_PORT=$((10#${OLD_FW_PORT}))
@@ -610,23 +665,45 @@ download_file() {
     "${url}" --output "${destination}"
 }
 
+# Reviewed SHA-256 values of the default engine's Linux files. GitHub's release
+# digest is checked as well; it is the only check for an overridden version.
+pinned_engine_assets() {
+  [[ "${VERSION}" == "${PINNED_ENGINE_VERSION}" ]] || return 0
+  cat <<'MSBOOST_PINNED_ENGINE'
+mihomo-linux-amd64-compatible-v1.19.32.gz ba3ce607747a07f948fc35780e108a4a7c7f552a38b9bd4d115f313ebcb89c20
+mihomo-linux-amd64-v1-v1.19.32.gz 306f81e723e60ce6b828899a6fe83e1d00e9ecefb2dc8d4d849312a5bc00efdc
+mihomo-linux-amd64-v1.19.32.gz 8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10
+mihomo-linux-arm64-v1.19.32.gz 9dd862e28b46ff7d775f169cceebc28deccaa0a9e804237d421cd2571e0caba0
+MSBOOST_PINNED_ENGINE
+}
+
 download_engine() {
   local release_json="${STAGE_DIR}/release.json"
   local archive="${STAGE_DIR}/engine.gz"
-  local asset_url asset_name asset_digest calculated
+  local asset_url asset_name asset_digest calculated pinned_names pinned_digest=""
   local -a asset_info=()
 
-  note "Downloading and verifying the pinned engine ${VERSION}"
+  pinned_names="$(pinned_engine_assets | awk '{print $1}' | tr '\n' ' ')"
+  if [[ -n "${pinned_names// /}" ]]; then
+    note "Downloading and verifying the pinned engine ${VERSION}"
+  else
+    warn "MSBOOST_ENGINE_VERSION selects ${VERSION}, which has no reviewed SHA-256 in this installer; only GitHub's release digest will be checked."
+    note "Downloading and verifying the engine ${VERSION}"
+  fi
   download_file "https://api.github.com/repos/MetaCubeX/mihomo/releases/tags/${VERSION}" "${release_json}"
 
-  mapfile -t asset_info < <(python3 - "${release_json}" "${ASSET_FAMILY}" "${VERSION}" <<'PY'
+  mapfile -t asset_info < <(python3 - "${release_json}" "${ASSET_FAMILY}" "${VERSION}" "${pinned_names}" <<'PY'
 import json
 import re
 import sys
 
-release_path, family, version = sys.argv[1:]
+release_path, family, version, pinned = sys.argv[1:]
+allowed = set(pinned.split())
 with open(release_path, encoding="utf-8") as handle:
     assets = json.load(handle).get("assets", [])
+if allowed:
+    # A pinned version may only use a reviewed file, even if one is added later.
+    assets = [asset for asset in assets if asset.get("name", "") in allowed]
 
 if family == "amd64":
     patterns = (
@@ -657,9 +734,16 @@ PY
   asset_digest="${asset_info[2]#sha256:}"
   [[ -n "${asset_url}" && -n "${asset_name}" ]] || fail "Release metadata did not contain a valid download."
   [[ "${asset_digest}" =~ ^[0-9a-fA-F]{64}$ ]] || fail "GitHub did not provide a SHA-256 digest for ${asset_name}."
+  if [[ -n "${pinned_names// /}" ]]; then
+    pinned_digest="$(pinned_engine_assets | awk -v name="${asset_name}" '$1 == name { print $2; exit }')"
+    [[ "${pinned_digest}" =~ ^[0-9a-f]{64}$ ]] || fail "No reviewed SHA-256 is recorded for ${asset_name}."
+  fi
 
   download_file "${asset_url}" "${archive}"
   calculated="$(sha256sum "${archive}" | awk '{print $1}')"
+  if [[ -n "${pinned_digest}" ]]; then
+    [[ "${calculated,,}" == "${pinned_digest}" ]] || fail "SHA-256 verification against the reviewed value failed for ${asset_name}."
+  fi
   [[ "${calculated,,}" == "${asset_digest,,}" ]] || fail "SHA-256 verification failed for ${asset_name}."
   gzip -t "${archive}"
   gzip -dc "${archive}" > "${STAGE_DIR}/msboost"
@@ -814,7 +898,10 @@ payload:
 EOF
 
 write_server_config() {
-  local destination=$1 direct_rules=$2 filter_rules=$3
+  local destination=$1 direct_rules=$2 filter_rules=$3 pattern_line=""
+  if [[ -n "${TRAFFIC_PATTERN}" ]]; then
+    pattern_line=$'\n    traffic-pattern: "'"${TRAFFIC_PATTERN}"'"'
+  fi
   cat > "${destination}" <<EOF
 mode: rule
 log-level: info
@@ -825,7 +912,7 @@ listeners:
     type: mieru
     listen: 0.0.0.0
     port: ${PORT}
-    transport: TCP
+    transport: TCP${pattern_line}
     users:
       "${USER_NAME}": "${USER_PASS}"
 
@@ -867,6 +954,7 @@ USER_NAME=${USER_NAME}
 USER_PASS=${USER_PASS}
 PORT=${PORT}
 ENGINE_VERSION=${VERSION}
+LOW_ENTROPY=${LOW_ENTROPY}
 FIREWALL_PORT=${PORT}
 FIREWALL_UFW_OWNED=${NEW_FW_UFW_OWNED}
 FIREWALLD_RUNTIME_OWNED=${NEW_FW_FIREWALLD_RUNTIME_OWNED}
@@ -1367,7 +1455,15 @@ detect_public_ip() {
 
 PUBLIC_IP="$(detect_public_ip)"
 
-cat > "${STAGE_DIR}/client.json" <<EOF
+# Mieru client format. With low entropy off the file is byte-for-byte the same
+# as before the switch existed; otherwise only lowEntropy.mode is set and the
+# remaining traffic pattern stays implicit, matching the listener.
+write_client_config() {
+  local destination=$1 pattern=""
+  if [[ "${LOW_ENTROPY}" != off ]]; then
+    pattern=$',\n      "trafficPattern": {\n        "lowEntropy": {\n          "mode": "LOW_ENTROPY_MODE_'"${LOW_ENTROPY}"$'"\n        }\n      }'
+  fi
+  cat > "${destination}" <<EOF
 {
   "profiles": [
     {
@@ -1388,7 +1484,7 @@ cat > "${STAGE_DIR}/client.json" <<EOF
           ]
         }
       ],
-      "mtu": 1400
+      "mtu": 1400${pattern}
     }
   ],
   "activeProfile": "msboost",
@@ -1397,6 +1493,9 @@ cat > "${STAGE_DIR}/client.json" <<EOF
   "loggingLevel": "INFO"
 }
 EOF
+}
+
+write_client_config "${STAGE_DIR}/client.json"
 python3 -m json.tool "${STAGE_DIR}/client.json" >/dev/null
 
 verify_existing_resources() {
@@ -1863,7 +1962,16 @@ probe_hello 0
 note "Running a local end-to-end proxy self-test"
 SELFTEST_PORT="$(random_free_port)" || fail "Could not choose a local self-test port."
 install -d -m 0700 "${STAGE_DIR}/selftest" "${STAGE_DIR}/selftest-state"
-cat > "${STAGE_DIR}/selftest/config.yaml" <<EOF
+
+# The outbound carries the same traffic pattern as the customer configuration,
+# so the self-test exercises the low-entropy path. The outbound also rejects an
+# undecodable pattern instead of silently using the implicit one.
+write_selftest_config() {
+  local destination=$1 pattern_line=""
+  if [[ -n "${TRAFFIC_PATTERN}" ]]; then
+    pattern_line=$'\n    traffic-pattern: "'"${TRAFFIC_PATTERN}"'"'
+  fi
+  cat > "${destination}" <<EOF
 mode: rule
 log-level: warning
 listeners:
@@ -1880,10 +1988,13 @@ proxies:
     username: "${USER_NAME}"
     password: "${USER_PASS}"
     multiplexing: MULTIPLEXING_LOW
-    handshake-mode: HANDSHAKE_STANDARD
+    handshake-mode: HANDSHAKE_STANDARD${pattern_line}
 rules:
   - MATCH,msboost-loopback
 EOF
+}
+
+write_selftest_config "${STAGE_DIR}/selftest/config.yaml"
 
 "${BIN}" -d "${STAGE_DIR}/selftest-state" -f "${STAGE_DIR}/selftest/config.yaml" \
   >"${STAGE_DIR}/selftest/msboost-selftest.log" 2>&1 &
@@ -2052,6 +2163,12 @@ TX_ACTIVE=0
 echo
 echo "Installed and locally self-tested successfully."
 echo "Server: ${PUBLIC_IP}:${PORT} (TCP)"
+echo "Engine: mihomo ${VERSION}."
+if [[ "${LOW_ENTROPY}" == off ]]; then
+  echo "Low-entropy traffic pattern: off."
+else
+  echo "Low-entropy traffic pattern: ${LOW_ENTROPY}; the client configuration needs the MSBOOST launcher or msboost.exe (mieru) v3.35.0 or newer."
+fi
 echo "Time synchronization: ${TIME_STATUS}."
 echo "Host firewall: ${FIREWALL_STATUS}."
 echo "Direct exceptions: GTop100 MapleStory snapshot, Nexon/MapleStory regions, Steam, and Discord."

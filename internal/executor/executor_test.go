@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -74,6 +75,43 @@ func TestClientConfigRejectsAmbiguityAndPreservesCredentials(t *testing.T) {
 		if _, err := ParseClientConfig([]byte(bad)); err == nil {
 			t.Fatal("accepted ambiguous/invalid config")
 		}
+	}
+}
+
+// New nodes default to a low-entropy traffic pattern. A relay only moves bytes,
+// so the customer's profile setting must survive the entry rewrite unchanged.
+func TestRelayConfigPreservesTrafficPattern(t *testing.T) {
+	pattern := `"trafficPattern":{"lowEntropy":{"mode":"LOW_ENTROPY_MODE_48"}}`
+	config := strings.Replace(sampleConfig, `"mtu":1400`, `"mtu":1400,`+pattern, 1)
+	if _, err := ParseClientConfig([]byte(config)); err != nil {
+		t.Fatal(err)
+	}
+	remote := &fakeRemote{run: func(s SSH, script string) ([]byte, error) {
+		if script == "uname -m\n" {
+			return []byte("x86_64\n"), nil
+		}
+		if strings.Contains(script, "MSBOOST_RELAY_PORT") {
+			return []byte("MSBOOST_RELAY_PORT=23450\n"), nil
+		}
+		return []byte("MSBOOST_READY=1\n"), nil
+	}}
+	e := &Engine{Remote: remote, TCPProbe: func(context.Context, string, int) string { return "reachable" }, GostAMD64URL: "https://github.com/go-gost/gost/releases/download/v3.3.0/gost.tar.gz", GostAMD64SHA256: strings.Repeat("a", 64)}
+	result := e.Execute(context.Background(), Job{ID: "pattern", Request: Request{Kind: "relay", SSH: testSSH("1.1.1.1"), ClientConfig: []byte(config), Remark: "东京中转"}})
+	if result.State != "succeeded" {
+		t.Fatal(result)
+	}
+	var document struct {
+		Profiles []struct {
+			ProfileName    string         `json:"profileName"`
+			TrafficPattern map[string]any `json:"trafficPattern"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(result.Config, &document); err != nil {
+		t.Fatal(err)
+	}
+	low, _ := document.Profiles[0].TrafficPattern["lowEntropy"].(map[string]any)
+	if document.Profiles[0].ProfileName != "东京中转" || low["mode"] != "LOW_ENTROPY_MODE_48" || len(document.Profiles[0].TrafficPattern) != 1 {
+		t.Fatalf("relay configuration lost the traffic pattern: %s", result.Config)
 	}
 }
 func TestSSHHostKeyPinnedDuringHandshake(t *testing.T) {

@@ -326,6 +326,229 @@ done
 echo ROLLBACK_VERIFIED
 '''
 
+PINNED_ENGINE = {
+    "mihomo-linux-amd64-compatible-v1.19.32.gz": "ba3ce607747a07f948fc35780e108a4a7c7f552a38b9bd4d115f313ebcb89c20",
+    "mihomo-linux-amd64-v1-v1.19.32.gz": "306f81e723e60ce6b828899a6fe83e1d00e9ecefb2dc8d4d849312a5bc00efdc",
+    "mihomo-linux-amd64-v1.19.32.gz": "8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10",
+    "mihomo-linux-arm64-v1.19.32.gz": "9dd862e28b46ff7d775f169cceebc28deccaa0a9e804237d421cd2571e0caba0",
+}
+# LOW_ENTROPY_MODE_* enum values from mieru pkg/appctl/proto/base.proto.
+LOW_ENTROPY_ENUM = {"32": 1, "40": 2, "48": 3, "56": 4}
+LEGACY_CLIENT = """{
+  "profiles": [
+    {
+      "profileName": "msboost",
+      "user": {
+        "name": "node-user",
+        "password": "node-password-1234"
+      },
+      "servers": [
+        {
+          "ipAddress": "8.8.8.8",
+          "domainName": "",
+          "portBindings": [
+            {
+              "port": 23456,
+              "protocol": "TCP"
+            }
+          ]
+        }
+      ],
+      "mtu": 1400
+    }
+  ],
+  "activeProfile": "msboost",
+  "rpcPort": 8964,
+  "socks5Port": 10086,
+  "loggingLevel": "INFO"
+}
+"""
+
+def heredoc_function(name):
+    # These functions end in a heredoc whose JSON body may start a line with "}".
+    start = SCRIPT.index("\n" + name + "() {\n") + 1
+    end = SCRIPT.index("\nEOF\n}\n", start) + len("\nEOF\n}\n")
+    return SCRIPT[start:end]
+
+def engine_selector():
+    body = function("download_engine")
+    return body.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0] + "\n"
+
+def run_bash(code, env=None):
+    result = subprocess.run([bash(), "-s"], input="set -Eeuo pipefail\n" + code, text=True, encoding="utf-8",
+                            errors="replace", capture_output=True, timeout=15, env=env)
+    return result
+
+def guard_block():
+    result = re.search(r'^if \[\[ -n "\$\{MSBOOST_LOW_ENTROPY\+set\}" \]\].*?^fi\n', SCRIPT, re.M | re.S)
+    if result is None:
+        raise AssertionError("missing explicit low-entropy guard")
+    return result.group(0)
+
+class EngineAndTrafficPatternTests(unittest.TestCase):
+    def test_pinned_engine_version_files_and_hashes(self):
+        self.assertIn('readonly PINNED_ENGINE_VERSION="v1.19.32"\n', SCRIPT)
+        self.assertIn('readonly VERSION="${MSBOOST_ENGINE_VERSION:-${PINNED_ENGINE_VERSION}}"\n', SCRIPT)
+        rows = [line.split() for line in heredoc("MSBOOST_PINNED_ENGINE").splitlines()]
+        self.assertEqual({name: digest for name, digest in rows}, PINNED_ENGINE)
+        for name, digest in rows:
+            self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
+            self.assertTrue(name.endswith("-v1.19.32.gz"), name)
+        # Every name the selector can choose for the pinned version is reviewed.
+        selector = function("download_engine")
+        for name in PINNED_ENGINE:
+            family = "amd64" if "amd64" in name else "arm64"
+            self.assertIn("mihomo-linux-" + family, selector)
+        self.assertIn('fail "No reviewed SHA-256 is recorded for ${asset_name}."', selector)
+        self.assertLess(selector.index('"${calculated,,}" == "${pinned_digest}"'), selector.index('"${calculated,,}" == "${asset_digest,,}"'))
+        self.assertIn("only GitHub's release digest will be checked", selector)
+
+    def test_pinned_selection_ignores_unreviewed_assets(self):
+        code = engine_selector()
+        assets = [{"name": "mihomo-linux-arm64-v8-v1.19.32.gz", "browser_download_url": "https://example.invalid/v8", "digest": "sha256:" + "0" * 64},
+                  {"name": "mihomo-linux-arm64-v1.19.32.gz", "browser_download_url": "https://example.invalid/arm64", "digest": "sha256:" + "1" * 64},
+                  {"name": "mihomo-linux-amd64-v1.19.32.gz", "browser_download_url": "https://example.invalid/amd64", "digest": "sha256:" + "2" * 64}]
+        with tempfile.TemporaryDirectory() as directory:
+            release = Path(directory) / "release.json"
+            release.write_text(json.dumps({"assets": assets}), encoding="utf-8")
+            pinned = " ".join(PINNED_ENGINE)
+            out = subprocess.run([sys.executable, "-c", code, str(release), "arm64", "v1.19.32", pinned], capture_output=True, text=True)
+            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-arm64-v1.19.32.gz")
+            out = subprocess.run([sys.executable, "-c", code, str(release), "arm64", "v1.19.32", ""], capture_output=True, text=True)
+            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-arm64-v8-v1.19.32.gz")
+            out = subprocess.run([sys.executable, "-c", code, str(release), "amd64", "v1.19.32", pinned], capture_output=True, text=True)
+            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-amd64-v1.19.32.gz")
+
+    def test_low_entropy_patterns_are_mieru_protobuf(self):
+        if not bash(): self.skipTest("Bash unavailable")
+        import base64
+        code = function("low_entropy_pattern")
+        for level, value in LOW_ENTROPY_ENUM.items():
+            with self.subTest(level=level):
+                result = run_bash(code + 'low_entropy_pattern ' + level + '\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                # TrafficPattern field 6 (lowEntropy) -> LowEntropyPattern field 1 (mode).
+                self.assertEqual(base64.b64decode(result.stdout, validate=True), bytes((0x32, 0x02, 0x08, value)))
+        self.assertEqual(run_bash(code + 'low_entropy_pattern off\n').stdout, "")
+        self.assertNotEqual(run_bash(code + 'low_entropy_pattern 64\n').returncode, 0)
+
+    def test_explicit_value_is_validated_before_any_change(self):
+        if not bash(): self.skipTest("Bash unavailable")
+        guard = guard_block()
+        start = SCRIPT.index(guard)
+        for later in ("\npreflight_checks \"$@\"\n", "\nbootstrap_existing_clock\n", "\ninstall_dependencies\n", "\nconfigure_time\n"):
+            self.assertLess(start, SCRIPT.index(later), later)
+        code = function("valid_low_entropy") + 'fail() { printf "REJECTED\\n"; exit 1; }\n' + guard + 'printf "ACCEPTED\\n"\n'
+        for value in ("off", "56", "48", "40", "32"):
+            result = run_bash(code, env=dict(os.environ, MSBOOST_LOW_ENTROPY=value))
+            self.assertIn("ACCEPTED", result.stdout, value)
+        for value in ("", "on", "OFF", "64", "48 ", " 48", "0", "true", "LOW_ENTROPY_MODE_48"):
+            with self.subTest(value=value):
+                result = run_bash(code, env=dict(os.environ, MSBOOST_LOW_ENTROPY=value))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("REJECTED", result.stdout)
+        result = run_bash(code, env={key: item for key, item in os.environ.items() if key != "MSBOOST_LOW_ENTROPY"})
+        self.assertIn("ACCEPTED", result.stdout)
+
+    def test_default_levels(self):
+        if not bash(): self.skipTest("Bash unavailable")
+        code = "".join(function(name) for name in ("valid_low_entropy", "low_entropy_pattern", "state_value", "resolve_low_entropy"))
+        code += 'fail() { printf "FAILED\\n"; exit 1; }\n'
+        cases = [
+            # (explicit, force_fresh, managed, recorded, expected)
+            (None, "0", 0, None, "48"),          # first installation
+            (None, "1", 1, "off", "48"),         # panel deploy / forced fresh credentials
+            (None, "0", 1, None, "off"),         # rerun of an installation from before the switch
+            (None, "0", 1, "40", "40"),          # rerun keeps the recorded level
+            (None, "0", 1, "off", "off"),
+            ("off", "1", 0, None, "off"),        # explicit value wins
+            ("56", "0", 1, "48", "56"),
+            ("32", "0", 1, None, "32"),
+        ]
+        with tempfile.TemporaryDirectory(dir=HERE) as directory:
+            state = Path(directory) / "install.env"
+            root = Path(os.path.relpath(directory, Path.cwd())).as_posix()
+            for explicit, fresh, managed, recorded, expected in cases:
+                with self.subTest(explicit=explicit, fresh=fresh, managed=managed, recorded=recorded):
+                    if recorded is None:
+                        state.write_text("MANAGED_BY=msboost-installer-v1\nUSER_NAME=old\n", encoding="utf-8")
+                    else:
+                        state.write_text("MANAGED_BY=msboost-installer-v1\nLOW_ENTROPY=" + recorded + "\n", encoding="utf-8")
+                    if not managed:
+                        state.unlink()
+                    env = {key: item for key, item in os.environ.items() if key not in ("MSBOOST_LOW_ENTROPY", "MSBOOST_FORCE_FRESH")}
+                    env["MSBOOST_FORCE_FRESH"] = fresh
+                    if explicit is not None:
+                        env["MSBOOST_LOW_ENTROPY"] = explicit
+                    body = "STATE_FILE='" + root + "/install.env'\nMANAGED_INSTALL=" + str(managed) + "\n" + code
+                    body += 'resolve_low_entropy\nprintf "%s|%s\\n" "$LOW_ENTROPY" "$TRAFFIC_PATTERN"\n'
+                    result = run_bash(body, env=env)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    level, pattern = result.stdout.strip().split("|")
+                    self.assertEqual(level, expected)
+                    self.assertEqual(pattern, run_bash(function("low_entropy_pattern") + "low_entropy_pattern " + expected + "\n").stdout)
+            state.write_text("MANAGED_BY=msboost-installer-v1\nLOW_ENTROPY=64\n", encoding="utf-8")
+            env = {key: item for key, item in os.environ.items() if key not in ("MSBOOST_LOW_ENTROPY", "MSBOOST_FORCE_FRESH")}
+            result = run_bash("STATE_FILE='" + root + "/install.env'\nMANAGED_INSTALL=1\n" + code + "resolve_low_entropy\n", env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("FAILED", result.stdout)
+
+    def render(self, level):
+        functions = function("low_entropy_pattern") + "".join(heredoc_function(name) for name in ("write_server_config", "write_client_config", "write_selftest_config"))
+        with tempfile.TemporaryDirectory(dir=HERE) as directory:
+            root = Path(os.path.relpath(directory, Path.cwd())).as_posix()
+            body = ("PORT=23456\nUSER_NAME=node-user\nUSER_PASS=node-password-1234\nPUBLIC_IP=8.8.8.8\nSELFTEST_PORT=34567\n"
+                    "RULE_URL=https://example.invalid/gfw.mrs\nLOW_ENTROPY=" + level + "\n" + functions +
+                    'TRAFFIC_PATTERN="$(low_entropy_pattern "$LOW_ENTROPY")"\n'
+                    "write_server_config '" + root + "/server.yaml' /direct.yaml /filter.mrs\n"
+                    "write_client_config '" + root + "/client.json'\n"
+                    "write_selftest_config '" + root + "/selftest.yaml'\n")
+            result = run_bash(body)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return tuple((Path(directory) / name).read_text(encoding="utf-8") for name in ("server.yaml", "client.json", "selftest.yaml"))
+
+    def test_generated_configurations_per_level(self):
+        if not bash(): self.skipTest("Bash unavailable")
+        server, client, selftest = self.render("off")
+        self.assertEqual(client, LEGACY_CLIENT)
+        self.assertNotIn("traffic-pattern", server + selftest)
+        self.assertIn("    transport: TCP\n    users:\n", server)
+        self.assertIn("    handshake-mode: HANDSHAKE_STANDARD\nrules:\n", selftest)
+        import base64
+        for level, value in LOW_ENTROPY_ENUM.items():
+            with self.subTest(level=level):
+                encoded = base64.b64encode(bytes((0x32, 0x02, 0x08, value))).decode()
+                server, client, selftest = self.render(level)
+                self.assertIn('    transport: TCP\n    traffic-pattern: "' + encoded + '"\n    users:\n', server)
+                self.assertEqual(server.count("traffic-pattern"), 1)
+                self.assertIn('    handshake-mode: HANDSHAKE_STANDARD\n    traffic-pattern: "' + encoded + '"\nrules:\n', selftest)
+                document = json.loads(client)
+                profile = document["profiles"][0]
+                self.assertEqual(profile["trafficPattern"], {"lowEntropy": {"mode": "LOW_ENTROPY_MODE_" + level}})
+                self.assertEqual(list(profile), ["profileName", "user", "servers", "mtu", "trafficPattern"])
+                legacy = json.loads(LEGACY_CLIENT)
+                del profile["trafficPattern"]
+                self.assertEqual(document, legacy)
+
+    def test_install_state_records_level_and_guard_accepts_it(self):
+        if not bash(): self.skipTest("Bash unavailable")
+        with tempfile.TemporaryDirectory(dir=HERE) as directory:
+            root = Path(os.path.relpath(directory, Path.cwd())).as_posix()
+            Path(directory, "msboost.service").write_bytes(unit("msboost.service"))
+            Path(directory, "msboost-tcp-probe.service").write_bytes(unit("msboost-tcp-probe.service"))
+            body = ("MANAGED_MARKER=msboost-installer-v1\nUSER_NAME=u\nUSER_PASS=p\nPORT=1\nVERSION=v1.19.32\nLOW_ENTROPY=48\n"
+                    "NEW_FW_UFW_OWNED=0\nNEW_FW_FIREWALLD_RUNTIME_OWNED=0\nNEW_FW_FIREWALLD_PERMANENT_OWNED=0\nFW_FIREWALLD_ZONE=\n"
+                    "STAGE_DIR='" + root + "'\n" + heredoc_function("write_install_state") + "write_install_state '" + root + "/install.env'\n")
+            result = run_bash(body)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            lines = Path(directory, "install.env").read_text(encoding="utf-8").splitlines()
+            self.assertIn("LOW_ENTROPY=48", lines)
+            self.assertIn("ENGINE_VERSION=v1.19.32", lines)
+        fixture = VirtualLinux()
+        data, uid, gid, mode, nlink = fixture.files["/etc/msboost/install.env"]
+        fixture.put("/etc/msboost/install.env", data + b"LOW_ENTROPY=48\n", uid, gid, mode, nlink)
+        fixture.check()
+
 class HelloTests(unittest.TestCase):
     def run_hello(self, mutate=lambda raw:raw, auth=0, atyp=1, delay=0):
         import time

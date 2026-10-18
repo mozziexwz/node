@@ -12,11 +12,20 @@ UI 样式和产品需求来自用户提供的 `msboost-v4.1-ui` 文件夹及后�
 
 | 文件 | SHA256 |
 |---|---|
-| `installers/node/msboost.sh` | `c2bc6697ddff17819569a7599d3156f65323a823c248243680c82fd04afdf783` |
+| `installers/node/msboost.sh` | `fa06ea04d09050039e9044fd4d0701bac49744b157b67b5e6007bd299d040c53` |
 
 测速维护源码 `installers/node/tcp_probe.py` 的 SHA256 为 `981fd3f6b7434849ea6b2fb751527c119e4ada90abef48f594f70b56e9ba1683`。
 
-MSBOOST 脚本运行时使用 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，默认版本 `v1.19.30`，可受 `MSBOOST_ENGINE_VERSION` 环境变量影响；上游 [该版本 LICENSE](https://github.com/MetaCubeX/mihomo/blob/v1.19.30/LICENSE) 为 GPLv3。相应下载、使用与分发应保留上游要求的许可及来源信息。脚本还读取 `meta-rules-dat` 的 [gfw.mrs](https://github.com/MetaCubeX/meta-rules-dat/blob/meta/geo/geosite/gfw.mrs)；该 URL 的资源会随上游分支变化，不能把脚本自身哈希误认为所有运行时资源均已冻结。
+MSBOOST 脚本运行时使用 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，默认版本 `v1.19.32`（内置 [enfein/mieru](https://github.com/enfein/mieru) v3.38.0），可受 `MSBOOST_ENGINE_VERSION` 环境变量影响；上游 [该版本 LICENSE](https://github.com/MetaCubeX/mihomo/blob/v1.19.32/LICENSE) 为 GPLv3。相应下载、使用与分发应保留上游要求的许可及来源信息。脚本写死默认版本各 Linux 文件的 SHA256，下载后先与写死值核对，再与 GitHub 发布摘要核对；用 `MSBOOST_ENGINE_VERSION` 指定其他版本时只核对 GitHub 发布摘要：
+
+| 文件 | SHA256 |
+|---|---|
+| `mihomo-linux-amd64-compatible-v1.19.32.gz` | `ba3ce607747a07f948fc35780e108a4a7c7f552a38b9bd4d115f313ebcb89c20` |
+| `mihomo-linux-amd64-v1-v1.19.32.gz` | `306f81e723e60ce6b828899a6fe83e1d00e9ecefb2dc8d4d849312a5bc00efdc` |
+| `mihomo-linux-amd64-v1.19.32.gz` | `8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10` |
+| `mihomo-linux-arm64-v1.19.32.gz` | `9dd862e28b46ff7d775f169cceebc28deccaa0a9e804237d421cd2571e0caba0` |
+
+脚本还读取 `meta-rules-dat` 的 [gfw.mrs](https://github.com/MetaCubeX/meta-rules-dat/blob/meta/geo/geosite/gfw.mrs)；该 URL 的资源会随上游分支变化，不能把脚本自身哈希误认为所有运行时资源均已冻结。
 
 ## 2. bin456789/reinstall
 

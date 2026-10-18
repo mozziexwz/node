@@ -1,5 +1,19 @@
 # 发布说明
 
+## 下一版本（未发布）
+
+发布时把本节标题改为 `## vX.Y.Z · 标题`，并同步各处版本号（见 `deploy/version_test.sh`）。
+
+### 节点引擎升级与低熵流量模式
+
+- 节点引擎 mihomo 从 v1.19.30 升级到 v1.19.32，内置 mieru 从 v3.35.0 升到 v3.38.0。包含 mieru 监听遵守 `listen` 设置（节点写的是 `0.0.0.0`，升级后只监听 IPv4，客户配置本来就用 IPv4 地址）、YAML 解析库更换、域名规则匹配修复，以及 mieru 服务端的内存和 CPU 优化。
+- 安装脚本写死 v1.19.32 各架构文件的 SHA-256，下载后先与写死值核对，再与 GitHub 发布摘要核对；用 `MSBOOST_ENGINE_VERSION` 指定其他版本时只核对 GitHub 摘要，并打印提示。
+- 新增低熵开关 `MSBOOST_LOW_ENTROPY`，只接受 `off`、`56`、`48`、`40`、`32`，其他值在改动服务器之前直接报错退出。**生成新凭据的部署（面板「部署 MSBOOST」、首次安装、`MSBOOST_FORCE_FRESH=1`）默认 48 档**；沿用凭据重新运行时保持安装状态里记录的档位，旧安装没有记录时为 `off`，与之前完全一致；显式传入的值优先。
+- 低熵只设置流量模式里的 `lowEntropy.mode`，其余项仍由 mieru 自动生成。档位同时写入节点监听（`traffic-pattern`）、客户端配置 `/root/直连.json`（profile 里的 `trafficPattern`）、部署自测的出站和安装状态（`LOW_ENTROPY=48`）；自测因此真正走一遍低熵路径。48 档的正文流量约为原来的 1.34 倍，不增加延迟；不开 TCP 分片。
+- 部署结果、配置下载和任务记录处提示：新配置需要 MSBOOST 启动器（node_launcher，内置 mieru v3.38.1）；旧版 BAT 启动器请把 `msboost.exe` 更新到 v3.35.0 以上。「配置中转服务器」生成的中转配置原样保留 `trafficPattern`。
+
+存量节点不需要处理，继续使用 v1.19.30。需要升级某台节点时，在节点上以 root 不带参数运行新版 `installers/node/msboost.sh`：脚本沿用原用户名、密码和端口，低熵保持原来的设置（旧节点为 `off`），校验或自测失败会自动回滚，服务会重启几秒；多 IP 或 NAT 的机器加 `MSBOOST_SERVER_IP=原入口IP`。不要用面板「部署 MSBOOST」升级已有节点，它会生成新的凭据。旧 BAT 用户加载新部署的配置失败时，可以删掉配置里的 `trafficPattern` 一项，或在节点上用 `MSBOOST_LOW_ENTROPY=off` 重新运行脚本生成新配置；节点两种客户端都接受。
+
 ## v2.4.1 · 节点放行清单补充
 
 - 节点放行清单新增 `DOMAIN,www.gstatic.com`。Nexon 账号登录页的人机验证（reCAPTCHA）从这里加载脚本和样式，此前被 GFW 列表中的 `gstatic.com` 拦截，加速时点击 LOG IN 可能一直转圈。只放行这一个主机，`fonts.gstatic.com`、`google.com` 等仍按列表拒绝。
