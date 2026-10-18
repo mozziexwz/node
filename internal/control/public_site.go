@@ -24,9 +24,43 @@ type HomeCTA struct {
 	Href string `json:"href"`
 }
 
+// Target is where a card leads: one of the homepage sections (#msboost,
+// #relay, #launcher), a same-site path or an https link; empty means the card
+// is not clickable.
 type HomeFeature struct {
+	Title  string `json:"title"`
+	Desc   string `json:"desc"`
+	Target string `json:"target,omitempty"`
+}
+
+// HomeItem is one diagram box or one point in the homepage explanations.
+type HomeItem struct {
 	Title string `json:"title"`
 	Desc  string `json:"desc"`
+}
+
+// HomeMSBOOST explains the node. Nodes are the three diagram boxes from the
+// player's computer to the game server; Lead may use **bold**.
+type HomeMSBOOST struct {
+	Eyebrow string     `json:"eyebrow"`
+	Title   string     `json:"title"`
+	Lead    string     `json:"lead"`
+	Nodes   []HomeItem `json:"nodes"`
+	Points  []HomeItem `json:"points"`
+}
+
+// HomeRelay explains relay servers with a direct path (three boxes) and a
+// relayed path (four boxes, the relay second). Lead, Myth and Truth may use
+// **bold**; the myth block is hidden when both are empty.
+type HomeRelay struct {
+	Eyebrow string     `json:"eyebrow"`
+	Title   string     `json:"title"`
+	Lead    string     `json:"lead"`
+	Direct  []HomeItem `json:"direct"`
+	Via     []HomeItem `json:"via"`
+	Myth    string     `json:"myth"`
+	Truth   string     `json:"truth"`
+	Points  []HomeItem `json:"points"`
 }
 
 type HomeConfig struct {
@@ -38,12 +72,21 @@ type HomeConfig struct {
 	PrimaryCTA   HomeCTA       `json:"primaryCta"`
 	SecondaryCTA HomeCTA       `json:"secondaryCta"`
 	Features     []HomeFeature `json:"features"`
+	ShowExplain  bool          `json:"showExplain"`
+	ShowLauncher bool          `json:"showLauncher"`
+	MSBOOST      HomeMSBOOST   `json:"msboost"`
+	Relay        HomeRelay     `json:"relay"`
 	ShowLatest   bool          `json:"showLatest"`
 	LatestCount  int           `json:"latestCount"`
 	Notice       string        `json:"notice"`
 	NoticeHref   string        `json:"noticeHref"`
 	ContactEmail string        `json:"contactEmail"`
+	// Version marks a configuration saved with the current fields. Older
+	// stored values are upgraded on read until an administrator saves again.
+	Version int `json:"version"`
 }
+
+const homeConfigVersion = 2
 
 type SEOConfig struct {
 	SiteName      string `json:"siteName"`
@@ -58,23 +101,93 @@ type SEOConfig struct {
 // Defaults reproduce the existing sign-in landing copy, so /home is complete
 // before an administrator edits anything.
 func defaultHomeConfig() HomeConfig {
+	vpsExit := HomeItem{Title: "你的 MSBOOST 节点", Desc: "游戏出口：你自己的VPS · IP"}
+	computer := HomeItem{Title: "你的电脑", Desc: "MSBOOST 启动器"}
+	game := HomeItem{Title: "MapleStory 服务器", Desc: "服务器看到：你自己的VPS · IP"}
 	return HomeConfig{
 		Eyebrow:      "SELF-HOSTED · MAPLESTORY",
-		TitleLine1:   "一键部署你的",
+		TitleLine1:   "一键部署你的MapleStory",
 		TitleLine2:   "独立IP游戏节点",
-		Subtitle:     "部署节点、配置中转、重装系统。\n把复杂的服务器操作，放进一个清晰的工作空间。",
+		Subtitle:     "部署节点、配置中转、一键加速。\n把复杂的服务器操作，放进一个清晰的工作空间。",
 		Points:       []string{"三项免费核心工具", "需自备 VPS", "Windows 启动器"},
 		PrimaryCTA:   HomeCTA{Text: "进入控制台", Href: "/"},
 		SecondaryCTA: HomeCTA{Text: "阅读教程", Href: "/news"},
 		Features: []HomeFeature{
-			{Title: "一键部署 MSBOOST", Desc: "部署你的独立IP游戏节点"},
-			{Title: "一键配置中转服务器", Desc: "与朋友共享你的VPS线路，但不共享你的IP"},
-			{Title: "一键DD系统", Desc: "在线重装系统"},
+			{Title: "一键部署 MSBOOST", Desc: "部署你的VPS独立IP游戏节点", Target: "#msboost"},
+			{Title: "一键配置中转服务器", Desc: "与朋友共享你的VPS精品线路，但不共享你的IP", Target: "#relay"},
+			{Title: "MSBOOST 启动器", Desc: "一键加速 MapleStory", Target: "#launcher"},
+		},
+		ShowExplain:  true,
+		ShowLauncher: true,
+		MSBOOST: HomeMSBOOST{
+			Eyebrow: "MSBOOST 节点",
+			Title:   "什么是 MSBOOST？",
+			Lead:    "MSBOOST 是装在**你自己 VPS** 上的游戏加速节点。你玩 MapleStory 时，游戏流量从这台 VPS 出去，游戏服务器看到的是**这台 VPS 的 IP**——只属于你，不和别人共用。",
+			Nodes:   []HomeItem{computer, vpsExit, game},
+			Points: []HomeItem{
+				{Title: "你的 VPS，你的 IP", Desc: "节点装在你自己的服务器上，游戏流量只在你的电脑和你的 VPS 之间传输，不经过本站。"},
+				{Title: "网站一键部署", Desc: "在控制台填写 VPS 信息（Debian 11–13），网站自动安装并自测，完成后下载配置文件。"},
+				{Title: "启动器一键加速", Desc: "在 MSBOOST 启动器里导入配置，只加速 MapleStory 相关程序，其他软件照常直连。"},
+			},
+		},
+		Relay: HomeRelay{
+			Eyebrow: "中转服务器",
+			Title:   "什么是中转服务器？",
+			Lead:    "中转服务器放在你的电脑和你的 MSBOOST 节点之间，**只负责中转**。直连节点延迟高、晚上丢包时，先连到一台线路更好的服务器，再由它中转到你的节点，通常更快、更稳。",
+			Direct:  []HomeItem{computer, vpsExit, game},
+			Via:     []HomeItem{computer, {Title: "中转服务器", Desc: "自己或朋友分享的精品线路中转"}, vpsExit, game},
+			Myth:    "连接朋友分享的中转线路，就是在用朋友的 IP 玩游戏。",
+			Truth:   "中转服务器只中转、不做游戏出口。游戏服务器看到的始终是你自己 MSBOOST 节点的 IP；朋友用你的中转时，看到的也是朋友自己节点的 IP。**分享的是精品线路，不是 IP。**",
+			Points: []HomeItem{
+				{Title: "只中转，看不到内容", Desc: "你的电脑和节点之间的流量是加密的，中转服务器只按端口中转。服务器上只记录使用者的节点 IP 和端口，不保存节点密码，拥有者用不了你的节点。"},
+				{Title: "用中转码分享", Desc: "拥有者生成中转码发给朋友，朋友上传自己的配置文件就能建好中转，拥有者不用交出VPS控制权。"},
+				{Title: "带宽可控", Desc: "每条中转可以设置 1–10 Mbps 带宽，拥有者可以随时暂停、恢复或删除。"},
+			},
 		},
 		ShowLatest:   true,
 		LatestCount:  3,
 		ContactEmail: "admin@msboost.de",
+		Version:      homeConfigVersion,
 	}
+}
+
+// Values that version-1 defaults shipped with. A stored configuration that
+// still carries them was never customised there, so the upgrade replaces them.
+var (
+	legacyHomeTitleLine1 = "一键部署你的"
+	legacyHomeSubtitle   = "部署节点、配置中转、重装系统。\n把复杂的服务器操作，放进一个清晰的工作空间。"
+	legacyHomeFeatures   = []HomeFeature{
+		{Title: "一键部署 MSBOOST", Desc: "部署你的独立IP游戏节点"},
+		{Title: "一键配置中转服务器", Desc: "与朋友共享你的VPS线路，但不共享你的IP"},
+		{Title: "一键DD系统", Desc: "在线重装系统"},
+	}
+)
+
+// upgradeLegacyHome rewrites only the fields an administrator never changed.
+// The first two legacy cards also gain their section links even when their
+// description was customised; every other card is left as it was.
+func upgradeLegacyHome(c HomeConfig) HomeConfig {
+	current := defaultHomeConfig()
+	if c.TitleLine1 == legacyHomeTitleLine1 {
+		c.TitleLine1 = current.TitleLine1
+	}
+	if c.Subtitle == legacyHomeSubtitle {
+		c.Subtitle = current.Subtitle
+	}
+	features := make([]HomeFeature, len(c.Features))
+	for i, feature := range c.Features {
+		for j, legacy := range legacyHomeFeatures {
+			switch {
+			case feature.Title == legacy.Title && feature.Desc == legacy.Desc:
+				feature = current.Features[j]
+			case j < 2 && feature.Title == legacy.Title && feature.Target == "":
+				feature.Target = current.Features[j].Target
+			}
+		}
+		features[i] = feature
+	}
+	c.Features = features
+	return c
 }
 
 func defaultSEOConfig() SEOConfig {
@@ -190,11 +303,24 @@ func normalizeHome(in HomeConfig) (HomeConfig, error) {
 		if title == "" {
 			return out, errors.New("功能卡片需要标题")
 		}
-		out.Features = append(out.Features, HomeFeature{Title: title, Desc: desc})
+		target := strings.TrimSpace(feature.Target)
+		if target != "" && !homeSections[target] && !validSiteHref(target) {
+			return out, fmt.Errorf("功能卡片「%s」的跳转只能是 #msboost、#relay、#launcher、以 / 开头的站内路径或 https:// 链接", title)
+		}
+		out.Features = append(out.Features, HomeFeature{Title: title, Desc: desc, Target: target})
 	}
 	if len(out.Features) > 6 {
 		return out, errors.New("功能卡片最多 6 张")
 	}
+	out.ShowExplain = in.ShowExplain
+	out.ShowLauncher = in.ShowLauncher
+	if out.MSBOOST, err = normalizeHomeMSBOOST(in.MSBOOST); err != nil {
+		return out, err
+	}
+	if out.Relay, err = normalizeHomeRelay(in.Relay); err != nil {
+		return out, err
+	}
+	out.Version = homeConfigVersion
 	out.ShowLatest = in.ShowLatest
 	switch in.LatestCount {
 	case 0, 3:
@@ -221,6 +347,92 @@ func normalizeHome(in HomeConfig) (HomeConfig, error) {
 		if parseErr != nil || address.Address != out.ContactEmail {
 			return out, errors.New("联系邮箱无效")
 		}
+	}
+	return out, nil
+}
+
+// Homepage sections a feature card may scroll to.
+var homeSections = map[string]bool{"#msboost": true, "#relay": true, "#launcher": true}
+
+// homeItems validates diagram boxes (exactly count items) or points (one to
+// count items) of a homepage explanation.
+func homeItems(label string, in []HomeItem, count int, exact bool, descMax int) ([]HomeItem, error) {
+	out := []HomeItem{}
+	for _, item := range in {
+		title, err := siteText(label+"标题", item.Title, 20, false, false)
+		if err != nil {
+			return nil, err
+		}
+		desc, err := siteText(label+"说明", item.Desc, descMax, false, false)
+		if err != nil {
+			return nil, err
+		}
+		if title == "" && desc == "" {
+			continue
+		}
+		if title == "" {
+			return nil, fmt.Errorf("%s需要标题", label)
+		}
+		out = append(out, HomeItem{Title: title, Desc: desc})
+	}
+	if exact && len(out) != count {
+		return nil, fmt.Errorf("%s需要正好 %d 行", label, count)
+	}
+	if !exact && (len(out) == 0 || len(out) > count) {
+		return nil, fmt.Errorf("%s需要 1–%d 条", label, count)
+	}
+	return out, nil
+}
+
+func homeHeading(section string, eyebrow, title, lead string) (string, string, string, error) {
+	var err error
+	if eyebrow, err = siteText(section+"小标题", eyebrow, 20, false, false); err != nil {
+		return "", "", "", err
+	}
+	if title, err = siteText(section+"标题", title, 30, true, false); err != nil {
+		return "", "", "", err
+	}
+	if lead, err = siteText(section+"引言", lead, 300, false, true); err != nil {
+		return "", "", "", err
+	}
+	return eyebrow, title, lead, nil
+}
+
+func normalizeHomeMSBOOST(in HomeMSBOOST) (HomeMSBOOST, error) {
+	var out HomeMSBOOST
+	var err error
+	if out.Eyebrow, out.Title, out.Lead, err = homeHeading("MSBOOST 说明", in.Eyebrow, in.Title, in.Lead); err != nil {
+		return out, err
+	}
+	if out.Nodes, err = homeItems("MSBOOST 示意图", in.Nodes, 3, true, 40); err != nil {
+		return out, err
+	}
+	if out.Points, err = homeItems("MSBOOST 要点", in.Points, 3, false, 120); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func normalizeHomeRelay(in HomeRelay) (HomeRelay, error) {
+	var out HomeRelay
+	var err error
+	if out.Eyebrow, out.Title, out.Lead, err = homeHeading("中转说明", in.Eyebrow, in.Title, in.Lead); err != nil {
+		return out, err
+	}
+	if out.Direct, err = homeItems("直连示意图", in.Direct, 3, true, 40); err != nil {
+		return out, err
+	}
+	if out.Via, err = homeItems("经过中转示意图", in.Via, 4, true, 40); err != nil {
+		return out, err
+	}
+	if out.Myth, err = siteText("常见误解", in.Myth, 200, false, true); err != nil {
+		return out, err
+	}
+	if out.Truth, err = siteText("实际上", in.Truth, 200, false, true); err != nil {
+		return out, err
+	}
+	if out.Points, err = homeItems("中转要点", in.Points, 3, false, 120); err != nil {
+		return out, err
 	}
 	return out, nil
 }
@@ -272,8 +484,31 @@ func loadSiteSetting[T any](s *State, key string, fallback T, normalize func(T) 
 	return normalized
 }
 
+// A configuration saved before version 2 is upgraded on every read until an
+// administrator saves it again, which stores the current version.
 func loadHomeConfig(s *State) HomeConfig {
-	return loadSiteSetting(s, "homepage", defaultHomeConfig(), normalizeHome)
+	return loadSiteSetting(s, "homepage", defaultHomeConfig(), func(c HomeConfig) (HomeConfig, error) {
+		if storedHomeVersion(s) < homeConfigVersion {
+			c = upgradeLegacyHome(c)
+		}
+		return normalizeHome(c)
+	})
+}
+
+// Stored values are decoded over the current defaults, so the version has to
+// be read from the stored document itself.
+func storedHomeVersion(s *State) int {
+	encoded, err := json.Marshal(s.Settings["homepage"])
+	if err != nil {
+		return 0
+	}
+	var stored struct {
+		Version int `json:"version"`
+	}
+	if json.Unmarshal(encoded, &stored) != nil {
+		return 0
+	}
+	return stored.Version
 }
 
 func loadSEOConfig(s *State) SEOConfig {
@@ -312,6 +547,7 @@ type publicSiteInfo struct {
 type publicSnapshot struct {
 	home               HomeConfig
 	seo                SEOConfig
+	launcher           LauncherSettings
 	newsEnabled        bool
 	attachmentsEnabled bool
 	articles           []publicArticleSummary
@@ -340,6 +576,7 @@ func (a *App) publicSnapshot() (*publicSnapshot, error) {
 	err := a.Store.View(func(s *State) error {
 		snap.home = loadHomeConfig(s)
 		snap.seo = loadSEOConfig(s)
+		snap.launcher = loadLauncherSettings(s)
 		snap.newsEnabled = boolSetting(s, "publicArticles")
 		snap.attachmentsEnabled = boolSetting(s, "attachments")
 		if !snap.newsEnabled {
@@ -405,6 +642,7 @@ func articleExcerpt(body string, limit int) string {
 
 func (a *App) RegisterPublicSite(m *http.ServeMux) {
 	m.HandleFunc("GET /api/public/home", a.publicHome)
+	m.HandleFunc("GET /api/public/launcher", a.publicLauncher)
 	m.HandleFunc("GET /api/public/articles", a.publicArticles)
 	m.HandleFunc("GET /api/public/articles/{id}", a.publicArticle)
 	m.HandleFunc("GET /api/admin/site", a.adminSite)
@@ -433,7 +671,7 @@ func (a *App) publicHome(w http.ResponseWriter, r *http.Request) {
 	if snap.home.ShowLatest && snap.newsEnabled {
 		latest = snap.articles[:min(snap.home.LatestCount, len(snap.articles))]
 	}
-	WriteJSON(w, 200, map[string]any{"home": snap.home, "site": snap.site(), "newsEnabled": snap.newsEnabled, "articles": latest})
+	WriteJSON(w, 200, map[string]any{"home": snap.home, "site": snap.site(), "newsEnabled": snap.newsEnabled, "articles": latest, "launcher": snap.launcher})
 }
 
 func (a *App) publicArticles(w http.ResponseWriter, r *http.Request) {

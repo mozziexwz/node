@@ -2,10 +2,9 @@ import { useState } from "react";
 import {
   Server,
   Route,
-  RefreshCw,
   Check as CheckIcon,
   ArrowRight,
-  Download,
+  MonitorDown,
 } from "lucide-react";
 import { RecordData, post } from "./api";
 import { Captcha } from "./captcha";
@@ -19,7 +18,16 @@ import {
 import "./auth-extra.css";
 import { Agreements } from "./agreements";
 import { SiteSwitcher } from "./site-switcher";
-import { Brand, Maple, Field, Check, Button, Notice, AsyncForm } from "./ui";
+import {
+  Brand,
+  Maple,
+  Field,
+  Check,
+  Button,
+  Notice,
+  AsyncForm,
+  HeroTitle,
+} from "./ui";
 export function AuthPage({
   settings,
   onLogin,
@@ -78,12 +86,9 @@ export function AuthPage({
       <section className="hero">
         <div>
           <div className="eyebrow">SELF-HOSTED · MAPLESTORY</div>
-          <h1 className="v4-hero-title">
-            <span className="v4-hero-line">一键部署你的</span>
-            <span className="v4-hero-line orange">独立IP游戏节点</span>
-          </h1>
+          <HeroTitle first="一键部署你的MapleStory" second="独立IP游戏节点" />
           <p className="v4-hero-copy">
-            部署节点、配置中转、重装系统。
+            部署节点、配置中转、一键加速。
             <br />
             把复杂的服务器操作，放进一个清晰的工作空间。
           </p>
@@ -106,8 +111,8 @@ export function AuthPage({
             </div>
             <ArrowRight size={14} />
             <div>
-              <Download size={24} />
-              <strong>下载配置并启动</strong>
+              <MonitorDown size={24} />
+              <strong>下载启动器并导入配置</strong>
             </div>
           </div>
         </div>
@@ -322,13 +327,13 @@ export function AuthPage({
       <section className="public-tools">
         <div className="grid3">
           {[
-            [Server, "一键部署 MSBOOST", "部署你的独立IP游戏节点"],
+            [Server, "一键部署 MSBOOST", "部署你的VPS独立IP游戏节点"],
             [
               Route,
               "一键配置中转服务器",
-              "与朋友共享你的VPS线路，但不共享你的IP",
+              "与朋友共享你的VPS精品线路，但不共享你的IP",
             ],
-            [RefreshCw, "一键DD系统", "在线重装系统"],
+            [MonitorDown, "MSBOOST 启动器", "一键加速 MapleStory"],
           ].map(([Icon, title, sub]) => {
             const I = Icon as typeof Server;
             return (

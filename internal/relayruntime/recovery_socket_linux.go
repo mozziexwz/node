@@ -288,7 +288,7 @@ func RunV2RecoveryClient(ctx context.Context, dataDir, action, filePath string) 
 		if err := writeV2PrivateJSON(filePath, snapshot); err != nil {
 			return errors.New("Agent is frozen but snapshot output failed; retry the same snapshot destination")
 		}
-		_, err := fmt.Fprintln(os.Stdout, "受保护恢复快照已保存；原有转发保留，尚未信任新控制面。")
+		_, err := fmt.Fprintln(os.Stdout, "受保护恢复快照已保存；原有中转保留，尚未信任新控制面。")
 		return err
 	}
 	var plan V2RecoveryPlan

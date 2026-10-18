@@ -705,6 +705,7 @@ func filteredSettings(s *State, admin bool) map[string]any {
 	out["smtpReady"] = smtpReady(s)
 	out["relayCodes"] = publicRelayCodeSettings(relayCodeSettings(s))
 	if admin {
+		out["launcher"] = loadLauncherSettings(s)
 		out["relayCodes"] = relayCodeSettings(s)
 		out["disasterBackupEmailEnabled"] = boolSetting(s, "disasterBackupEmailEnabled")
 		c, _ := getSMTP(s)
@@ -791,6 +792,17 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 					s.Settings[key] = limits
+				case "launcher":
+					var value LauncherSettings
+					if json.Unmarshal(raw, &value) != nil {
+						return errors.New("启动器设置格式无效")
+					}
+					value, err := normalizeLauncher(value)
+					if err != nil {
+						return err
+					}
+					value.UpdatedAt = time.Now().UnixMilli()
+					s.Settings[key] = value
 				case "relayCodes":
 					before := relayCodeSettings(s)
 					value := before

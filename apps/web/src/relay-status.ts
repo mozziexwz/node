@@ -84,12 +84,12 @@ export function relayStatus(rule: RecordData, routeOnline?: boolean) {
             ? "节点已确认：面板离线时保留最后配置。"
             : "正在等待所有节点确认当前配置。",
     stopText: stopPending
-      ? "正在等待节点停止转发，确认后释放端口。节点离线时请先恢复管理连接。"
+      ? "正在等待节点停止中转，确认后释放端口。节点离线时请先恢复管理连接。"
       : stopConfirmed
         ? "当前停止请求已获节点确认；这是最后报告，不是实时业务探测。"
         : "",
     recoveryText: recovery
-      ? "网站恢复后需要重新连接节点。请在节点管理中打开“恢复管理连接”向导；原有转发会保留。"
+      ? "网站恢复后需要重新连接节点。请在节点管理中打开“恢复管理连接”向导；原有中转会保留。"
       : "",
     accountingText: rule.accountingDegraded
       ? "计量状态降级，流量需核对；不能据此判断业务已停止。"

@@ -142,7 +142,7 @@ func relayEnrollmentBlockReason(s *State, agent RelayAgent) string {
 	for _, rule := range rules {
 		for _, segment := range rule.Segments {
 			if segment.AgentID == agent.ID {
-				return "节点仍有用户转发，请先处理关联转发后再重新部署"
+				return "节点仍有用户中转，请先处理关联中转后再重新部署"
 			}
 		}
 	}

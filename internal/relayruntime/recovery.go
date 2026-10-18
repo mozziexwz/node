@@ -156,7 +156,7 @@ func (s *runtimeState) applyRecoveryPlan(ctx context.Context, plan V2RecoveryPla
 	digest := sha256.Sum256(raw)
 	planHash := hex.EncodeToString(digest[:])
 	result := func() V2RecoveryResult {
-		return V2RecoveryResult{RecoveryID: plan.RecoveryID, PlanID: plan.PlanID, PlanSequence: plan.PlanSequence, RecoveryRequired: s.v2.disk.RecoveryRequired, Message: "管理凭据已由本机 root 明确信任；转发未整体重启，仍等待逐规则停止/运行确认及控制面恢复核对"}
+		return V2RecoveryResult{RecoveryID: plan.RecoveryID, PlanID: plan.PlanID, PlanSequence: plan.PlanSequence, RecoveryRequired: s.v2.disk.RecoveryRequired, Message: "管理凭据已由本机 root 明确信任；中转未整体重启，仍等待逐规则停止/运行确认及控制面恢复核对"}
 	}
 	if plan.RecoveryID == checkpoint.RecoveryID && plan.PlanID == checkpoint.PlanID && plan.PlanSequence == checkpoint.PlanSequence && planHash == checkpoint.PlanHash {
 		return result(), nil

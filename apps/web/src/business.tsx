@@ -736,7 +736,7 @@ export function Routes({ user }: { user: RecordData }) {
               />
             )}
             <Notice tone="orange">
-              仅创建当前线路。有效期间可以再次下载配置。到期后本站申请停止转发，离线节点需等待重新连接后执行；自备前置机由你自行清理。
+              仅创建当前线路。有效期间可以再次下载配置。到期后本站申请停止中转，离线节点需等待重新连接后执行；自备前置机由你自行清理。
             </Notice>
           </AsyncForm>
         </Modal>

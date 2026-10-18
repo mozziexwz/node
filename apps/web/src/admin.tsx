@@ -10,6 +10,7 @@ import {
 import { RelayStatusDetail } from "./relay-status-view";
 import { SiteSettings } from "./site-settings";
 import { RelayCodeSettings } from "./relay-code";
+import { LauncherSettings, settingsTabKey } from "./launcher";
 import {
   Header,
   Button,
@@ -305,7 +306,7 @@ export function ResourcePage({ kind }: { kind: string }) {
   async function freshResetAgent(row: RecordData) {
     if (
       !confirm(
-        `全新重装“${row.name}”？仅在旧转发全部已明确停止、没有关联线路/用户中转时才会通过。成功后旧节点 ID 和管理凭据永久失效，并生成新 ID；原 VPS 的服务须在维护窗口使用新令牌重装，现有连接可能中断。`,
+        `全新重装“${row.name}”？仅在旧中转全部已明确停止、没有关联线路/用户中转时才会通过。成功后旧节点 ID 和管理凭据永久失效，并生成新 ID；原 VPS 的服务须在维护窗口使用新令牌重装，现有连接可能中断。`,
       )
     )
       return;
@@ -414,8 +415,8 @@ export function ResourcePage({ kind }: { kind: string }) {
                     if (
                       !confirm(
                         row.archived
-                          ? "恢复显示此节点？不会自动恢复管理凭据或启用转发。"
-                          : `封存“${row.name}”？管理凭据将失效，关联隧道停止接纳新配置。远端转发可能继续，端口和历史仍保留；这不是停止或删除。`,
+                          ? "恢复显示此节点？不会自动恢复管理凭据或启用中转。"
+                          : `封存“${row.name}”？管理凭据将失效，关联隧道停止接纳新配置。远端中转可能继续，端口和历史仍保留；这不是停止或删除。`,
                       )
                     )
                       return;
@@ -767,7 +768,7 @@ export function ResourcePage({ kind }: { kind: string }) {
               <pre className="code-panel mt16">msboost relay-reconnect</pre>
               <p>
                 按提示选择节点、输入节点 SSH
-                信息，并确认旧面板已停用。配置一致的转发可保留；有差异时向导会列出影响，再由你选择处理。
+                信息，并确认旧面板已停用。配置一致的中转可保留；有差异时向导会列出影响，再由你选择处理。
               </p>
             </>
           ) : (
@@ -803,14 +804,14 @@ export function ResourcePage({ kind }: { kind: string }) {
             </>
           )}
           <p className="mt16">
-            需要清除原配置重新部署时，先在下方处理关联线路和用户转发，再申请重新部署。
+            需要清除原配置重新部署时，先在下方处理关联线路和用户中转，再申请重新部署。
           </p>
           <p className="muted mt16">
-            重新部署会中断此节点现有连接。管理连接离线时，节点仍可能继续转发。
+            重新部署会中断此节点现有连接。管理连接离线时，节点仍可能继续中转。
           </p>
           <p className="mt16">
             确定不再使用本机节点？在该节点 VPS 的 root 终端运行以下卸载命令。
-            无需等待面板在线或转发停止确认，会中断全部现有连接并保留私有备份。
+            无需等待面板在线或中转停止确认，会中断全部现有连接并保留私有备份。
             卸载不会自动删除后台记录或释放预留端口，请另行处理关联业务。
           </p>
           <pre className="code-panel">
@@ -873,7 +874,7 @@ export function ResourcePage({ kind }: { kind: string }) {
           <p className="muted mt16">
             需要重新使用这台 VPS
             时，先完成清理，再新增节点并使用新节点令牌安装。
-            无需等待面板在线或转发终态。脚本会先停止整个节点服务，再备份清理；
+            无需等待面板在线或中转终态。脚本会先停止整个节点服务，再备份清理；
             仅目标身份不符、文件归属不明或进程无法停止时会中止，避免误删。
             旧备份和同机执行机保留；本次卸载备份路径会在终端显示。
           </p>
@@ -927,7 +928,7 @@ export function ResourcePage({ kind }: { kind: string }) {
           {kind === "agents" && (
             <>
               <p className="mt16">
-                已有节点全新重装（旧转发与现有连接将中断）：
+                已有节点全新重装（旧中转与现有连接将中断）：
               </p>
               <pre className="code-panel mt16">{relayFreshResetCommand}</pre>
               <Button
@@ -1275,7 +1276,7 @@ const featureNames: Record<string, string> = {
   deploy: "部署 MSBOOST",
   relay: "自备中转配置",
   dd: "DD 系统",
-  paidCreate: "新增捐赠权益转发",
+  paidCreate: "新增捐赠权益中转",
   planSale: "权益兑换",
   cards: "兑换码兑换",
   paywx: "微信支付",
@@ -1291,7 +1292,16 @@ const featureNames: Record<string, string> = {
 };
 export function Settings({ onRefresh }: { onRefresh: () => void }) {
   const { data, error, loading, reload } = useData("/api/admin/settings");
-  const [tab, setTab] = useState("features"),
+  const [tab, setTab] = useState(() => {
+      // A link such as the launcher page's "去系统设置填写" picks the tab once.
+      try {
+        const requested = sessionStorage.getItem(settingsTabKey);
+        sessionStorage.removeItem(settingsTabKey);
+        return requested || "features";
+      } catch {
+        return "features";
+      }
+    }),
     [values, setValues] = useState<RecordData>({});
   const [loadedSettings, setLoadedSettings] = useState<RecordData | null>(null);
   // Reload deliberately removes the editable form. Keep the completed write's
@@ -1357,6 +1367,7 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           ["limits", "操作限额"],
           ["site", "主页与 SEO"],
           ["relayCodes", "中转码"],
+          ["launcher", "MSBOOST 启动器"],
         ].map(([k, t]) => (
           <button
             className={tab === k ? "active" : ""}
@@ -1375,6 +1386,8 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           <SiteSettings onSaved={() => settingsSaved(false)} />
         ) : tab === "relayCodes" ? (
           <RelayCodeSettings onSaved={onRefresh} />
+        ) : tab === "launcher" ? (
+          <LauncherSettings onSaved={onRefresh} />
         ) : tab === "captcha" ? (
           <AsyncForm
             onSubmit={async (f) => {
@@ -1646,7 +1659,7 @@ export function AdminRules() {
       !confirm(
         action === "delete"
           ? `请求撤销 ${r.userEmail || r.userId} 在 ${r.routeName} 的中转并删除服务器配置？等待节点确认停止后才会释放端口及旧目标；节点离线时保留待处理状态。`
-          : `${action === "pause" ? "暂停" : "恢复"} ${r.userEmail || r.userId} 在 ${r.routeName} 的转发？`,
+          : `${action === "pause" ? "暂停" : "恢复"} ${r.userEmail || r.userId} 在 ${r.routeName} 的中转？`,
       )
     )
       return;

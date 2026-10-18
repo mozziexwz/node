@@ -264,7 +264,7 @@ test(
               ).toBeVisible();
               await expect(
                 page.getByRole("heading", { level: 1 }).locator("span"),
-              ).toHaveText(["一键部署你的", "独立IP游戏节点"]);
+              ).toHaveText(["一键部署你的MapleStory", "独立IP游戏节点"]);
             }
             assert.deepEqual(errors, []);
           } finally {

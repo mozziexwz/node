@@ -229,9 +229,6 @@
 .news-body {
   padding: 30px 34px;
 }
-.news-body .markdown {
-  font-size: 14.5px;
-}
 .news-body .markdown > :first-child {
   margin-top: 0;
 }
@@ -293,5 +290,285 @@
   .news-cta {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+/* Homepage: clickable cards, MSBOOST and relay explanations, launcher section. */
+.public-hero .v4-hero-copy {
+  font-size: 14px;
+}
+.public-hero .hero-points {
+  font-size: 12px;
+}
+.public-steps .hero-steps > a.step-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 104px;
+  padding: 16px 8px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  box-shadow: var(--shadow);
+  background: #fff;
+  text-align: center;
+  color: inherit;
+  transition:
+    border-color 0.16s,
+    transform 0.16s;
+}
+.public-steps .hero-steps > a.step-link:hover {
+  border-color: #efb898;
+  transform: translateY(-2px);
+}
+.tool-card.is-link {
+  color: inherit;
+  cursor: pointer;
+}
+.tool-card.is-link:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 3px;
+}
+.card-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--orange-dark);
+}
+.home-explain {
+  padding: 44px 0 6px;
+  border-top: 1px solid var(--line);
+  scroll-margin-top: 110px;
+}
+.explain-head {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.explain-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  background: var(--pale);
+  color: var(--orange);
+  flex-shrink: 0;
+}
+.explain-head .eyebrow {
+  margin-bottom: 3px;
+}
+.explain-head h2 {
+  font-size: 25px;
+  letter-spacing: -0.4px;
+  line-height: 1.35;
+}
+.explain-lead {
+  font-size: 15px;
+  line-height: 1.95;
+  color: #4a4540;
+  max-width: 880px;
+}
+.explain-lead b {
+  color: var(--ink);
+}
+.explain-points {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 20px;
+}
+.explain-point {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+.explain-point > svg {
+  color: var(--orange);
+}
+.explain-point h3 {
+  font-size: 15px;
+  margin: 10px 0 6px;
+}
+.explain-point p {
+  font-size: 13px;
+  color: var(--sub);
+  line-height: 1.85;
+}
+.explain-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 22px 0 20px;
+}
+.route-map {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+}
+.route-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+.route-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--sub);
+}
+.route-flow {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+.route-node {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 10px;
+  text-align: center;
+  background: #fdfcfb;
+}
+.route-node svg {
+  color: var(--sub);
+}
+.route-node strong {
+  display: block;
+  font-size: 13px;
+  margin-top: 6px;
+}
+.route-node small {
+  display: block;
+  font-size: 11px;
+  color: var(--sub);
+  margin-top: 2px;
+  line-height: 1.55;
+}
+.route-node.relay {
+  border-color: #f2c7ab;
+  background: var(--pale);
+}
+.route-node.relay svg,
+.route-node.relay small {
+  color: var(--orange-dark);
+}
+.route-node.exit {
+  border-color: #bfe0c9;
+  background: #f3f8f4;
+}
+.route-node.exit svg,
+.route-node.exit small {
+  color: var(--green);
+}
+.route-arrow {
+  display: flex;
+  align-items: center;
+  color: #c9c2ba;
+  flex-shrink: 0;
+}
+.myth {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 14px;
+}
+.myth-card {
+  border-radius: 14px;
+  padding: 15px 18px;
+  font-size: 13px;
+  line-height: 1.9;
+}
+.myth-card.is-wrong {
+  background: #fbf4f3;
+  border: 1px solid #efd3cf;
+  color: #7d3a33;
+}
+.myth-card.is-right {
+  background: #f3f8f4;
+  border: 1px solid #d5e5d7;
+  color: #1f5a39;
+}
+.myth-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.home-launcher .launcher-steps {
+  margin-top: 16px;
+}
+.home-launcher .tip-list {
+  margin: 16px 0 20px;
+  grid-template-columns: 1fr 1fr;
+}
+.notes-details {
+  margin-top: 14px;
+  font-size: 13px;
+}
+.notes-details summary {
+  cursor: pointer;
+  color: var(--orange-dark);
+  font-weight: 600;
+}
+.notes-details .launcher-notes {
+  margin-top: 8px;
+}
+.home-explain + .public-latest {
+  margin-top: 34px;
+}
+@media (max-width: 850px) {
+  .explain-points,
+  .myth,
+  .home-launcher .tip-list {
+    grid-template-columns: 1fr;
+  }
+  .route-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .route-flow {
+    flex-direction: column;
+  }
+  .route-arrow {
+    justify-content: center;
+    transform: rotate(90deg);
+    height: 16px;
+  }
+}
+@media (max-width: 760px) {
+  .home-explain {
+    scroll-margin-top: 85px;
+  }
+  .public-steps .hero-steps > a.step-link {
+    min-height: 86px;
+    gap: 8px;
+    padding: 12px 3px;
+  }
+}
+@media (max-width: 480px) {
+  .explain-actions .btn {
+    flex: 1;
+  }
+  .explain-head h2 {
+    font-size: 21px;
+  }
+  .explain-lead {
+    font-size: 14px;
   }
 }

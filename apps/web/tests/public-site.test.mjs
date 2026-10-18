@@ -25,7 +25,19 @@ const articles = [
   { id: "guide", title: "部署教程", category: "教程", summary: "教程摘要", pinned: false, createdAt: 1759000000000, updatedAt: 1759500000000, attachmentCount: 1 },
 ];
 
-async function publicBrowser(run, { enabled = true, viewport = { width: 1440, height: 1000 } } = {}) {
+const published = {
+  version: "v1.0.2",
+  releasedAt: "2026-10-17",
+  downloadUrl: "https://file.msboost.de/#/?code=AbC123",
+  backupUrl: "https://file.msboost.de/#/?code=Backup",
+  sha256: "ab".repeat(32),
+  notes: ["- 修复启动问题", "- 补充日志"].join("\n"),
+  updatedAt: 1760000000000,
+};
+
+// realHome serves the isolated server's own default home page, with the
+// fixture articles and, when given, a published launcher.
+async function publicBrowser(run, { enabled = true, viewport = { width: 1440, height: 1000 }, realHome = false, launcher } = {}) {
   const base = process.env.MSBOOST_TEST_URL || "http://127.0.0.1:8080";
   assert.match(base, /^http:\/\/(127\.0\.0\.1|localhost):\d+$/);
   const browser = await chromium.launch({
@@ -45,6 +57,11 @@ async function publicBrowser(run, { enabled = true, viewport = { width: 1440, he
       return route.abort();
     }
     if (!url.pathname.startsWith("/api/")) return route.continue();
+    if (url.pathname === "/api/public/home" && realHome) {
+      const response = await route.fetch();
+      const json = await response.json();
+      return route.fulfill({ response, json: { ...json, articles, ...(launcher ? { launcher } : {}) } });
+    }
     if (url.pathname === "/api/public/home")
       return route.fulfill({ json: { home, site, newsEnabled: enabled, articles: enabled ? articles : [] } });
     if (url.pathname === "/api/public/articles")
@@ -153,4 +170,67 @@ test("public pages have no horizontal overflow from 320px to desktop", { timeout
       { viewport: { width, height: 900 } },
     );
   }
+});
+
+test("home explains MSBOOST and relay servers, cards scroll to them and articles come last", { timeout: 30000 }, async () => {
+  await publicBrowser(
+    async ({ page }) => {
+      await page.goto("/home");
+      await expect(page.getByRole("heading", { level: 1 }).locator(":scope > span")).toHaveText(["一键部署你的MapleStory", "独立IP游戏节点"]);
+      await expect(page.locator(".v4-hero-copy")).toContainText("部署节点、配置中转、一键加速。");
+      const cards = page.locator(".public-tools .tool-card");
+      await expect(cards.locator("h3")).toHaveText(["一键部署 MSBOOST", "一键配置中转服务器", "MSBOOST 启动器"]);
+      await expect(cards.locator("p")).toHaveText(["部署你的VPS独立IP游戏节点", "与朋友共享你的VPS精品线路，但不共享你的IP", "一键加速 MapleStory"]);
+      await expect(cards.locator(".card-jump")).toHaveText(["了解 MSBOOST", "了解中转服务器", "了解 MSBOOST 启动器"]);
+      const order = await page.evaluate(() =>
+        [...["msboost", "relay", "launcher"].map((id) => document.getElementById(id)), document.querySelector(".public-latest")].map((section) => (section ? section.getBoundingClientRect().top + scrollY : null)),
+      );
+      assert.ok(order.every((top, i) => top !== null && (i === 0 || top > order[i - 1])), `sections in order, latest articles last: ${order}`);
+      for (const [card, id] of [[1, "relay"], [0, "msboost"], [2, "launcher"]]) {
+        await cards.nth(card).click();
+        await expect(page).toHaveURL(new RegExp(`/home#${id}$`));
+        await expect
+          .poll(() => page.evaluate((id) => { const top = document.getElementById(id).getBoundingClientRect().top; return top >= 0 && top < innerHeight / 2; }, id))
+          .toBe(true);
+      }
+      const msboost = page.locator("#msboost");
+      await expect(msboost.getByRole("heading", { level: 2 })).toHaveText("什么是 MSBOOST？");
+      await expect(msboost.locator(".route-node.exit")).toContainText("游戏出口：你自己的VPS · IP");
+      await expect(msboost.getByRole("link", { name: "去部署 MSBOOST" })).toHaveAttribute("href", "/#deploy");
+      const relay = page.locator("#relay");
+      await expect(relay.locator(".route-node.relay")).toContainText("自己或朋友分享的精品线路中转");
+      await expect(relay.locator(".myth-card.is-wrong")).toContainText("就是在用朋友的 IP 玩游戏");
+      await expect(relay.locator(".myth-card.is-right b")).toHaveText("分享的是精品线路，不是 IP。");
+      await expect(relay.getByRole("link", { name: "去配置中转服务器" })).toHaveAttribute("href", "/#relay");
+      // Not yet published: the section stays and says so.
+      await expect(page.locator("#launcher")).toContainText("启动器下载地址尚未发布");
+      assert.doesNotMatch(await page.locator("body").innerText(), /冒险岛|转发|github/i);
+    },
+    { realHome: true },
+  );
+});
+
+test("a shared /home#relay link opens at its section and a published launcher offers its download", { timeout: 30000 }, async () => {
+  await publicBrowser(
+    async ({ page }) => {
+      await page.goto("/home#relay");
+      await expect
+        .poll(() => page.evaluate(() => Math.round(document.getElementById("relay")?.getBoundingClientRect().top ?? 9999)))
+        .toBeLessThan(140);
+      const section = page.locator("#launcher");
+      const download = section.getByRole("link", { name: "下载 v1.0.2" });
+      await expect(download).toHaveAttribute("href", published.downloadUrl);
+      await expect(download).toHaveAttribute("target", "_blank");
+      await expect(download).toHaveAttribute("rel", "noopener noreferrer");
+      await expect(section.getByRole("link", { name: "备用下载" })).toHaveAttribute("href", published.backupUrl);
+      await expect(section).toContainText("将在新窗口打开 file.msboost.de");
+      await expect(section).toContainText("更新于 2026-10-17");
+      await expect(section.locator(".hash-row code")).toHaveText(published.sha256);
+      await section.locator(".notes-details summary").click();
+      await expect(section.locator(".notes-details li")).toHaveText(["修复启动问题", "补充日志"]);
+      await page.setViewportSize({ width: 375, height: 812 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "no horizontal overflow on a phone");
+    },
+    { realHome: true, launcher: published },
+  );
 });

@@ -785,7 +785,7 @@ func (b *BackupService) preflight(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hash := sha256.Sum256(raw)
-	WriteJSON(w, 200, map[string]any{"valid": true, "mode": "safe", "sha256": hex.EncodeToString(hash[:]), "users": len(s.Users), "collections": len(s.Docs), "report": report, "message": "安全恢复只替换站点设置、文章附件、线路和节点定义；保留当前用户、身份关系、财务、流量及用户转发关联。恢复后保持维护、暂停线路并撤销会话和Agent凭据。"})
+	WriteJSON(w, 200, map[string]any{"valid": true, "mode": "safe", "sha256": hex.EncodeToString(hash[:]), "users": len(s.Users), "collections": len(s.Docs), "report": report, "message": "安全恢复只替换站点设置、文章附件、线路和节点定义；保留当前用户、身份关系、财务、流量及用户中转关联。恢复后保持维护、暂停线路并撤销会话和Agent凭据。"})
 }
 func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 	if !b.admin(w, r) {
@@ -847,9 +847,9 @@ func (b *BackupService) restore(w http.ResponseWriter, r *http.Request) {
 	}
 	// Restored articles and site settings replace the cached public pages now.
 	b.app.invalidatePublic()
-	message := "安全恢复完成；当前用户、财务、流量与转发关联已保留。请重新登录并重新关联Agent，核对线路后解除维护。恢复前的私有回滚副本已保护，不会自动清理。"
+	message := "安全恢复完成；当前用户、财务、流量与中转关联已保留。请重新登录并重新关联Agent，核对线路后解除维护。恢复前的私有回滚副本已保护，不会自动清理。"
 	if recoveryRequired {
-		message = "数据安全恢复完成，节点需恢复管理连接。旧节点可能仍在转发，请保持维护，在面板服务器运行 msboost relay-reconnect，按向导选择节点并核对。配置一致的转发可保留；配置不一致或记录不完整时，向导会列出影响，再由你确认中断或重新部署。不要直接释放端口或重复安装。恢复前的私有回滚副本已保护。"
+		message = "数据安全恢复完成，节点需恢复管理连接。旧节点可能仍在中转，请保持维护，在面板服务器运行 msboost relay-reconnect，按向导选择节点并核对。配置一致的中转可保留；配置不一致或记录不完整时，向导会列出影响，再由你确认中断或重新部署。不要直接释放端口或重复安装。恢复前的私有回滚副本已保护。"
 	}
 	WriteJSON(w, 200, map[string]any{"ok": true, "mode": "safe", "rollbackId": rollback.ID, "recoveryRequired": recoveryRequired, "message": message})
 }

@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { X, Info, LoaderCircle } from "lucide-react";
 import DOMPurify from "dompurify";
-import { marked } from "marked";
+import { renderMarkdown } from "./markdown";
 import { api, RecordData } from "./api";
 export const money = (n: number = 0) => (n / 100).toFixed(2);
 export const leaves = (cents: number = 0) =>
@@ -118,6 +118,55 @@ export function Check({
     </label>
   );
 }
+// The orange second line keeps the full hero size. A longer first line is
+// scaled down to the second line's rendered width, so the title never overhangs
+// whatever text the administrator chooses.
+export function HeroTitle({
+  first,
+  second,
+}: {
+  first: string;
+  second?: string;
+}) {
+  const firstLine = useRef<HTMLSpanElement>(null),
+    secondLine = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    let live = true;
+    const width = (element: HTMLElement) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return range.getBoundingClientRect().width;
+    };
+    const balance = () => {
+      const top = firstLine.current,
+        bottom = secondLine.current;
+      if (!live || !top) return;
+      top.style.fontSize = "";
+      if (!bottom) return;
+      const topWidth = width(top),
+        bottomWidth = width(bottom);
+      if (topWidth > bottomWidth && topWidth > 0)
+        top.style.fontSize = `${Math.max(0.5, bottomWidth / topWidth).toFixed(3)}em`;
+    };
+    balance();
+    document.fonts?.ready.then(balance).catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [first, second]);
+  return (
+    <h1 className="v4-hero-title">
+      <span className="v4-hero-line" ref={firstLine}>
+        {first}
+      </span>
+      {second && (
+        <span className="v4-hero-line orange" ref={secondLine}>
+          {second}
+        </span>
+      )}
+    </h1>
+  );
+}
 export function Header({
   title,
   sub,
@@ -194,19 +243,35 @@ export function Table({
     </div>
   );
 }
+// Links to other sites open in a new tab; images load when scrolled to.
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  const el = node as Element;
+  if (el.nodeName === "A") {
+    const href = el.getAttribute("href") || "";
+    let external = false;
+    try {
+      const url = new URL(href, location.href);
+      external = /^https?:$/.test(url.protocol) && url.host !== location.host;
+    } catch {
+      // Unparseable links stay as written.
+    }
+    if (external) {
+      el.setAttribute("target", "_blank");
+      el.setAttribute("rel", "noopener noreferrer");
+    } else el.removeAttribute("target");
+  }
+  if (el.nodeName === "IMG") el.setAttribute("loading", "lazy");
+});
 export function Markdown({ text }: { text: string }) {
   return (
     <div
       className="markdown"
       dangerouslySetInnerHTML={{
-        __html: DOMPurify.sanitize(
-          marked.parse(text || "", { async: false }) as string,
-          {
-            FORBID_TAGS: ["style", "iframe", "form", "input", "svg"],
-            FORBID_ATTR: ["style"],
-            ADD_ATTR: ["rel"],
-          },
-        ),
+        __html: DOMPurify.sanitize(renderMarkdown(text), {
+          FORBID_TAGS: ["style", "iframe", "form", "input", "svg"],
+          FORBID_ATTR: ["style"],
+          ADD_ATTR: ["rel"],
+        }),
       }}
     />
   );

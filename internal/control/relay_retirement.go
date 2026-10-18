@@ -24,7 +24,7 @@ type relayAgentRetirement struct {
 	DegradedReviewDigest string         `json:"degradedReviewDigest,omitempty"`
 }
 
-var errRelayRetirement = errors.New("尚未确认此节点的全部转发已停止，或记录需要核查；请先处理关联隧道与用户中转，再检查管理连接。节点和端口仍保留")
+var errRelayRetirement = errors.New("尚未确认此节点的全部中转已停止，或记录需要核查；请先处理关联隧道与用户中转，再检查管理连接。节点和端口仍保留")
 
 func relayRetirementReconciled(value string) bool { return value == "" || value == "in_sync" }
 

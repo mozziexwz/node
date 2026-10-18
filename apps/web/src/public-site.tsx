@@ -1,16 +1,24 @@
 import React, { useEffect, useState } from "react";
 import {
+  ArrowDown,
   ArrowLeft,
   ArrowRight,
   BookOpen,
   Check as CheckIcon,
+  CircleCheck,
+  CircleX,
   Download,
+  Gamepad2,
+  Gauge,
+  Laptop,
+  Lock,
   Megaphone,
+  MonitorDown,
   Paperclip,
   Pin,
-  RefreshCw,
   Route,
   Server,
+  Share2,
   ShieldCheck,
 } from "lucide-react";
 import { array, downloadFile, RecordData } from "./api";
@@ -20,11 +28,19 @@ import {
   Button,
   Empty,
   ErrorNotice,
+  HeroTitle,
   Loading,
   Maple,
   Markdown,
   useData,
 } from "./ui";
+import {
+  Launcher,
+  LauncherDownload,
+  LauncherNotes,
+  LauncherSteps,
+  LauncherTips,
+} from "./launcher";
 import { Agreements } from "./agreements";
 import { SiteSwitcher } from "./site-switcher";
 import "./public-site.css";
@@ -164,14 +180,269 @@ export default function PublicSite() {
   );
 }
 
+// Card targets that scroll to a section of this page.
+const homeSections = new Set(["msboost", "relay", "launcher"]);
+const sectionIcons: Record<string, typeof Server> = {
+  "#msboost": Server,
+  "#relay": Route,
+  "#launcher": MonitorDown,
+};
 const featureIcons = [
   Server,
   Route,
-  RefreshCw,
+  MonitorDown,
   ShieldCheck,
   BookOpen,
   Download,
 ];
+const jumpLabels: Record<string, string> = {
+  "#msboost": "了解 MSBOOST",
+  "#relay": "了解中转服务器",
+  "#launcher": "了解 MSBOOST 启动器",
+};
+
+// Sections declare a scroll margin for the sticky header; the address keeps
+// the anchor so a shared link opens at the same place.
+function scrollToSection(id: string, event?: React.MouseEvent) {
+  const section = document.getElementById(id);
+  if (!section) return;
+  event?.preventDefault();
+  section.scrollIntoView({ behavior: "smooth", block: "start" });
+  history.replaceState(
+    history.state,
+    "",
+    `${location.pathname}${location.search}#${id}`,
+  );
+}
+
+// Explanation texts may use **bold** and line breaks; everything else is text.
+function rich(text = "") {
+  return text.split("\n").map((line, i) => (
+    <React.Fragment key={i}>
+      {i > 0 && <br />}
+      {line
+        .split(/\*\*(.+?)\*\*/g)
+        .map((part, j) => (j % 2 ? <b key={j}>{part}</b> : part))}
+    </React.Fragment>
+  ));
+}
+
+type HomeItem = { title: string; desc?: string };
+const routeIcons: Record<string, typeof Server> = {
+  computer: Laptop,
+  relay: Route,
+  exit: Server,
+  game: Gamepad2,
+};
+
+function RouteFlow({
+  label,
+  nodes,
+  kinds,
+}: {
+  label: string;
+  nodes: HomeItem[];
+  kinds: string[];
+}) {
+  return (
+    <div className="route-row">
+      <span className="route-label">{label}</span>
+      <div className="route-flow">
+        {nodes.map((node, i) => {
+          const kind = kinds[i] || "game",
+            Icon = routeIcons[kind];
+          return (
+            <React.Fragment key={i}>
+              {i > 0 && (
+                <span className="route-arrow" aria-hidden="true">
+                  <ArrowRight size={16} />
+                </span>
+              )}
+              <div
+                className={`route-node ${kind === "relay" || kind === "exit" ? kind : ""}`}
+              >
+                <Icon size={20} aria-hidden="true" />
+                <strong>{node.title}</strong>
+                {node.desc && <small>{node.desc}</small>}
+              </div>
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ExplainHead({
+  icon: Icon,
+  eyebrow,
+  title,
+}: {
+  icon: typeof Server;
+  eyebrow?: string;
+  title: string;
+}) {
+  return (
+    <div className="explain-head">
+      <span className="explain-icon">
+        <Icon size={22} aria-hidden="true" />
+      </span>
+      <div>
+        {eyebrow && <div className="eyebrow">{eyebrow}</div>}
+        <h2>{title}</h2>
+      </div>
+    </div>
+  );
+}
+
+function ExplainPoints({
+  points,
+  icons,
+}: {
+  points: HomeItem[];
+  icons: (typeof Server)[];
+}) {
+  return (
+    <div className="explain-points">
+      {points.map((point, i) => {
+        const Icon = icons[i % icons.length];
+        return (
+          <div className="explain-point" key={i}>
+            <Icon size={20} aria-hidden="true" />
+            <h3>{point.title}</h3>
+            {point.desc && <p>{point.desc}</p>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MSBOOSTSection({
+  msboost,
+  launcher,
+}: {
+  msboost: RecordData;
+  launcher: boolean;
+}) {
+  return (
+    <section className="home-explain" id="msboost">
+      <ExplainHead
+        icon={Server}
+        eyebrow={msboost.eyebrow}
+        title={msboost.title}
+      />
+      {msboost.lead && <p className="explain-lead">{rich(msboost.lead)}</p>}
+      <div className="route-map">
+        <RouteFlow
+          label="连接方式"
+          nodes={msboost.nodes || []}
+          kinds={["computer", "exit", "game"]}
+        />
+      </div>
+      <ExplainPoints
+        points={msboost.points || []}
+        icons={[ShieldCheck, Server, MonitorDown]}
+      />
+      <div className="explain-actions">
+        <a className="btn primary" href="/#deploy">
+          去部署 MSBOOST
+          <ArrowRight size={15} aria-hidden="true" />
+        </a>
+        {launcher && (
+          <a
+            className="btn"
+            href="#launcher"
+            onClick={(event) => scrollToSection("launcher", event)}
+          >
+            下载启动器
+            <ArrowDown size={15} aria-hidden="true" />
+          </a>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function RelaySection({ relay }: { relay: RecordData }) {
+  return (
+    <section className="home-explain" id="relay">
+      <ExplainHead icon={Route} eyebrow={relay.eyebrow} title={relay.title} />
+      {relay.lead && <p className="explain-lead">{rich(relay.lead)}</p>}
+      <div className="route-map">
+        <RouteFlow
+          label="直连"
+          nodes={relay.direct || []}
+          kinds={["computer", "exit", "game"]}
+        />
+        <RouteFlow
+          label="经过中转"
+          nodes={relay.via || []}
+          kinds={["computer", "relay", "exit", "game"]}
+        />
+      </div>
+      {(relay.myth || relay.truth) && (
+        <div className="myth">
+          {relay.myth && (
+            <div className="myth-card is-wrong">
+              <h3>
+                <CircleX size={16} aria-hidden="true" />
+                常见误解
+              </h3>
+              {rich(relay.myth)}
+            </div>
+          )}
+          {relay.truth && (
+            <div className="myth-card is-right">
+              <h3>
+                <CircleCheck size={16} aria-hidden="true" />
+                实际上
+              </h3>
+              {rich(relay.truth)}
+            </div>
+          )}
+        </div>
+      )}
+      <ExplainPoints
+        points={relay.points || []}
+        icons={[Lock, Share2, Gauge]}
+      />
+      <div className="explain-actions">
+        <a className="btn primary" href="/#relay">
+          去配置中转服务器
+          <ArrowRight size={15} aria-hidden="true" />
+        </a>
+      </div>
+    </section>
+  );
+}
+
+function LauncherSection({ launcher }: { launcher?: Launcher }) {
+  return (
+    <section className="home-explain home-launcher" id="launcher">
+      <ExplainHead
+        icon={MonitorDown}
+        eyebrow="MSBOOST 启动器"
+        title="下载 MSBOOST 启动器"
+      />
+      <p className="explain-lead">
+        导入部署或中转得到的配置文件，一键加速
+        MapleStory。只代理游戏相关进程，其他软件照常直连。
+      </p>
+      <div className="mt16">
+        <LauncherDownload launcher={launcher} heading="h3" />
+      </div>
+      {launcher?.downloadUrl && launcher.notes && (
+        <details className="notes-details">
+          <summary>{launcher.version} 更新内容</summary>
+          <LauncherNotes launcher={launcher} />
+        </details>
+      )}
+      <LauncherSteps />
+      <LauncherTips />
+    </section>
+  );
+}
 
 function HomePage({
   data,
@@ -185,11 +456,28 @@ function HomePage({
   go: Go;
 }) {
   useTitle(data?.site?.homeTitle);
+  const ready = !!data;
+  // A shared /home#relay link lands on its section once the page is built.
+  useEffect(() => {
+    const id = location.hash.slice(1);
+    if (ready && homeSections.has(id))
+      requestAnimationFrame(() =>
+        document.getElementById(id)?.scrollIntoView(),
+      );
+  }, [ready]);
   if (!data) return loading ? <Loading /> : <ErrorNotice error={error} />;
   const home = data.home || {},
     articles = array(data, "articles"),
+    launcher: Launcher | undefined = data.launcher,
     features: RecordData[] = home.features || [],
-    points: string[] = home.points || [];
+    points: string[] = home.points || [],
+    msboost: RecordData = home.msboost || {},
+    relay: RecordData = home.relay || {};
+  const shown: Record<string, boolean> = {
+    "#msboost": !!home.showExplain && !!msboost.title,
+    "#relay": !!home.showExplain && !!relay.title,
+    "#launcher": !!home.showLauncher,
+  };
   return (
     <>
       {home.notice && (
@@ -207,12 +495,7 @@ function HomePage({
       <section className="hero public-hero">
         <div>
           {home.eyebrow && <div className="eyebrow">{home.eyebrow}</div>}
-          <h1 className="v4-hero-title">
-            <span className="v4-hero-line">{home.titleLine1}</span>
-            {home.titleLine2 && (
-              <span className="v4-hero-line orange">{home.titleLine2}</span>
-            )}
-          </h1>
+          <HeroTitle first={home.titleLine1} second={home.titleLine2} />
           {home.subtitle && (
             <p className="v4-hero-copy">
               {String(home.subtitle)
@@ -272,10 +555,21 @@ function HomePage({
               <strong>部署 MSBOOST</strong>
             </div>
             <ArrowRight size={14} />
-            <div>
-              <Download size={24} />
-              <strong>下载配置并启动</strong>
-            </div>
+            {shown["#launcher"] ? (
+              <a
+                className="step-link"
+                href="#launcher"
+                onClick={(event) => scrollToSection("launcher", event)}
+              >
+                <MonitorDown size={24} />
+                <strong>下载启动器并导入配置</strong>
+              </a>
+            ) : (
+              <div>
+                <MonitorDown size={24} />
+                <strong>下载启动器并导入配置</strong>
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -283,22 +577,69 @@ function HomePage({
         <section className="public-tools">
           <div className="grid3">
             {features.map((feature, i) => {
-              const Icon = featureIcons[i % featureIcons.length];
-              return (
-                <div className="card tool-card" key={i}>
-                  <span className="tool-icon">
-                    <Icon size={22} />
-                  </span>
-                  <div>
-                    <h3>{feature.title}</h3>
-                    {feature.desc && <p>{feature.desc}</p>}
+              const target: string = feature.target || "",
+                section = target.startsWith("#") ? target.slice(1) : "",
+                Icon =
+                  sectionIcons[target] || featureIcons[i % featureIcons.length],
+                clickable = section ? !!shown[target] : !!target,
+                body = (
+                  <>
+                    <span className="tool-icon">
+                      <Icon size={22} />
+                    </span>
+                    <div>
+                      <h3>{feature.title}</h3>
+                      {feature.desc && <p>{feature.desc}</p>}
+                      {clickable && (
+                        <span className="card-jump">
+                          {jumpLabels[target] || "了解更多"}
+                          {section ? (
+                            <ArrowDown size={13} aria-hidden="true" />
+                          ) : (
+                            <ArrowRight size={13} aria-hidden="true" />
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                );
+              if (!clickable)
+                return (
+                  <div className="card tool-card" key={i}>
+                    {body}
                   </div>
-                </div>
+                );
+              if (section)
+                return (
+                  <a
+                    className="card tool-card is-link"
+                    key={i}
+                    href={target}
+                    onClick={(event) => scrollToSection(section, event)}
+                  >
+                    {body}
+                  </a>
+                );
+              return (
+                <PublicLink
+                  className="card tool-card is-link"
+                  key={i}
+                  href={target}
+                  go={go}
+                  target={target.startsWith("https://") ? "_blank" : undefined}
+                >
+                  {body}
+                </PublicLink>
               );
             })}
           </div>
         </section>
       )}
+      {shown["#msboost"] && (
+        <MSBOOSTSection msboost={msboost} launcher={shown["#launcher"]} />
+      )}
+      {shown["#relay"] && <RelaySection relay={relay} />}
+      {shown["#launcher"] && <LauncherSection launcher={launcher} />}
       {articles.length > 0 && (
         <section className="public-latest" aria-labelledby="latest-heading">
           <div className="between">

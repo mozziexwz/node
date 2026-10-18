@@ -715,15 +715,15 @@ func (a *App) relayAgents(w http.ResponseWriter, r *http.Request) {
 			lifecycle, hint := "待安装", "使用安装令牌在此节点 VPS 完成安装。"
 			switch {
 			case agent.Archived:
-				lifecycle, hint = "已封存", "管理凭据已撤销，但远端转发可能继续；占用和业务记录仍保留。恢复显示后可重新关联。"
+				lifecycle, hint = "已封存", "管理凭据已撤销，但远端中转可能继续；占用和业务记录仍保留。恢复显示后可重新关联。"
 			case canCancel:
-				lifecycle, hint = "首次注册未完成", "此身份从未接收转发配置，可取消失败注册后重新添加节点。"
+				lifecycle, hint = "首次注册未完成", "此身份从未接收中转配置，可取消失败注册后重新添加节点。"
 			case relayAgentRecoveryRequired(s, agent):
 				lifecycle, hint = "需要重新关联", "节点与面板状态需要核对，请使用恢复管理连接；原业务是否运行需另行检查。"
 			case agent.LastSeen > time.Now().UnixMilli()-relayLeaseMS:
-				lifecycle, hint = "管理连接正常", "管理连接正常；具体转发状态请查看用户中转。"
+				lifecycle, hint = "管理连接正常", "管理连接正常；具体中转状态请查看用户中转。"
 			case agent.ProtocolVersion >= 2:
-				lifecycle, hint = "管理连接中断", "原转发可能继续运行，请先检查连接，不要重复全新安装。"
+				lifecycle, hint = "管理连接中断", "原中转可能继续运行，请先检查连接，不要重复全新安装。"
 			case agent.TokenHash != "":
 				lifecycle, hint = "注册后等待连接", "注册已受理，正在等待节点完成配置同步。"
 			}
@@ -878,7 +878,7 @@ func (a *App) relayDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	err := a.Store.Update(func(s *State) error {
 		if agent, ok := LoadDoc[RelayAgent](s, "relay_agents", r.PathValue("id")); ok && agent.ReconcileState == "recovery_required" {
 			if _, cancelled := relayRejectedBootstrap(s, agent); !cancelled {
-				return errors.New("此节点可能仍在转发；请先恢复管理连接并停止关联配置，再删除")
+				return errors.New("此节点可能仍在中转；请先恢复管理连接并停止关联配置，再删除")
 			}
 		}
 		associations := []string{}

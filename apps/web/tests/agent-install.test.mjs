@@ -72,7 +72,7 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     await expect(safety).toContainText("日常升级会保留原身份和配置");
     await expect(safety).toContainText("--upgrade-in-place --acknowledge-relay-restart");
     await expect(safety).toContainText("--diagnose");
-    await expect(safety).toContainText("无需等待面板在线或转发停止确认");
+    await expect(safety).toContainText("无需等待面板在线或中转停止确认");
     await expect(safety.getByRole("button", { name: "复制本机节点卸载命令" })).toBeVisible();
     const localUninstall = await safety.locator("pre.code-panel").filter({ hasText: "uninstall-agent.sh" }).textContent();
     assert.ok(localUninstall.includes(`/${releaseVersion}/deploy/uninstall-agent.sh`));
@@ -84,7 +84,7 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     await row.getByRole("button", { name: "部署 / 重装" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toContainText("已安装节点的日常更新");
-    await expect(dialog).toContainText("旧转发与现有连接将中断");
+    await expect(dialog).toContainText("旧中转与现有连接将中断");
     await expect(dialog).toContainText("网站灾难恢复后使用“恢复管理连接”");
     const commands = dialog.locator("pre.code-panel");
     await expect(commands).toHaveCount(3);
@@ -111,7 +111,7 @@ test("node reinstall makes fresh identity reset and connection interruption expl
     await blocked.getByRole("button", { name: "删除" }).click();
     const removed = page.getByRole("dialog");
     await expect(removed).toContainText("节点已从控制面退役");
-    await expect(removed).toContainText("无需等待面板在线或转发终态");
+    await expect(removed).toContainText("无需等待面板在线或中转终态");
     await expect(removed).toContainText("旧备份和同机执行机保留");
     const cleanup = await removed.locator("pre.code-panel").textContent();
     assert.ok(cleanup.includes(`/${releaseVersion}/deploy/uninstall-agent.sh`));

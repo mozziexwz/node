@@ -177,12 +177,12 @@ test(
             await expect(cards.locator("h3")).toHaveText([
               "一键部署 MSBOOST",
               "一键配置中转服务器",
-              "一键DD系统",
+              "MSBOOST 启动器",
             ]);
             await expect(cards.locator("p")).toHaveText([
-              "部署你的独立IP游戏节点",
-              "与朋友共享你的VPS线路，但不共享你的IP",
-              "在线重装系统",
+              "部署你的VPS独立IP游戏节点",
+              "与朋友共享你的VPS精品线路，但不共享你的IP",
+              "一键加速 MapleStory",
             ]);
             const contact = page.locator(".public-footer .public-contact");
             await expect(contact.locator("span")).toHaveText([
@@ -206,7 +206,7 @@ test(
             ).toBeVisible();
             await expect(
               page.getByRole("heading", { level: 1 }).locator(":scope > span"),
-            ).toHaveText(["一键部署你的", "独立IP游戏节点"]);
+            ).toHaveText(["一键部署你的MapleStory", "独立IP游戏节点"]);
             for (const width of [1440, 784, 375, 320]) {
               await page.setViewportSize({ width, height: 1000 });
               await noOverflow(page);

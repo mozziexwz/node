@@ -296,7 +296,7 @@ func (a *App) Authenticate(next http.Handler) http.Handler {
 			})
 			if gateErr != nil {
 				w.Header().Set("Retry-After", "30")
-				Fail(w, http.StatusServiceUnavailable, "控制面暂不可用或正在进行整站备份，请稍后重试；此响应不代表节点转发已停止")
+				Fail(w, http.StatusServiceUnavailable, "控制面暂不可用或正在进行整站备份，请稍后重试；此响应不代表节点中转已停止")
 				return
 			}
 		}

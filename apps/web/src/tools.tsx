@@ -7,6 +7,7 @@ import {
   KeyRound,
   LockKeyhole,
   CircleCheck,
+  MonitorDown,
 } from "lucide-react";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { api, post, requestID, download, RecordData, array } from "./api";
@@ -180,17 +181,6 @@ export async function prepareSSH(
     replaceFingerprint:
       previous !== probe.fingerprint ? value.replaceFingerprint : "",
   };
-}
-// New nodes set a Mieru low-entropy traffic pattern, which older clients
-// (mieru before v3.35.0) refuse to load.
-const launcherNotice =
-  "此配置需要 MSBOOST 启动器；旧版 BAT 启动器请把 msboost.exe 更新到 v3.35.0 以上。";
-function usesTrafficPattern(config: unknown) {
-  const profiles = (config as RecordData | null)?.profiles;
-  return (
-    Array.isArray(profiles) &&
-    profiles.some((profile) => profile && profile.trafficPattern != null)
-  );
 }
 function configName(task: RecordData) {
   const base = String(
@@ -807,19 +797,27 @@ export function TaskDetail({
             {status || "配置已就绪"}
             。配置已保存在当前浏览器时，请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复。
           </Notice>
-          {usesTrafficPattern(config) && (
-            <div className="mt16">
-              <Notice>{launcherNotice}</Notice>
-            </div>
-          )}
-          <Button
-            primary
-            className="mt16"
-            onClick={() => download(config, configName(current))}
-          >
-            <Download size={16} />
-            下载配置
-          </Button>
+          <div className="result-actions">
+            <Button
+              primary
+              onClick={() => download(config, configName(current))}
+            >
+              <Download size={16} />
+              下载配置
+            </Button>
+            <Button
+              className="soft"
+              onClick={() => {
+                onClose();
+                location.hash = "launcher";
+                scrollTo(0, 0);
+              }}
+            >
+              <MonitorDown size={16} />
+              获取 MSBOOST 启动器
+              <ArrowRight size={15} />
+            </Button>
+          </div>
         </div>
       )}
       {current.needsReview && (
@@ -1607,8 +1605,7 @@ export function TasksPage({
       )}
       <ErrorNotice error={error || message} />
       <Notice tone="orange">
-        免费配置请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复；捐赠权益线路文件请到线路页使用“中转配置下载”。新部署的节点配置需要
-        MSBOOST 启动器；旧版 BAT 启动器请把 msboost.exe 更新到 v3.35.0 以上。
+        免费配置请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复；捐赠权益线路文件请到线路页使用“中转配置下载”。
       </Notice>
       <div className="card flush mt24">
         {!loading && !error && !tasks.length ? (

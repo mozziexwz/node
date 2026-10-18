@@ -85,7 +85,7 @@ func normalizeRelayRoute(s *State, route *Route) error {
 	}
 	if route.Type == "port_forward" {
 		if len(route.Hops) > 0 {
-			return errors.New("端口转发不包含中间跳")
+			return errors.New("端口中转不包含中间跳")
 		}
 		route.Exit = RouteStage{}
 	}

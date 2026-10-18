@@ -63,7 +63,7 @@ func runRelayReconnect(databaseURL, masterKey, publicURL, directory string, ui r
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 	a := &App{Store: &Store{db: db, dialect: "postgres"}, aead: aead, Config: Config{PublicURL: strings.TrimRight(publicURL, "/")}}
-	ui.Print("节点管理连接恢复向导\n原转发会尽量保留。请先停用旧面板，避免两个面板同时控制节点。\n")
+	ui.Print("节点管理连接恢复向导\n原中转会尽量保留。请先停用旧面板，避免两个面板同时控制节点。\n")
 	confirm, err := ui.Read("已确认旧面板停用或隔离？输入 YES 继续：", false)
 	if err != nil || confirm != "YES" {
 		return errors.New("已取消")
@@ -165,7 +165,7 @@ func saveReconnectCheckpoint(file string, cp reconnectCheckpoint) error {
 
 func reconnectSelections(report RelayRecoveryReport, choose func(RelayRecoveryDifference) (string, error)) ([]RelayRecoverySelection, error) {
 	if len(report.MissingOnNode) > 0 {
-		return nil, errors.New("面板记录的部分转发不在此节点中；需先核对节点磁盘或原节点，不能推定这些转发已经停止")
+		return nil, errors.New("面板记录的部分中转不在此节点中；需先核对节点磁盘或原节点，不能推定这些中转已经停止")
 	}
 	out := []RelayRecoverySelection{}
 	for _, row := range report.Differences {
@@ -177,7 +177,7 @@ func reconnectSelections(report RelayRecoveryReport, choose func(RelayRecoveryDi
 				return nil, err
 			}
 			if action != "stop" {
-				return nil, errors.New("已保留差异转发，请核对后再继续")
+				return nil, errors.New("已保留差异中转，请核对后再继续")
 			}
 		}
 		out = append(out, RelayRecoverySelection{RuleID: row.RuleID, Action: action})
@@ -278,7 +278,7 @@ func (a *App) reconnectOne(agent RelayAgent, directory string, ui reconnectPromp
 		return errors.New("节点工作目录不是 root 所有")
 	}
 	if cp.Request == nil {
-		ui.Print("正在核对节点身份和正在运行的转发…\n")
+		ui.Print("正在核对节点身份和正在运行的中转…\n")
 		if _, checkErr := sf.Lstat(cp.RemoteDir + "/snapshot.json"); os.IsNotExist(checkErr) {
 			if _, err = reconnectCommand(client, "/usr/local/bin/msboost-agent --capability relay-recovery --state-dir /var/lib/msboost-relay --recovery-action snapshot --recovery-file "+cp.RemoteDir+"/snapshot.json"); err != nil {
 				return errors.New("无法读取节点状态，请确认节点服务已运行且使用新版程序")
@@ -339,8 +339,8 @@ func (a *App) reconnectOne(agent RelayAgent, directory string, ui reconnectPromp
 			return errRelayRecovery
 		}
 		decisions, err := reconnectSelections(report, func(row RelayRecoveryDifference) (string, error) {
-			ui.Print("转发 %s 的配置或当前使用资格不符，不能直接恢复。保留现状请选择退出；停止这条转发会断开其连接。\n", row.RuleID)
-			answer, e := ui.Read("明确停止这条差异转发？输入 STOP，其余退出：", false)
+			ui.Print("中转 %s 的配置或当前使用资格不符，不能直接恢复。保留现状请选择退出；停止这条中转会断开其连接。\n", row.RuleID)
+			answer, e := ui.Read("明确停止这条差异中转？输入 STOP，其余退出：", false)
 			if e != nil {
 				return "", e
 			}
@@ -352,7 +352,7 @@ func (a *App) reconnectOne(agent RelayAgent, directory string, ui reconnectPromp
 		if err != nil {
 			return err
 		}
-		ui.Print("已核对 %d 条转发，配置一致的将保留运行。\n", len(decisions))
+		ui.Print("已核对 %d 条中转，配置一致的将保留运行。\n", len(decisions))
 		answer, err := ui.Read("确认连接此节点，并重新启用备份前已启用且资格仍有效的线路？输入 YES：", false)
 		if err != nil {
 			return err

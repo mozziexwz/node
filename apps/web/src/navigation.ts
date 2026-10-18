@@ -1,5 +1,15 @@
 export type NavigationGroup = { title: string; items: string[] };
 
+// Homepage links such as /#deploy open these after signing in.
+export const freeTools = [
+  "launcher",
+  "deploy",
+  "relay",
+  "codes",
+  "dd",
+  "tasks",
+];
+
 // Keep free deployment tools above paid services for every account type.
 export function navigationGroups(
   admin: boolean,
@@ -7,10 +17,7 @@ export function navigationGroups(
 ): NavigationGroup[] {
   return [
     { title: "开始使用", items: ["tutorials", "home"] },
-    {
-      title: "免费部署工具",
-      items: ["deploy", "relay", "codes", "dd", "tasks"],
-    },
+    { title: "免费部署工具", items: [...freeTools] },
     {
       title: admin ? "捐赠权益管理" : "捐赠权益",
       items: admin

@@ -68,6 +68,9 @@
   font-weight: 400;
   margin-top: 5px;
 }
+.article-content h2 + .markdown {
+  margin-top: 14px;
+}
 .markdown-workspace {
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -146,37 +149,66 @@
   background: var(--line);
   margin: 0 5px;
 }
+/* Both panels share one height so compare mode can scroll them together;
+   drag the bottom-right corner to make the editor taller. */
 .markdown-panels {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  flex: 1;
-  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  height: 440px;
+  min-height: 240px;
+  resize: vertical;
+  overflow: hidden;
 }
 .markdown-panels.is-compare {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .markdown-source {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
+}
+.markdown-source:focus-within {
+  box-shadow: inset 0 0 0 2px #ffd9c2;
+}
+.markdown-source.is-hidden {
+  display: none;
+}
+.markdown-cm {
+  height: 100%;
+}
+.markdown-plain {
   display: block;
   width: 100%;
-  min-height: 310px;
+  height: 100%;
   border: 0;
   border-radius: 0;
-  resize: vertical;
-  padding: 17px 19px;
+  resize: none;
+  padding: 10px 16px;
   background: #fff;
   color: var(--ink);
   font:
-    14px/1.8 Consolas,
+    14px/1.85 Consolas,
     "SFMono-Regular",
+    "Microsoft YaHei",
     monospace;
   outline-offset: -3px;
-  overflow: auto;
+}
+.markdown-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  color: var(--sub);
+  font-size: 13px;
 }
 .markdown-preview {
   min-width: 0;
-  padding: 8px 20px;
+  min-height: 0;
+  padding: 14px 22px;
   overflow: auto;
-  min-height: 310px;
 }
 .markdown-panels.is-compare .markdown-preview {
   border-left: 1px solid var(--line);
@@ -211,13 +243,54 @@
   min-height: 0;
   background: #fff;
 }
-.markdown-workspace.is-expanded .markdown-source {
-  height: 100%;
+.markdown-workspace.is-expanded .markdown-panels {
+  flex: 1;
+  height: auto;
   min-height: 0;
   resize: none;
 }
-.markdown-workspace.is-expanded .markdown-preview {
-  min-height: 0;
+.kbd-help {
+  position: relative;
+}
+.kbd-help summary {
+  list-style: none;
+  cursor: pointer;
+}
+.kbd-help summary::-webkit-details-marker {
+  display: none;
+}
+.kbd-pop {
+  position: absolute;
+  right: 0;
+  top: 34px;
+  z-index: 5;
+  width: 270px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 12px 30px #0001;
+  color: var(--ink);
+  font-size: 12px;
+}
+.kbd-pop div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px dashed #f0ede8;
+}
+.kbd-pop div:last-child {
+  border-bottom: 0;
+}
+.kbd-pop kbd {
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--soft);
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  white-space: nowrap;
 }
 .production-modal:has(.markdown-workspace.is-expanded) > .modal-heading {
   visibility: hidden;
@@ -247,20 +320,20 @@
     gap: 0;
     padding: 5px;
   }
+  .markdown-panels {
+    height: 380px;
+  }
   .markdown-panels.is-compare {
-    grid-template-columns: 1fr;
-    grid-template-rows: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+    height: 520px;
   }
   .markdown-panels.is-compare .markdown-preview {
     border-left: 0;
     border-top: 1px solid var(--line);
   }
-  .markdown-panels.is-compare .markdown-source,
-  .markdown-panels.is-compare .markdown-preview {
-    min-height: 190px;
-  }
-  .markdown-workspace.is-expanded .markdown-panels.is-compare > * {
-    min-height: 0;
+  .markdown-preview {
+    padding: 12px 16px;
   }
   .article-title-cell {
     gap: 7px;

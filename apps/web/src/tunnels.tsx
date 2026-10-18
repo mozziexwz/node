@@ -198,7 +198,7 @@ export function RouteBuilder() {
   }
   return (
     <>
-      <Header title="隧道管理" sub="先新增节点，再创建端口转发或多级隧道。">
+      <Header title="隧道管理" sub="先新增节点，再创建端口中转或多级隧道。">
         <Button primary onClick={() => open()} disabled={!nodes.length}>
           <Plus size={16} />
           新增隧道
@@ -222,7 +222,7 @@ export function RouteBuilder() {
             "权益等级",
             "类型",
             "入口节点",
-            "转发链",
+            "中转链",
             "流量计算",
             "状态",
             "操作",
@@ -230,11 +230,11 @@ export function RouteBuilder() {
           rows={routes.map((route, index) => [
             route.name,
             <Badge>L{Math.max(1, Number(route.level) || 1)}</Badge>,
-            route.type === "port_forward" ? "端口转发" : "隧道转发",
+            route.type === "port_forward" ? "端口中转" : "隧道中转",
             nodes.find((node) => node.id === route.entryAgentId)?.name ||
               "节点不可用",
             route.type === "port_forward"
-              ? "直接转发"
+              ? "直接中转"
               : `${route.hops?.length || 0} 个中间跳 · ${route.exit?.agentIds?.length || 0} 个出口候选`,
             `${modes[route.trafficMode] || modes.both} × ${(route.trafficMultiplierPermille || 1000) / 1000}`,
             <Badge tone={route.enabled && route.online ? "green" : "orange"}>
@@ -398,8 +398,8 @@ export function RouteBuilder() {
               value={editing.type}
               onChange={(e) => change({ type: e.target.value })}
             >
-              <option value="port_forward">端口转发</option>
-              <option value="tunnel">隧道转发（多级转跳）</option>
+              <option value="port_forward">端口中转</option>
+              <option value="tunnel">隧道中转（多级转跳）</option>
             </Select>
             <div className="form-grid">
               <Select
@@ -470,7 +470,7 @@ export function RouteBuilder() {
               <>
                 <section className="mt24">
                   <div className="between">
-                    <h3>转发链配置</h3>
+                    <h3>中转链配置</h3>
                     <Button
                       disabled={editing.hops.length >= 8}
                       onClick={() =>
@@ -569,16 +569,16 @@ export function RouteBuilder() {
               className="mt16"
               checked={editing.enabled}
               onChange={(e) => change({ enabled: e.target.checked })}
-              label="运行隧道（关闭会请求停止现有转发）"
+              label="运行隧道（关闭会请求停止现有中转）"
             />
             <Check
               className="mt16"
               checked={!!editing.admissionsClosed}
               onChange={(e) => change({ admissionsClosed: e.target.checked })}
-              label="停止接纳新配置（已有转发与续权益不受影响）"
+              label="停止接纳新配置（已有中转与续权益不受影响）"
             />
             <Notice tone="orange">
-              只有真实节点心跳与监听 ACK 才会激活转发。TLS
+              只有真实节点心跳与监听 ACK 才会激活中转。TLS
               仅用于节点之间；不改变客户 MSBOOST
               目标认证。名称和接纳开关不影响现有连接；运行开关及限速修改可能影响业务。已有用户配置时，拓扑和计费设置须先处理关联。
             </Notice>

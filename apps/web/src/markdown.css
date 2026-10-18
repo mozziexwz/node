@@ -1,0 +1,238 @@
+/* Article typography: console articles, the public news page, launcher notes
+   and the editor preview all render through the Markdown component. */
+.markdown {
+  font-size: 15px;
+  line-height: 1.9;
+  color: #33302c;
+  overflow-wrap: anywhere;
+}
+.news-body .markdown {
+  font-size: 15.5px;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown p {
+  margin: 0 0 0.9em;
+}
+/* Each extra blank line in the source keeps one line of height. */
+.markdown .md-gap {
+  height: 1.9em;
+  margin: 0;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  color: #1f1b17;
+  font-weight: 750;
+  line-height: 1.45;
+  letter-spacing: -0.2px;
+}
+.markdown h1 {
+  font-size: 26px;
+  margin: 1.4em 0 0.7em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--line);
+}
+.markdown h2 {
+  font-size: 21px;
+  margin: 1.6em 0 0.7em;
+  padding-left: 12px;
+  border-left: 4px solid var(--orange);
+}
+.markdown h3 {
+  font-size: 17.5px;
+  margin: 1.4em 0 0.6em;
+  color: var(--orange-dark);
+}
+.markdown h4 {
+  font-size: 15.5px;
+  margin: 1.2em 0 0.5em;
+}
+.markdown strong {
+  font-weight: 750;
+  color: #15110d;
+}
+.markdown em {
+  color: #5b544d;
+}
+.markdown del {
+  color: #9c958d;
+}
+.markdown mark {
+  background: linear-gradient(transparent 40%, #ffd5b8 40%);
+  color: inherit;
+  padding: 0 2px;
+}
+.markdown a {
+  color: #c2571f;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: #f1b48f;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+.markdown a:hover {
+  color: var(--orange-dark);
+  text-decoration-color: currentColor;
+}
+.markdown a[target="_blank"]::after {
+  content: "↗";
+  display: inline-block;
+  margin-left: 2px;
+  font-size: 0.8em;
+}
+.markdown code {
+  font-family: Consolas, SFMono-Regular, "Microsoft YaHei", monospace;
+  font-size: 0.86em;
+  background: #fff1e7;
+  color: #b2460f;
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+.markdown pre {
+  margin: 1.1em 0;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 10px;
+  background: #262320;
+  color: #f3ede6;
+  line-height: 1.75;
+  white-space: pre;
+  overflow: auto;
+}
+.markdown pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  font-size: 13px;
+}
+.markdown blockquote {
+  margin: 1.1em 0;
+  padding: 10px 16px;
+  border-left: 4px solid var(--orange);
+  border-radius: 0 10px 10px 0;
+  background: #fff7f1;
+  color: #6f4b33;
+}
+.markdown blockquote p:last-child {
+  margin-bottom: 0;
+}
+.markdown ul,
+.markdown ol {
+  margin: 0.3em 0 1em;
+  padding-left: 1.6em;
+}
+.markdown li {
+  margin: 0.3em 0;
+}
+.markdown li::marker {
+  color: var(--orange);
+  font-weight: 700;
+}
+.markdown li > ul,
+.markdown li > ol {
+  margin: 0.2em 0;
+}
+/* Wide tables scroll inside this box instead of widening the page. */
+.markdown .md-table {
+  margin: 1.1em 0;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.markdown table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+}
+.markdown th,
+.markdown td {
+  padding: 10px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.markdown th {
+  background: #faf6f2;
+  color: #5d554d;
+  font-weight: 650;
+}
+.markdown [align="center"] {
+  text-align: center;
+}
+.markdown [align="right"] {
+  text-align: right;
+}
+.markdown tr:last-child td {
+  border-bottom: 0;
+}
+.markdown tbody tr:nth-child(even) td {
+  background: #fdfbf9;
+}
+.markdown hr {
+  height: 1px;
+  margin: 2em 0;
+  border: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    #e2ddd6 15%,
+    #e2ddd6 85%,
+    transparent
+  );
+}
+.markdown img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1em auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.markdown .md-task {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  border: 1.5px solid #cdbfb2;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  vertical-align: -2px;
+}
+.markdown .md-task.done {
+  background: var(--orange);
+  border-color: var(--orange);
+}
+.markdown li:has(> .md-task, > p:first-child > .md-task) {
+  list-style: none;
+  margin-left: -1.4em;
+}
+@media (max-width: 560px) {
+  .markdown,
+  .news-body .markdown {
+    font-size: 14.5px;
+  }
+  .markdown h1 {
+    font-size: 22px;
+  }
+  .markdown h2 {
+    font-size: 19px;
+  }
+  .markdown h3 {
+    font-size: 16.5px;
+  }
+  .markdown table {
+    white-space: nowrap;
+  }
+}

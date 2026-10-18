@@ -148,7 +148,7 @@ func backupPausePreflight(s *State, now int64) BackupPauseReport {
 		for _, seg := range rule.Segments {
 			key := seg.AgentID + ":" + rule.ID
 			if seg.AgentID == "" || seg.Runtime.ID != rule.ID || segments[key] {
-				block(rule.ID, seg.AgentID, "invalid_record", "转发段身份缺失或重复")
+				block(rule.ID, seg.AgentID, "invalid_record", "中转段身份缺失或重复")
 			}
 			segments[key] = true
 			command, found := commands[key]
@@ -171,13 +171,13 @@ func backupPausePreflight(s *State, now int64) BackupPauseReport {
 				var route Route
 				user, userExists := s.Users[rule.UserID]
 				if !agentExists || !userExists || user.ID != rule.UserID || !backupPauseDecode(s.Docs["routes"][rule.RouteID], &route) || route.ID != rule.RouteID || seg.ProtocolVersion < 0 || seg.ProtocolVersion > 1 {
-					block(rule.ID, seg.AgentID, "invalid_record", "旧转发段缺少一致的用户、线路或节点身份")
+					block(rule.ID, seg.AgentID, "invalid_record", "旧中转段缺少一致的用户、线路或节点身份")
 				}
 				if found || agent.ProtocolVersion >= relayruntime.ProtocolV2 || seg.ConfigGeneration != 0 || seg.AppliedGeneration != 0 || seg.LastCommandID != "" {
 					block(rule.ID, seg.AgentID, "command_unconfirmed", "旧协议标记与已存在的 v2 命令证据冲突")
 				}
 				if seg.ConfigError || seg.Runtime.Version <= 0 || seg.Runtime.Version != rule.Version || seg.AckAt <= 0 || seg.AckAt > now {
-					block(rule.ID, seg.AgentID, "command_unconfirmed", "旧转发段缺少当前配置的有效确认")
+					block(rule.ID, seg.AgentID, "command_unconfirmed", "旧中转段缺少当前配置的有效确认")
 				}
 				action, _ := relayV2Desired(s, agent, rule, now)
 				if rule.State == "pending" || rule.State == "awaiting_front" || action == "revoke" || action == "upsert" && seg.AckState != "ready" || action == "pause" && seg.AckState != "stopped" {
@@ -185,12 +185,12 @@ func backupPausePreflight(s *State, now int64) BackupPauseReport {
 				}
 				if seg.Runtime.Protocol == "tls" {
 					if seg.Runtime.TLSCertificate == "" || seg.SealedTLSKey == "" {
-						block(rule.ID, seg.AgentID, "invalid_record", "旧转发段的持久 TLS 身份不完整")
+						block(rule.ID, seg.AgentID, "invalid_record", "旧中转段的持久 TLS 身份不完整")
 					}
 				} else if _, err := relayruntime.RuntimeHash(seg.Runtime); err != nil {
-					block(rule.ID, seg.AgentID, "invalid_record", "旧转发段的运行配置无效")
+					block(rule.ID, seg.AgentID, "invalid_record", "旧中转段的运行配置无效")
 				}
-				block(rule.ID, seg.AgentID, "offline_unsupported", "历史转发记录尚未完成核查，无法保证停站后的业务状态；请先恢复节点管理连接")
+				block(rule.ID, seg.AgentID, "offline_unsupported", "历史中转记录尚未完成核查，无法保证停站后的业务状态；请先恢复节点管理连接")
 				continue
 			}
 			agent, exists := agents[seg.AgentID]

@@ -89,7 +89,7 @@ func ValidateRequest(r Request) error {
 		return err
 	}
 	if r.ForwardTarget != nil {
-		return errors.New("用户任务不接受内部转发参数")
+		return errors.New("用户任务不接受内部中转参数")
 	}
 	if len([]rune(r.Remark)) > 60 || strings.ContainsAny(r.Remark, "\x00\r\n") {
 		return errors.New("备注最多 60 个字符，不能包含换行")

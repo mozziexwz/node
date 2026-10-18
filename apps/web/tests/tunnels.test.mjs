@@ -168,7 +168,7 @@ test(
       const dialog = page.getByRole("dialog");
       await expect(dialog.getByLabel("权益等级")).toHaveValue("2");
       const admission = dialog.getByLabel(
-        "停止接纳新配置（已有转发与续权益不受影响）",
+        "停止接纳新配置（已有中转与续权益不受影响）",
       );
       await expect(admission).not.toBeChecked();
       await admission.check();

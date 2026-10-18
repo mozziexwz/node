@@ -43,7 +43,7 @@ test("relay status separates management loss from the last business report", () 
     });
     assert.equal(view.label, "业务状态待核实");
     assert.equal(view.controlLabel, "管理连接已中断");
-    assert.doesNotMatch(view.label, /转发中|正常|已停止/);
+    assert.doesNotMatch(view.label, /转发中|中转中|正常|已停止/);
   }
 });
 
@@ -94,9 +94,9 @@ test("pending stop retains resources; recovery overrides optimistic confirmation
     "处理中",
   );
   assert.equal(view.keepLastConfirmed, false);
-  assert.match(view.stopText, /等待节点停止转发，确认后释放端口/);
+  assert.match(view.stopText, /等待节点停止中转，确认后释放端口/);
   assert.match(view.recoveryText, /恢复管理连接/);
-  assert.match(view.recoveryText, /原有转发会保留/);
+  assert.match(view.recoveryText, /原有中转会保留/);
   const segment = {
     protocolVersion: 2,
     lastCommandAction: "pause",

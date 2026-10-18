@@ -134,7 +134,7 @@ func validateRestoreIdle(s *State) error {
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {
 		for _, segment := range rule.Segments {
 			if !restoreSegmentMayKeepLast(s, segment) && segment.LastLease > time.Now().UnixMilli() {
-				return errors.New("请先暂停全部本站转发并等待租约失效")
+				return errors.New("请先暂停全部本站中转并等待租约失效")
 			}
 		}
 	}
@@ -193,7 +193,7 @@ func mergeSafeRestore(current, snapshot *State) (*State, RestorePreflight, error
 		}
 		node, ok := current.Docs["relay_agents"][id]
 		if !ok {
-			return errors.New("当前转发资源引用的节点不存在，请先修复关联")
+			return errors.New("当前中转资源引用的节点不存在，请先修复关联")
 		}
 		if !reflect.DeepEqual(node, merged.Docs["relay_agents"][id]) {
 			protectedNodes[id] = true
@@ -296,7 +296,7 @@ func mergeSafeRestore(current, snapshot *State) (*State, RestorePreflight, error
 	}
 	sort.Strings(report.RecoveryRules)
 	if report.RecoveryRequired {
-		report.Warnings = append(report.Warnings, "离线保留节点可能仍在转发；恢复将保留资源并进入 recovery_required，撤销管理凭据不代表业务已停止。当前未提供受信无损接管，不能直接重新部署或释放端口。")
+		report.Warnings = append(report.Warnings, "离线保留节点可能仍在中转；恢复将保留资源并进入 recovery_required，撤销管理凭据不代表业务已停止。当前未提供受信无损接管，不能直接重新部署或释放端口。")
 	}
 	return merged, report, nil
 }
@@ -324,15 +324,15 @@ func validateRestoreReferences(s *State) error {
 	for id, raw := range s.Docs["user_rules"] {
 		var rule UserRule
 		if json.Unmarshal(raw, &rule) != nil || rule.ID == "" || rule.UserID == "" || id != rule.UserID+":"+rule.RouteID {
-			return errors.New("用户转发身份关联无效")
+			return errors.New("用户中转身份关联无效")
 		}
 		if _, ok := LoadDoc[Route](s, "routes", rule.RouteID); !ok {
-			return errors.New("用户转发引用的线路不存在")
+			return errors.New("用户中转引用的线路不存在")
 		}
 		for _, segment := range rule.Segments {
 			if segment.AgentID != "" {
 				if _, ok := LoadDoc[RelayAgent](s, "relay_agents", segment.AgentID); !ok {
-					return errors.New("用户转发保留资源引用的节点不存在")
+					return errors.New("用户中转保留资源引用的节点不存在")
 				}
 			}
 		}

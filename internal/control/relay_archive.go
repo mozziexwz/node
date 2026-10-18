@@ -18,7 +18,7 @@ func (a *App) relayArchiveAgent(w http.ResponseWriter, r *http.Request) {
 		Confirm  string `json:"confirm"`
 	}
 	if Decode(r, &in) != nil || in.Confirm != "KEEP_REMOTE_STATE_AND_RESERVATIONS" {
-		Fail(w, 400, "请确认封存不代表远端转发停止，端口和业务记录仍会保留")
+		Fail(w, 400, "请确认封存不代表远端中转停止，端口和业务记录仍会保留")
 		return
 	}
 	err = a.Store.Update(func(s *State) error {
@@ -62,5 +62,5 @@ func (a *App) relayArchiveAgent(w http.ResponseWriter, r *http.Request) {
 		commerceError(w, 409, err)
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"ok": true, "message": "列表状态已更新。此操作未停止远端转发，也未释放端口；恢复显示不会自动恢复管理连接。"})
+	WriteJSON(w, 200, map[string]any{"ok": true, "message": "列表状态已更新。此操作未停止远端中转，也未释放端口；恢复显示不会自动恢复管理连接。"})
 }

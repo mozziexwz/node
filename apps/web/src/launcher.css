@@ -1,0 +1,267 @@
+/* MSBOOST launcher download: homepage section, console page and settings. */
+.launcher-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: center;
+}
+.launcher-id {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  min-width: 0;
+}
+.launcher-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  background: var(--pale);
+  color: var(--orange);
+  flex-shrink: 0;
+}
+.launcher-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.launcher-title h2,
+.launcher-title h3 {
+  font-size: 21px;
+}
+.launcher-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-top: 9px;
+  color: var(--sub);
+  font-size: 12px;
+}
+.launcher-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.launcher-actions {
+  display: grid;
+  gap: 9px;
+  justify-items: end;
+}
+.launcher-actions .row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.launcher-actions small {
+  font-size: 11px;
+  color: var(--sub);
+}
+.btn.big {
+  padding: 13px 22px;
+  font-size: 14px;
+  border-radius: 10px;
+}
+.hash-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--sub);
+  min-width: 0;
+}
+.hash-row code {
+  flex: 1;
+  min-width: 0;
+  font-family: Consolas, SFMono-Regular, monospace;
+  font-size: 11.5px;
+  color: var(--ink);
+  word-break: break-all;
+}
+.launcher-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.launcher-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.launcher-step {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px 16px 14px;
+  background: #fff;
+  min-width: 0;
+}
+.launcher-step .step-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--pale);
+  color: var(--orange-dark);
+  font-size: 12px;
+  font-weight: 700;
+}
+.launcher-step h4 {
+  margin: 12px 0 6px;
+  font-size: 14px;
+}
+.launcher-step p {
+  font-size: 12px;
+  color: var(--sub);
+  line-height: 1.85;
+}
+.launcher-step code,
+.tip-list code {
+  font-family: Consolas, SFMono-Regular, monospace;
+  font-size: 11.5px;
+  background: var(--soft);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--ink);
+}
+.launcher-jump {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
+  font-size: 12px;
+  color: var(--sub);
+}
+.launcher-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.launcher-notes .markdown {
+  font-size: 13.5px;
+  line-height: 1.85;
+}
+.launcher-notes .markdown ul {
+  margin: 8px 0 0;
+}
+.tip-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tip-list li {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.85;
+  color: #5f5a54;
+}
+.tip-list li > svg {
+  color: var(--orange);
+  margin-top: 3px;
+}
+.tip-list b {
+  color: var(--ink);
+}
+.launcher-unpublished {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+}
+.launcher-unpublished .launcher-mark {
+  background: var(--soft);
+  color: var(--sub);
+}
+.launcher-unpublished p {
+  color: var(--sub);
+  font-size: 13px;
+  margin-top: 5px;
+}
+.result-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.input-with-btn {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  font-weight: normal;
+}
+.input-with-btn input {
+  flex: 1;
+  min-width: 0;
+}
+.field .mono-input {
+  font-family: Consolas, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+.field textarea.notes-input {
+  min-height: 130px;
+  font-family: Consolas, SFMono-Regular, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.save-meta {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--sub);
+}
+@media (max-width: 850px) {
+  .launcher-hero {
+    grid-template-columns: 1fr;
+  }
+  .launcher-actions {
+    justify-items: stretch;
+  }
+  .launcher-actions .row {
+    justify-content: stretch;
+  }
+  .launcher-actions .row .btn {
+    flex: 1;
+  }
+  .launcher-steps,
+  .launcher-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 480px) {
+  .launcher-id {
+    gap: 12px;
+  }
+  .launcher-mark {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+  }
+  .launcher-title h2,
+  .launcher-title h3 {
+    font-size: 18px;
+  }
+  .result-actions .btn {
+    flex: 1;
+  }
+  .input-with-btn {
+    flex-direction: column;
+  }
+  .launcher-unpublished {
+    align-items: flex-start;
+  }
+}

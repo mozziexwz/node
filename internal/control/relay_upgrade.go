@@ -27,7 +27,7 @@ func CheckRelayUpgrade(databaseURL string, output io.Writer) error {
 	}
 	if len(blocked) > 0 {
 		_ = json.NewEncoder(output).Encode(map[string]any{"需要先升级的节点": blocked})
-		return errors.New("以上节点尚未确认使用新版转发；请先在旧面板升级并确认在线，再升级网站。未停止现有服务")
+		return errors.New("以上节点尚未确认使用新版中转；请先在旧面板升级并确认在线，再升级网站。未停止现有服务")
 	}
 	_, err = io.WriteString(output, "节点协议检查通过，可升级网站。\n")
 	return err

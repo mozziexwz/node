@@ -24,6 +24,7 @@ import {
   Bell,
   Share2,
   FileSearch,
+  MonitorDown,
 } from "lucide-react";
 import { api, post, RecordData } from "./api";
 import {
@@ -50,12 +51,14 @@ import { Articles, Tickets } from "./content";
 import { UsersPage } from "./users";
 import { RouteBuilder } from "./tunnels";
 import { Backups } from "./backups";
-import { navigationGroups } from "./navigation";
+import { freeTools, navigationGroups } from "./navigation";
+import { LauncherPage } from "./launcher";
 import { paymentReturnOrder } from "./payment-return";
 import { SiteSwitcher } from "./site-switcher";
 const labels: Record<string, [string, typeof Server]> = {
   tutorials: ["公告/教程", BookOpen],
   home: ["工作台", LayoutDashboard],
+  launcher: ["MSBOOST 启动器", MonitorDown],
   deploy: ["部署 MSBOOST", Server],
   relay: ["配置中转服务器", Route],
   codes: ["中转码管理", Share2],
@@ -156,7 +159,7 @@ function Overview({
         <div className="card mt24">
           <h3>首次配置</h3>
           <p className="muted mt8">
-            添加控制执行机后即可使用在线工具。添加节点、隧道和权益后可提供捐赠权益转发服务。
+            添加控制执行机后即可使用在线工具。添加节点、隧道和权益后可提供捐赠权益中转服务。
           </p>
           <div className="actions mt16">
             {["executors", "agents", "routes", "plans", "settings"].map((k) => (
@@ -259,13 +262,17 @@ export default function App() {
       <AuthPage
         settings={settings}
         onLogin={() => {
-          // A shared relay-code link opens the relay page after signing in.
+          // A shared relay-code link opens the relay page after signing in;
+          // a homepage link to a free tool, such as /#deploy, keeps its page.
+          const requested = location.hash.slice(1);
           navigate(
             relayCodeFromURL()
               ? "relay"
               : paymentReturnOrder()
                 ? "orders"
-                : "tutorials",
+                : freeTools.includes(requested)
+                  ? requested
+                  : "tutorials",
           );
           void refresh();
         }}
@@ -290,6 +297,9 @@ export default function App() {
           onNavigate={navigate}
         />
       );
+      break;
+    case "launcher":
+      page = <LauncherPage admin={admin} onNavigate={navigate} />;
       break;
     case "relay":
       page = (

@@ -220,9 +220,7 @@ test(
         row.getByRole("button", { name: "取消固定", exact: true }),
       ).toBeVisible();
       assert.deepEqual(pins, [{ id: "new", pinned: true }]);
-      await row
-        .getByRole("button", { name: "取消固定", exact: true })
-        .click();
+      await row.getByRole("button", { name: "取消固定", exact: true }).click();
       await expect(
         row.getByRole("button", { name: "固定到顶部", exact: true }),
       ).toBeVisible();
@@ -411,7 +409,10 @@ test(
           await route.fulfill({ json: { articles: [article] } });
           return true;
         }
-        if (path === "/api/admin/articles/guide/visibility" && method === "POST") {
+        if (
+          path === "/api/admin/articles/guide/visibility" &&
+          method === "POST"
+        ) {
           const change = route.request().postDataJSON();
           changes.push(change);
           assert.equal(
@@ -427,16 +428,23 @@ test(
       await page.goto(base + "/#tutorials");
       const row = page.locator("tbody tr", { hasText: "部署教程" });
       await expect(row.getByText("仅会员", { exact: true })).toBeVisible();
-      await expect(row.getByRole("link", { name: /查看公开页/ })).toHaveCount(0);
-      await row.getByRole("button", { name: "公开到文章页", exact: true }).click();
-      await expect(row.getByText("公开", { exact: true })).toBeVisible();
-      await expect(row.getByRole("link", { name: /查看公开页/ })).toHaveAttribute(
-        "href",
-        "/news/guide",
+      await expect(row.getByRole("link", { name: /查看公开页/ })).toHaveCount(
+        0,
       );
+      await row
+        .getByRole("button", { name: "公开到文章页", exact: true })
+        .click();
+      await expect(row.getByText("公开", { exact: true })).toBeVisible();
+      await expect(
+        row.getByRole("link", { name: /查看公开页/ }),
+      ).toHaveAttribute("href", "/news/guide");
       await row.getByRole("button", { name: "取消发布", exact: true }).click();
-      await expect(row.getByText("公开（未发布）", { exact: true })).toBeVisible();
-      await expect(row.getByRole("link", { name: /查看公开页/ })).toHaveCount(0);
+      await expect(
+        row.getByText("公开（未发布）", { exact: true }),
+      ).toBeVisible();
+      await expect(row.getByRole("link", { name: /查看公开页/ })).toHaveCount(
+        0,
+      );
       // Only the flags travel; a stale title or body can never be written back.
       assert.deepEqual(changes, [{ public: true }, { published: false }]);
       await row.getByRole("button", { name: "编辑", exact: true }).click();
@@ -444,6 +452,209 @@ test(
       await expect(
         dialog.getByLabel("同时公开到主页和文章页（访客无需登录）"),
       ).toBeDisabled();
+    });
+  },
+);
+
+test(
+  "article editor: toolbar and shortcuts format the line or selection, Ctrl+S saves, preview follows the display rules",
+  { timeout: 40000 },
+  async () => {
+    await articleBrowser(async ({ page, base, setHandler }) => {
+      const saves = [];
+      setHandler(async (route, path) => {
+        const method = route.request().method();
+        if (path === "/api/admin/articles" && method === "GET") {
+          await route.fulfill({ json: { articles: [] } });
+          return true;
+        }
+        if (path === "/api/admin/articles" && method === "POST") {
+          const data = route.request().postDataJSON();
+          saves.push(data);
+          await route.fulfill({
+            json: { ...data, id: "fresh", attachments: [] },
+          });
+          return true;
+        }
+        return false;
+      });
+      await page.goto(base + "/#tutorials");
+      await page.getByRole("button", { name: "新建文章", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await dialog
+        .getByRole("textbox", { name: "标题", exact: true })
+        .fill("编辑器测试");
+      const body = dialog.getByRole("textbox", { name: "文章 Markdown 正文" });
+      await expect(body).toBeVisible();
+      await expect(dialog.locator(".cm-lineNumbers")).toBeVisible();
+      const tool = (name) =>
+        dialog.getByRole("button", { name, exact: true }).click();
+      const keys = page.keyboard;
+      await expect(
+        dialog.getByRole("button", { name: "撤销", exact: true }),
+      ).toBeDisabled();
+
+      await body.click();
+      await keys.type("标题");
+      // ## then ### then plain text, without adding blank lines.
+      await tool("标题");
+      await tool("标题");
+      await tool("标题");
+      await tool("标题");
+      await keys.press("End");
+      await keys.press("Enter");
+      await keys.type("注意：");
+      await keys.press("Shift+Home");
+      await keys.press("Control+b");
+      await keys.press("End");
+      await keys.type("内容");
+      await keys.press("Enter");
+      await keys.type("网盘");
+      await keys.press("Shift+Home");
+      await tool("链接");
+      // The address is selected, ready to be pasted over.
+      await keys.type("https://file.msboost.de/#/?code=1");
+      await keys.press("End");
+      await keys.press("Enter");
+      await keys.type("重点");
+      await keys.press("Shift+Home");
+      await tool("高亮");
+      await keys.press("End");
+      await keys.press("Enter");
+      await keys.press("Enter");
+      await keys.press("Enter");
+      await keys.type("  两格缩进");
+      await tool("表格");
+      await keys.type("名称");
+      await keys.press("Control+End");
+      await keys.press("Enter");
+      await keys.press("Enter");
+      await keys.type("第一项");
+      await keys.press("Enter");
+      await keys.type("第二项");
+      await keys.press("Shift+ArrowUp");
+      await tool("无序列表");
+      await tool("有序列表");
+      await tool("撤销");
+      await tool("重做");
+      await expect(
+        dialog.getByRole("button", { name: "重做", exact: true }),
+      ).toBeDisabled();
+      await keys.press("Control+s");
+      await expect(
+        dialog.getByText("操作已完成", { exact: true }),
+      ).toBeVisible();
+      assert.equal(saves.length, 1);
+      assert.equal(
+        saves[0].body,
+        [
+          "## 标题",
+          "**注意：**内容",
+          "[网盘](https://file.msboost.de/#/?code=1)",
+          "==重点==",
+          "",
+          "",
+          "  两格缩进",
+          "",
+          "| 名称 | 列2 |",
+          "| --- | --- |",
+          "| 内容 | 内容 |",
+          "",
+          "1. 第一项",
+          "2. 第二项",
+        ].join("\n"),
+      );
+
+      await dialog.getByRole("tab", { name: "对照", exact: true }).click();
+      const preview = dialog.locator(".markdown-preview .markdown");
+      await expect(preview.locator("h2")).toHaveText("标题");
+      await expect(preview.locator("strong")).toHaveText("注意：");
+      const link = preview.getByRole("link", { name: "网盘" });
+      await expect(link).toHaveAttribute("target", "_blank");
+      await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+      await expect(preview.locator("mark")).toHaveText("重点");
+      await expect(preview.locator(".md-gap")).toHaveCount(1);
+      await expect(preview.getByText("\u00a0\u00a0两格缩进")).toBeVisible();
+      await expect(preview.locator(".md-table th").first()).toHaveText("名称");
+      await expect(preview.locator("ol > li")).toHaveCount(2);
+      await expect(dialog.locator(".markdown-status")).toContainText(
+        "对照模式两侧同步滚动",
+      );
+
+      // Compare mode: scrolling the source moves the preview along.
+      await body.fill(
+        Array.from({ length: 120 }, (_, i) => `第 ${i + 1} 行`).join("\n"),
+      );
+      const scroller = dialog.locator(".cm-scroller");
+      await scroller.evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      await expect
+        .poll(() =>
+          dialog.locator(".markdown-preview").evaluate((el) => el.scrollTop),
+        )
+        .toBeGreaterThan(100);
+
+      await dialog.getByRole("tab", { name: "预览", exact: true }).click();
+      await expect(body).toBeHidden();
+      await expect(
+        dialog.getByRole("button", { name: "加粗", exact: true }),
+      ).toBeDisabled();
+      await dialog.getByRole("tab", { name: "内容", exact: true }).click();
+      await expect(body).toBeVisible();
+      await expect(dialog.locator(".markdown-preview")).toHaveCount(0);
+      await page.screenshot({
+        path: "../../.runtime/article-editor.png",
+        fullPage: true,
+      });
+    });
+  },
+);
+
+test(
+  "article editor: a plain text box keeps the article editable when the editor cannot load",
+  { timeout: 30000 },
+  async () => {
+    await articleBrowser(async ({ page, base, setHandler }) => {
+      const saves = [];
+      setHandler(async (route, path) => {
+        const method = route.request().method();
+        if (path === "/api/admin/articles" && method === "GET") {
+          await route.fulfill({ json: { articles: [] } });
+          return true;
+        }
+        if (path === "/api/admin/articles" && method === "POST") {
+          const data = route.request().postDataJSON();
+          saves.push(data);
+          await route.fulfill({
+            json: { ...data, id: "fresh", attachments: [] },
+          });
+          return true;
+        }
+        return false;
+      });
+      await page.route("**/assets/markdown-editor-*.js", (route) =>
+        route.abort(),
+      );
+      await page.goto(base + "/#tutorials");
+      await page.getByRole("button", { name: "新建文章", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await dialog
+        .getByRole("textbox", { name: "标题", exact: true })
+        .fill("备用编辑框");
+      const body = dialog.locator("textarea.markdown-plain");
+      await expect(body).toHaveAccessibleName("文章 Markdown 正文");
+      await expect(
+        dialog.getByRole("button", { name: "加粗", exact: true }),
+      ).toBeDisabled();
+      await body.fill("第一行\n第二行");
+      await dialog
+        .getByRole("button", { name: "保存草稿", exact: true })
+        .click();
+      await expect(
+        dialog.getByText("操作已完成", { exact: true }),
+      ).toBeVisible();
+      assert.equal(saves[0].body, "第一行\n第二行");
     });
   },
 );

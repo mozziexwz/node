@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { chromium, expect } from '@playwright/test';
 
-test('landing title: two intact lines, orange second line, responsive layout', {timeout: 30000}, async () => {
+test('landing title: two intact lines of equal width, orange second line, responsive layout', {timeout: 30000}, async () => {
   const base = process.env.MSBOOST_TEST_URL || 'http://127.0.0.1:8080';
   assert.match(base, /^http:\/\/(127\.0\.0\.1|localhost):\d+$/);
   const browser = await chromium.launch({headless:true, ...(process.platform === 'win32' ? {channel:'chrome'} : {})});
@@ -44,7 +44,7 @@ test('landing title: two intact lines, orange second line, responsive layout', {
     await agreement.getByRole('button',{name:'关闭窗口'}).click();
     await page.getByRole('button',{name:'登录',exact:true}).first().click();
     const title=page.getByRole('heading',{level:1});
-    await expect(title.locator(':scope > span')).toHaveText(['一键部署你的','独立IP游戏节点']);
+    await expect(title.locator(':scope > span')).toHaveText(['一键部署你的MapleStory','独立IP游戏节点']);
     await page.evaluate(()=>document.fonts.ready);
     const maples=page.locator('.brand > svg, .hero-steps .active > svg');
     await expect(maples).toHaveCount(2);
@@ -67,18 +67,21 @@ test('landing title: two intact lines, orange second line, responsive layout', {
           const range=document.createRange();range.selectNodeContents(line);
           const rects=[...range.getClientRects()];
           const rect=rects[0];
-          return {text:line.textContent,count:rects.length,left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,color:getComputedStyle(line).color};
+          return {text:line.textContent,count:rects.length,left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,color:getComputedStyle(line).color,fontSize:parseFloat(getComputedStyle(line).fontSize),box:line.getBoundingClientRect().toJSON()};
         });
         const hero=element.closest('.hero');
-        return {lines,left:box.left,right:box.right,height:box.height,lineHeight:parseFloat(getComputedStyle(element).lineHeight),columns:getComputedStyle(hero).gridTemplateColumns.split(' ').length,overflow:document.documentElement.scrollWidth>innerWidth};
+        return {lines,left:box.left,right:box.right,columns:getComputedStyle(hero).gridTemplateColumns.split(' ').length,overflow:document.documentElement.scrollWidth>innerWidth};
       });
       assert.equal(layout.lines.length,2,`two title lines at ${width}px`);
       for(const line of layout.lines) {
         assert.equal(line.count,1,`no third line at ${width}px: ${line.text}`);
         assert.ok(line.left>=layout.left-1 && line.right<=layout.right+1,`title remains inside its column at ${width}px`);
       }
-      assert.ok(Math.abs(layout.lines[1].top-layout.lines[0].top-layout.lineHeight)<1,`explicit separate line baselines at ${width}px`);
-      assert.ok(Math.abs(layout.height-2*layout.lineHeight)<1,`exactly two line boxes at ${width}px`);
+      assert.ok(layout.lines[1].box.top>=layout.lines[0].box.bottom-0.5,`second line box sits below the first at ${width}px`);
+      // Only the longer black line is set smaller, so both lines end level.
+      const [topWidth,bottomWidth]=layout.lines.map(line=>line.right-line.left);
+      assert.ok(Math.abs(topWidth-bottomWidth)<=bottomWidth*0.05,`both lines share one width at ${width}px: ${topWidth} / ${bottomWidth}`);
+      assert.ok(layout.lines[0].fontSize<layout.lines[1].fontSize,`only the first line is smaller at ${width}px`);
       assert.equal(layout.lines[0].color,'rgb(38, 38, 38)','first line retains approved ink');
       assert.equal(layout.lines[1].color,'rgb(231, 101, 39)','entire second line uses approved orange');
       assert.equal(layout.columns,width>760?2:1,`preserve responsive page columns at ${width}px`);

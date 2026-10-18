@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, Suspense, lazy, useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
   ArrowDown,
@@ -7,6 +7,7 @@ import {
   Bold,
   Italic,
   Strikethrough,
+  Highlighter,
   Heading,
   List,
   ListOrdered,
@@ -21,6 +22,8 @@ import {
   Eraser,
   Maximize,
   Minimize,
+  Keyboard,
+  LoaderCircle,
   Pin,
   ExternalLink,
 } from "lucide-react";
@@ -42,7 +45,65 @@ import {
   date,
   Markdown,
 } from "./ui";
+import type {
+  MarkdownAction,
+  MarkdownEditorHandle,
+  MarkdownEditorProps,
+} from "./markdown-editor";
 import "./content-extra.css";
+
+// CodeMirror is only downloaded when an administrator opens the editor. If it
+// cannot be loaded, for example after an upgrade replaced the files, a plain
+// text box keeps the article editable.
+const MarkdownEditor = lazy(() =>
+  import("./markdown-editor").catch(() => ({ default: PlainEditor })),
+);
+function PlainEditor({
+  value,
+  onChange,
+  disabled,
+  label,
+}: MarkdownEditorProps) {
+  return (
+    <textarea
+      className="markdown-plain"
+      aria-label={label || "文章 Markdown 正文"}
+      value={value}
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  );
+}
+const formatGroups: [string, MarkdownAction, typeof Bold, string?][][] = [
+  [
+    ["加粗", "bold", Bold, "Ctrl+B"],
+    ["斜体", "italic", Italic, "Ctrl+I"],
+    ["删除线", "strike", Strikethrough],
+    ["高亮", "highlight", Highlighter],
+  ],
+  [
+    ["标题", "heading", Heading],
+    ["无序列表", "bullet", List],
+    ["有序列表", "ordered", ListOrdered],
+    ["引用", "quote", Quote],
+  ],
+  [
+    ["链接", "link", Link, "Ctrl+K"],
+    ["图片", "image", Image],
+    ["代码", "code", Code],
+    ["表格", "table", Table2],
+    ["分隔线", "rule", Minus],
+  ],
+];
+const shortcuts = [
+  ["加粗", "Ctrl B"],
+  ["斜体", "Ctrl I"],
+  ["插入链接", "Ctrl K"],
+  ["撤销 / 重做", "Ctrl Z / Ctrl Y"],
+  ["列表缩进 / 取消缩进", "Tab / Shift Tab"],
+  ["续写列表，空项回车结束", "Enter"],
+  ["保存", "Ctrl S"],
+];
 export function Articles({ admin = false }: { admin?: boolean }) {
   const { data, error, reload, setData } = useData(
       admin ? "/api/admin/articles" : "/api/articles",
@@ -54,12 +115,12 @@ export function Articles({ admin = false }: { admin?: boolean }) {
     [expanded, setExpanded] = useState(false),
     [editingBusy, setEditingBusy] = useState(false),
     [editorMessage, setEditorMessage] = useState(""),
-    [moving, setMoving] = useState(false);
-  const editor = useRef<HTMLTextAreaElement>(null),
-    editSession = useRef(0),
-    editMutation = useRef(false),
-    history = useRef<string[]>([]),
-    redo = useRef<string[]>([]);
+    [moving, setMoving] = useState(false),
+    [tools, setTools] = useState<MarkdownEditorHandle | null>(null),
+    [undoable, setUndoable] = useState([false, false]),
+    [previewPanel, setPreviewPanel] = useState<HTMLDivElement | null>(null);
+  const editSession = useRef(0),
+    editMutation = useRef(false);
   useEffect(() => {
     if (!expanded) return;
     const escape = (event: KeyboardEvent) => {
@@ -74,28 +135,12 @@ export function Articles({ admin = false }: { admin?: boolean }) {
   }, [expanded]);
   const items = array(data, "articles"),
     current = items.find((x) => x.id === active) || items[0];
-  function change(text: string) {
-    if (!editing) return;
-    history.current.push(editing.body);
-    redo.current = [];
-    setEditing({ ...editing, body: text });
-  }
-  function insert(before: string, after = "") {
-    if (!editor.current || !editing) return;
-    const el = editor.current,
-      s = el.selectionStart,
-      e = el.selectionEnd;
-    change(
-      editing.body.slice(0, s) +
-        before +
-        editing.body.slice(s, e) +
-        after +
-        editing.body.slice(e),
-    );
-    requestAnimationFrame(() => {
-      el.focus();
-      el.setSelectionRange(s + before.length, e + before.length);
-    });
+  function openEditor(article: RecordData | null) {
+    editSession.current++;
+    setEditorMessage("");
+    setTools(null);
+    setUndoable([false, false]);
+    setEditing(article);
   }
   async function remove(v: RecordData) {
     if (
@@ -177,10 +222,8 @@ export function Articles({ admin = false }: { admin?: boolean }) {
           <Button
             primary
             disabled={editingBusy}
-            onClick={() => {
-              editSession.current++;
-              setEditorMessage("");
-              setEditing({
+            onClick={() =>
+              openEditor({
                 title: "",
                 body: "",
                 category: "教程",
@@ -188,10 +231,8 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                 published: false,
                 public: false,
                 sort: 0,
-              });
-              history.current = [];
-              redo.current = [];
-            }}
+              })
+            }
           >
             新建文章
           </Button>
@@ -274,19 +315,17 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                 {a.published ? "已发布" : "草稿"}
               </Badge>,
               <Badge tone={a.public && a.published ? "orange" : ""}>
-                {a.public ? (a.published ? "公开" : "公开（未发布）") : "仅会员"}
+                {a.public
+                  ? a.published
+                    ? "公开"
+                    : "公开（未发布）"
+                  : "仅会员"}
               </Badge>,
               date(a.updatedAt),
               <div className="actions">
                 <Button
                   disabled={editingBusy}
-                  onClick={() => {
-                    editSession.current++;
-                    setEditorMessage("");
-                    setEditing({ ...a });
-                    history.current = [];
-                    redo.current = [];
-                  }}
+                  onClick={() => openEditor({ ...a })}
                 >
                   编辑
                 </Button>
@@ -296,7 +335,9 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                 </Button>
                 <Button
                   disabled={moving}
-                  onClick={() => void visibility(a, { published: !a.published })}
+                  onClick={() =>
+                    void visibility(a, { published: !a.published })
+                  }
                 >
                   {a.published ? "取消发布" : "发布"}
                 </Button>
@@ -399,9 +440,8 @@ export function Articles({ admin = false }: { admin?: boolean }) {
         <Modal
           title={editing.id ? "编辑文章" : "新建文章"}
           onClose={() => {
-            editSession.current++;
             setExpanded(false);
-            setEditing(null);
+            openEditor(null);
           }}
         >
           <fieldset className="article-edit-fields" disabled={editingBusy}>
@@ -480,7 +520,24 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                     ))}
                   </div>
                   <div className="markdown-mode-actions">
-                    <small>支持 Markdown</small>
+                    <small>支持 Markdown · 回车即换行</small>
+                    <details className="kbd-help">
+                      <summary
+                        className="markdown-icon"
+                        title="快捷键"
+                        aria-label="快捷键"
+                      >
+                        <Keyboard size={17} />
+                      </summary>
+                      <div className="kbd-pop">
+                        {shortcuts.map(([name, keys]) => (
+                          <div key={name}>
+                            <span>{name}</span>
+                            <kbd>{keys}</kbd>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
                     {expanded && (
                       <Button type="submit" className="small" primary>
                         保存
@@ -506,70 +563,41 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                   role="toolbar"
                   aria-label="Markdown 格式工具"
                 >
-                  {[
-                    ["加粗", "**", "**", Bold],
-                    ["斜体", "_", "_", Italic],
-                    ["删除线", "~~", "~~", Strikethrough],
-                    ["标题", "\n## ", "", Heading],
-                    ["无序列表", "\n- ", "", List],
-                    ["有序列表", "\n1. ", "", ListOrdered],
-                    ["引用", "\n> ", "", Quote],
-                    ["链接", "[", "](https://)", Link],
-                    ["图片", "![", "](https://)", Image],
-                    ["代码", "\n```\n", "\n```", Code],
-                    [
-                      "表格",
-                      "\n| 列1 | 列2 |\n| --- | --- |\n| 内容 | 内容 |\n",
-                      "",
-                      Table2,
-                    ],
-                    ["分隔线", "\n\n---\n\n", "", Minus],
-                  ].map(([t, b, a, Icon]) => {
-                    const ToolIcon = Icon as typeof Bold;
-                    return (
-                      <button
-                        type="button"
-                        key={String(t)}
-                        title={String(t)}
-                        aria-label={String(t)}
-                        className="markdown-icon"
-                        disabled={tab === "preview"}
-                        onClick={() => insert(String(b), String(a))}
-                      >
-                        <ToolIcon size={17} />
-                      </button>
-                    );
-                  })}
-                  <span className="markdown-divider" />
+                  {formatGroups.map((group, index) => (
+                    <Fragment key={index}>
+                      {group.map(([name, action, ToolIcon, keys]) => (
+                        <button
+                          type="button"
+                          key={action}
+                          title={keys ? `${name} ${keys}` : name}
+                          aria-label={name}
+                          className="markdown-icon"
+                          disabled={!tools || tab === "preview"}
+                          onClick={() => tools?.run(action)}
+                        >
+                          <ToolIcon size={17} />
+                        </button>
+                      ))}
+                      <span className="markdown-divider" />
+                    </Fragment>
+                  ))}
                   <button
                     type="button"
                     className="markdown-icon"
-                    title="撤销"
+                    title="撤销 Ctrl+Z"
                     aria-label="撤销"
-                    disabled={!history.current.length}
-                    onClick={() => {
-                      const t = history.current.pop();
-                      if (t !== undefined) {
-                        redo.current.push(editing.body);
-                        setEditing({ ...editing, body: t });
-                      }
-                    }}
+                    disabled={!tools || !undoable[0]}
+                    onClick={() => tools?.run("undo")}
                   >
                     <Undo2 size={17} />
                   </button>
                   <button
                     type="button"
                     className="markdown-icon"
-                    title="重做"
+                    title="重做 Ctrl+Y"
                     aria-label="重做"
-                    disabled={!redo.current.length}
-                    onClick={() => {
-                      const t = redo.current.pop();
-                      if (t !== undefined) {
-                        history.current.push(editing.body);
-                        setEditing({ ...editing, body: t });
-                      }
-                    }}
+                    disabled={!tools || !undoable[1]}
+                    onClick={() => tools?.run("redo")}
                   >
                     <Redo2 size={17} />
                   </button>
@@ -578,8 +606,9 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                     className="markdown-icon"
                     title="清空正文"
                     aria-label="清空正文"
+                    disabled={!tools || !editing.body}
                     onClick={() => {
-                      if (confirm("清空编辑区正文？")) change("");
+                      if (confirm("清空编辑区正文？")) tools?.run("clear");
                     }}
                   >
                     <Eraser size={17} />
@@ -588,24 +617,42 @@ export function Articles({ admin = false }: { admin?: boolean }) {
                 <div
                   className={`markdown-panels ${tab === "compare" ? "is-compare" : ""}`}
                 >
-                  {tab !== "preview" && (
-                    <textarea
-                      className="markdown-source"
-                      aria-label="文章 Markdown 正文"
-                      ref={editor}
-                      value={editing.body}
-                      onChange={(e) => change(e.target.value)}
-                    />
-                  )}{" "}
+                  <div
+                    className={`markdown-source ${tab === "preview" ? "is-hidden" : ""}`}
+                  >
+                    <Suspense
+                      fallback={
+                        <div className="markdown-loading">
+                          <LoaderCircle className="spin" size={16} />
+                          正在加载编辑器…
+                        </div>
+                      }
+                    >
+                      <MarkdownEditor
+                        value={editing.body}
+                        disabled={editingBusy}
+                        onChange={(body) =>
+                          setEditing((article) =>
+                            article ? { ...article, body } : article,
+                          )
+                        }
+                        onReady={setTools}
+                        onHistory={(canUndo, canRedo) =>
+                          setUndoable([canUndo, canRedo])
+                        }
+                        syncScroll={tab === "compare" ? previewPanel : null}
+                      />
+                    </Suspense>
+                  </div>
                   {tab !== "content" && (
-                    <div className="markdown-preview">
+                    <div className="markdown-preview" ref={setPreviewPanel}>
                       <Markdown text={editing.body} />
                     </div>
                   )}
                 </div>
                 <small className="markdown-status">
                   {editing.body.length} 字 · {editing.body.split("\n").length}{" "}
-                  行
+                  行{tab === "compare" && " · 对照模式两侧同步滚动"}
                 </small>
               </section>
               <label className="field mt16">
@@ -753,10 +800,7 @@ export function Tickets({ admin = false }: { admin?: boolean }) {
     [ticketError, setTicketError] = useState("");
   return (
     <>
-      <Header
-        title="工单"
-        sub="请说明问题和贴出任务记录"
-      >
+      <Header title="工单" sub="请说明问题和贴出任务记录">
         {!admin && (
           <Button primary onClick={() => setCreating(true)}>
             新建工单
