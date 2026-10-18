@@ -105,12 +105,14 @@ export function Select({
     </label>
   );
 }
+// className styles the whole row (label), not only the checkbox.
 export function Check({
   label,
+  className = "",
   ...props
 }: React.InputHTMLAttributes<HTMLInputElement> & { label: React.ReactNode }) {
   return (
-    <label className="check">
+    <label className={`check ${className}`.trim()}>
       <input type="checkbox" {...props} />
       <span>{label}</span>
     </label>

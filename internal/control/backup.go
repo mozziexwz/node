@@ -351,8 +351,18 @@ func (b *BackupService) deleteTarget(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSON(w, 200, map[string]bool{"ok": true})
 }
+
+// pack serves every backup path: whole-site backups, rollback copies, the
+// online export and the disaster archive. Relay-code SSH is never included.
 func (b *BackupService) pack(s *State) ([]byte, error) {
-	raw, err := json.Marshal(s)
+	shallow := *s
+	shallow.Docs = make(map[string]map[string]json.RawMessage, len(s.Docs))
+	for name, docs := range s.Docs {
+		if name != relayCodeSecretsCollection {
+			shallow.Docs[name] = docs
+		}
+	}
+	raw, err := json.Marshal(&shallow)
 	if err != nil {
 		return nil, err
 	}

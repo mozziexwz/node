@@ -23,6 +23,21 @@ const FreeRelayGuardCapability = "free_relay_socks_guard"
 const ScopedCleanupCapability = "scoped_relay_cleanup"
 const executorCapabilitiesHeader = "X-MSBOOST-Executor-Capabilities"
 
+// Newer capabilities use their own headers: older panels compare the header
+// above for an exact value, so it must keep carrying only the guard.
+const SSHKeyCapability = "ssh_key_auth"
+const RelayCodeCapability = "relay_code_v1"
+const SSHKeyHeader = "X-MSBOOST-SSH-Key"
+const RelayCodeHeader = "X-MSBOOST-Relay-Code"
+
+func setCapabilityHeaders(h http.Header) {
+	h.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
+	h.Set("X-MSBOOST-Scoped-Cleanup", "1")
+	h.Set(SSHKeyHeader, "1")
+	h.Set(RelayCodeHeader, "1")
+	h.Set("X-MSBOOST-Agent-Version", buildinfo.Version)
+}
+
 // Run polls authenticated envelopes. It never persists SSH credentials or logs
 // task bodies. A lost completion ACK is safe to retry; a job is never re-executed.
 func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
@@ -57,9 +72,7 @@ func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
 			request, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/executor/heartbeat", bytes.NewReader(body))
 			request.Header.Set("Authorization", "Bearer "+token)
 			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
-			request.Header.Set("X-MSBOOST-Scoped-Cleanup", "1")
-			request.Header.Set("X-MSBOOST-Agent-Version", buildinfo.Version)
+			setCapabilityHeaders(request.Header)
 			response, err := client.Do(request)
 			if err == nil {
 				response.Body.Close()
@@ -69,9 +82,7 @@ func Run(ctx context.Context, serverURL, token string, engine *Engine) error {
 	for ctx.Err() == nil {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/executor/next", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
-		req.Header.Set("X-MSBOOST-Scoped-Cleanup", "1")
-		req.Header.Set("X-MSBOOST-Agent-Version", buildinfo.Version)
+		setCapabilityHeaders(req.Header)
 		resp, err := client.Do(req)
 		if err != nil {
 			if !waitContext(ctx, 3*time.Second) {

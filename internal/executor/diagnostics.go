@@ -18,7 +18,7 @@ var diagnostics = map[string]Diagnostic{
 	"ssh_refused":            {"ssh_refused", "ssh_connect", "SSH 端口拒绝连接", "通过 VPS 控制台检查 SSH 服务及实际监听端口。"},
 	"ssh_connect":            {"ssh_connect", "ssh_connect", "无法连接 SSH 服务", "检查公网 IP、端口、VPS 网络和安全组。"},
 	"ssh_host_changed":       {"ssh_host_changed", "ssh_host_key", "SSH 主机指纹已变化，操作已中止", "先通过 VPS 控制台核实是否重装或更换主机，再在高级 SSH 设置中明确确认新指纹。"},
-	"ssh_auth":               {"ssh_auth", "ssh_auth", "SSH 认证失败", "检查用户名和密码，以及 SSH 是否允许 root 密码登录；此结果不一定表示密码错误。"},
+	"ssh_auth":               {"ssh_auth", "ssh_auth", "SSH 认证失败", "检查用户名、密码或私钥，以及 SSH 是否允许 root 用这种方式登录；此结果不一定表示密码或私钥错误。"},
 	"ssh_handshake":          {"ssh_handshake", "ssh_handshake", "SSH 握手失败", "确认端口提供的是 SSH 服务，并检查服务端算法配置和网络连接。"},
 	"ssh_session":            {"ssh_session", "ssh_session", "SSH 会话建立失败", "检查 VPS 的会话数、资源限制和 SSH 服务状态。"},
 	"task_timeout":           {"task_timeout", "execution", "任务执行超时或连接中断", "先核实 VPS 状态和服务是否已经创建；不会自动重试操作。"},

@@ -281,6 +281,10 @@ test(
           "front",
           "cleanup-preview",
           "cleanup",
+          "relay-check",
+          "relay-code",
+          "relay-inventory",
+          "relay-manage",
         ],
       );
       for (const width of [1440, 375]) {

@@ -1,10 +1,12 @@
 # MSBOOST
 
-MSBOOST 是自托管控制面板。会员在网页上将游戏节点部署到自己的 VPS，配置自备中转或使用捐赠权益转发；管理员管理执行机、节点、权益、兑换、工单和备份。系统 DD 使用固定版本的 [bin456789/reinstall](https://github.com/bin456789/reinstall) 脚本。
+MSBOOST 是自托管控制面板。会员在网页上将游戏节点部署到自己的 VPS，配置自备中转、用中转码把自己的中转服务器线路分享给朋友，或使用捐赠权益转发；管理员管理执行机、节点、权益、兑换、工单和备份。系统 DD 使用固定版本的 [bin456789/reinstall](https://github.com/bin456789/reinstall) 脚本。
 
 当前版本：**v2.4.1**。采用官方 systemd Caddy，应用与数据库继续使用预构建 Compose 镜像。支持 v2.0.1 的 systemd Caddy 安装升级，**不提供旧 Docker Caddy 迁移或旧数据导入。** 控制面支持 Debian 12/13；客户 VPS 免费部署工具支持 Debian 11/12/13；网站 DD 功能重装为 Debian 12。部署前请阅读[平台支持范围](docs/platform-support.md)和[安全边界](docs/security-and-limits.md)。
 
 新版免费中转和捐赠权益转发默认筛查并拒绝常见明文 SOCKS4/5 握手，无需会员另行设置。升级网站不会自动更新其他 VPS 上的旧执行机、节点 Agent 或已有中转；新转发须由具备防护能力的新版 Agent 执行，存量服务应按[Agent 安装与升级](docs/agent-installation.md)安排维护。加密或伪装的代理流量不能仅凭入口特征完全识别。
+
+客户的 SSH（密码或私钥）只用于当次任务，不写入数据库、任务记录或浏览器；仅在会员生成中转码时，按其设定的次数和时间（最多 10 次、72 小时）加密暂存，到期、用完或作废后自动删除，且不进入整站备份。用中转码建立的中转与手动配置的一样长期运行，不依赖暂存的 SSH。
 
 ## 一键安装
 
@@ -43,7 +45,7 @@ msboost admin-password  # 本机 root 交互修改管理员密码
 |---|---|---|
 | 网页 | `apps/web` | React / TypeScript / Vite：公开主页 `/home` 与文章 `/news`、会员工具与管理后台（`/`） |
 | 控制服务 | `cmd/server`、`internal/control` | 会话、权限、任务、权益、转发和备份 |
-| Executor | `cmd/agent --capability executor`、`internal/executor` | 受限 SSH 任务执行，不持久保存客户一次性 SSH 密码 |
+| Executor | `cmd/agent --capability executor`、`internal/executor` | 受限 SSH 任务执行（密码或密钥登录），不持久保存客户的 SSH |
 | Relay Agent | `cmd/agent --capability relay`、`internal/relayruntime` | 管理受管 GOST 转发进程，不具备 SSH/DD 执行能力 |
 | 数据与部署 | `deploy`、`Dockerfile` | PostgreSQL、Caddy HTTPS、镜像和安装生命周期 |
 

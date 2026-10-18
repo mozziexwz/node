@@ -293,6 +293,20 @@ func TestOldExecutorCannotCreateOrClaimNewRelayTask(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// The guard alone is no longer enough: a customer relay now carries a
+	// bandwidth choice and the user record that only newer executors honor.
+	w = httptest.NewRecorder()
+	service.create(w, taskRequest(t, user, "POST", "/api/tasks", "relay-guard-key", request))
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "升级执行机") {
+		t.Fatalf("guard-only executor allowed a relay with bandwidth and user record: %d %s", w.Code, w.Body.String())
+	}
+	if err := a.Store.Update(func(s *State) error {
+		record, _ := LoadDoc[ExecutorRecord](s, "executors", "executor-test")
+		record.Capabilities = []string{executor.FreeRelayGuardCapability, executor.RelayCodeCapability}
+		return SaveDoc(s, "executors", record.ID, record)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	w = httptest.NewRecorder()
 	service.create(w, taskRequest(t, user, "POST", "/api/tasks", "relay-guard-key", request))
 	if w.Code != http.StatusAccepted {
@@ -314,13 +328,34 @@ func TestOldExecutorCannotCreateOrClaimNewRelayTask(t *testing.T) {
 	if claimedByOld || strings.Contains(w.Body.String(), created.ID) {
 		t.Fatal("legacy executor claimed a guarded relay task")
 	}
+	guardOnlyContext, cancelGuardOnly := context.WithCancel(context.Background())
+	cancelGuardOnly()
+	guardOnly := httptest.NewRequest(http.MethodGet, "/api/executor/next", nil).WithContext(guardOnlyContext)
+	guardOnly.Header.Set("Authorization", "Bearer "+token)
+	guardOnly.Header.Set("X-MSBOOST-Executor-Capabilities", executor.FreeRelayGuardCapability)
+	w = httptest.NewRecorder()
+	service.next(w, guardOnly)
+	service.mu.Lock()
+	claimedByGuardOnly := service.envelopes[created.ID].AgentID != ""
+	service.mu.Unlock()
+	if claimedByGuardOnly || strings.Contains(w.Body.String(), created.ID) {
+		t.Fatal("an executor without relay records claimed a customer relay")
+	}
 	newPoll := httptest.NewRequest(http.MethodGet, "/api/executor/next", nil)
 	newPoll.Header.Set("Authorization", "Bearer "+token)
 	newPoll.Header.Set("X-MSBOOST-Executor-Capabilities", executor.FreeRelayGuardCapability)
+	newPoll.Header.Set(executor.RelayCodeHeader, "1")
 	w = httptest.NewRecorder()
 	service.next(w, newPoll)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), created.ID) {
 		t.Fatalf("guard-capable executor could not claim relay: %d %s", w.Code, w.Body.String())
+	}
+	var claimed executor.Job
+	if err := json.Unmarshal(w.Body.Bytes(), &claimed); err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Request.RateMbps != executor.DefaultRelayRateMbps || claimed.Request.Meta == nil || claimed.Request.Meta.Source != "manual" || claimed.Request.Meta.User != user.Email {
+		t.Fatalf("manual relay lost its default bandwidth or user record: %+v", claimed.Request)
 	}
 }
 

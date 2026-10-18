@@ -129,8 +129,14 @@ func (e *Engine) Execute(ctx context.Context, job Job) Result {
 		return e.deploy(ctx, job, r)
 	case "dd":
 		return e.dd(ctx, job, r)
-	case "relay":
+	case "relay", "relay-code":
 		return e.relay(ctx, job, r)
+	case "relay-check":
+		return e.relayCheck(ctx, job, r)
+	case "relay-inventory":
+		return e.relayInventory(ctx, job, r)
+	case "relay-manage":
+		return e.relayManage(ctx, job, r)
 	case "cleanup", "cleanup-preview":
 		return e.cleanup(ctx, job, r)
 	}
@@ -194,11 +200,24 @@ func (e *Engine) dd(ctx context.Context, job Job, r Result) Result {
 	if opts.PortMode == "new" {
 		port = opts.NewPort
 	}
-	script := prepareAsset(job.Script) + encodedAssignment("new_password", p) + encodedAssignment("new_port", strconv.Itoa(port))
+	script := prepareAsset(job.Script) + encodedAssignment("new_port", strconv.Itoa(port))
+	login := `--password "$new_password"`
+	if job.Request.SSH.UsesKey() && opts.LoginMode == "key" {
+		// The script cannot set a password and a key together. Only the public
+		// half derived from the private key is written into the new system.
+		key, err := AuthorizedKey(job.Request.SSH)
+		if err != nil {
+			return failed(r, "validate", err.Error())
+		}
+		script += encodedAssignment("new_ssh_key", key)
+		login = `--ssh-key "$new_ssh_key"`
+	} else {
+		script += encodedAssignment("new_password", p)
+	}
 	// The pinned upstream prompts for a username even when password is supplied.
 	// Supply it explicitly and detach stdin so an unexpected prompt cannot read
 	// the remaining outer bash script (including the preparation success marker).
-	script += "msboost_phase=prepare\nbash \"$work/installer.sh\" debian 12 --username root --password \"$new_password\" --ssh-port \"$new_port\" </dev/null >\"$work/private.log\" 2>&1\nprintf 'MSBOOST_PREPARED=1\\n'\n"
+	script += "msboost_phase=prepare\nbash \"$work/installer.sh\" debian 12 --username root " + login + " --ssh-port \"$new_port\" </dev/null >\"$work/private.log\" 2>&1\nprintf 'MSBOOST_PREPARED=1\\n'\n"
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	if err != nil || marker(out, "MSBOOST_PREPARED") != "1" {
 		return failRemote(r, "prepare", out, err)
@@ -240,6 +259,14 @@ func resolvePublicTarget(ctx context.Context, host string) (string, error) {
 }
 
 func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
+	// Only the new relay-code kind reports which server failed; older panels
+	// never issue it, so their strict result decoding never sees the field.
+	role := func(out Result, name string) Result {
+		if job.Request.Kind == "relay-code" {
+			out.FailedRole = name
+		}
+		return out
+	}
 	info, err := ParseClientConfig(job.Request.ClientConfig)
 	if err != nil {
 		return failed(r, "config", err.Error())
@@ -249,30 +276,42 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 		return failed(r, "target", err.Error())
 	}
 	// Validate both SSH endpoints before any mutation, including their confirmed host keys.
-	for _, s := range []*SSH{&job.Request.SSH, job.Request.Front} {
+	for i, s := range []*SSH{&job.Request.SSH, job.Request.Front} {
 		if s == nil {
 			continue
 		}
 		if checked, ok := e.preflightDebian(ctx, *s, r); !ok {
-			return checked
+			return role(checked, map[int]string{0: "relay", 1: "front"}[i])
 		}
 	}
-	port, bbr, err := e.installRelay(ctx, job.Request.SSH, target, info.TargetPort, job.ID+"r", 625000)
+	rate := job.Request.RateMbps
+	if rate == 0 {
+		rate = DefaultRelayRateMbps
+	}
+	port, bbr, err := e.installRelay(ctx, job.Request.SSH, target, info.TargetPort, job.ID+"r", RelayRateBytes(rate), job.Request.Meta, rate)
 	r.Health = &Health{BBR: bbr}
 	if err != nil {
-		return failRemote(r, "relay", nil, err)
+		return role(failRemote(r, "relay", nil, err), "relay")
 	}
 	r.Hops = []Hop{{FromHost: job.Request.SSH.Host, FromPort: port, ToHost: info.TargetHost, ToPort: info.TargetPort}}
 	entryHost, entryPort := job.Request.SSH.Host, port
 	if job.Request.Front != nil {
-		frontPort, frontBBR, err := e.installRelay(ctx, *job.Request.Front, job.Request.SSH.Host, port, job.ID+"f", 625000)
+		// The front belongs to the user. A relay code's private owner note is
+		// recorded only on the owner's server; the front keeps the user's remark.
+		var frontMeta *RelayMeta
+		if job.Request.Meta != nil {
+			copied := *job.Request.Meta
+			copied.Remark = job.Request.Remark
+			frontMeta = &copied
+		}
+		frontPort, frontBBR, err := e.installRelay(ctx, *job.Request.Front, job.Request.SSH.Host, port, job.ID+"f", RelayRateBytes(rate), frontMeta, rate)
 		if err != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 			if cleanupErr := e.cleanupRelay(cleanupCtx, job.Request.SSH, job.ID+"r"); cleanupErr != nil {
-				return failRemote(r, "cleanup", nil, diagnosticError("cleanup_failed"))
+				return role(failRemote(r, "cleanup", nil, diagnosticError("cleanup_failed")), "relay")
 			}
-			return failRemote(r, "front", nil, err)
+			return role(failRemote(r, "front", nil, err), "front")
 		}
 		if frontBBR != bbr {
 			bbr = "partial"
@@ -296,7 +335,7 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 	}
 	r.State = "succeeded"
 	r.Phase = "complete"
-	r.Message = "TCP 中转服务已真实绑定端口；每端口上下行各 5 Mbps，游戏连接尚未验证"
+	r.Message = "TCP 中转服务已真实绑定端口；每端口上下行各 " + strconv.Itoa(rate) + " Mbps，游戏连接尚未验证"
 	r.Health = &Health{Service: "running", LocalSelfTest: "target_tcp_reachable", PublicTCP: e.TCPProbe(ctx, entryHost, entryPort), Game: "not_tested", BBR: bbr}
 	return r
 }
@@ -315,7 +354,7 @@ func (e *Engine) front(ctx context.Context, job Job, r Result) Result {
 	if checked, ok := e.preflightDebian(ctx, job.Request.SSH, r); !ok {
 		return checked
 	}
-	port, bbr, err := e.installRelay(ctx, job.Request.SSH, host, target.Port, job.ID+"p", 0)
+	port, bbr, err := e.installRelay(ctx, job.Request.SSH, host, target.Port, job.ID+"p", 0, nil, 0)
 	r.Health = &Health{BBR: bbr}
 	if err != nil {
 		return failRemote(r, "front", nil, err)
@@ -326,7 +365,7 @@ func (e *Engine) front(ctx context.Context, job Job, r Result) Result {
 	return r
 }
 func validSHA(s string) bool { b, e := hex.DecodeString(s); return e == nil && len(b) == 32 }
-func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetPort int, id string, rateBytes int) (int, string, error) {
+func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetPort int, id string, rateBytes int, meta *RelayMeta, rateMbps int) (int, string, error) {
 	if len(id) > 100 || strings.ContainsAny(id, "/\\. \n\r'\"") {
 		return 0, "", errors.New("任务标识无效")
 	}
@@ -345,7 +384,12 @@ func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetP
 	if !strings.HasPrefix(url, "https://github.com/go-gost/gost/releases/download/v") || !validSHA(digest) {
 		return 0, "", diagnosticError("executor_configuration")
 	}
-	script := "set -Eeuo pipefail\numask 077\n" + diagnosticPrelude + encodedAssignment("gost_url", url) + encodedAssignment("gost_sha", digest) + encodedAssignment("task_id", id) + encodedAssignment("target_host", target) + encodedAssignment("target_port", strconv.Itoa(targetPort)) + encodedAssignment("rate_bytes", strconv.Itoa(rateBytes)) + relayInstallScript
+	var record RelayMeta
+	if meta != nil {
+		record = *meta
+	}
+	script := "set -Eeuo pipefail\numask 077\n" + diagnosticPrelude + encodedAssignment("gost_url", url) + encodedAssignment("gost_sha", digest) + encodedAssignment("task_id", id) + encodedAssignment("target_host", target) + encodedAssignment("target_port", strconv.Itoa(targetPort)) + encodedAssignment("rate_bytes", strconv.Itoa(rateBytes))
+	script += encodedAssignment("meta_source", record.Source) + encodedAssignment("meta_code_tail", record.CodeTail) + encodedAssignment("meta_user", record.User) + encodedAssignment("meta_panel", record.Panel) + encodedAssignment("meta_remark", record.Remark) + encodedAssignment("meta_rate", strconv.Itoa(rateMbps)) + relayInstallScript
 	out, err := e.Remote.Run(ctx, s, script)
 	if err != nil {
 		return 0, marker(out, "MSBOOST_BBR"), remoteDiagnostic(err, out, "relay")

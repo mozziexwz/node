@@ -377,6 +377,10 @@ func isolateRestoredState(s *State, disaster bool) error {
 	s.Settings["maintenance"] = true
 	delete(s.Docs, "email_challenges")
 	delete(s.Docs, "executor_agents")
+	// Backups hold no relay-code SSH, so no restored code may stay usable.
+	if _, err := endOwnerRelayCodes(s, "", "restore", "system", time.Now()); err != nil {
+		return err
+	}
 	if err := prepareRestoredRelay(s, time.Now().UnixMilli(), disaster); err != nil {
 		return err
 	}

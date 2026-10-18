@@ -9,6 +9,7 @@ import {
 } from "./relay-status";
 import { RelayStatusDetail } from "./relay-status-view";
 import { SiteSettings } from "./site-settings";
+import { RelayCodeSettings } from "./relay-code";
 import {
   Header,
   Button,
@@ -1355,6 +1356,7 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           ["smtp", "SMTP 邮箱"],
           ["limits", "操作限额"],
           ["site", "主页与 SEO"],
+          ["relayCodes", "中转码"],
         ].map(([k, t]) => (
           <button
             className={tab === k ? "active" : ""}
@@ -1371,6 +1373,8 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
       <div className="card mt16" key={tab}>
         {tab === "site" ? (
           <SiteSettings onSaved={() => settingsSaved(false)} />
+        ) : tab === "relayCodes" ? (
+          <RelayCodeSettings onSaved={onRefresh} />
         ) : tab === "captcha" ? (
           <AsyncForm
             onSubmit={async (f) => {

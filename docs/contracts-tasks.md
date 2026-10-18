@@ -1,10 +1,10 @@
 # 任务与执行机 API
 
-浏览器使用会话 Cookie，写请求需要 `X-CSRF-Token`。JSON 使用 camelCase，响应不缓存，错误为 `{ "error": "中文说明" }`。SSH 密码、免费配置和执行信封仅短期保存在内存，任务审计不存密码或原始远端日志。
+浏览器使用会话 Cookie，写请求需要 `X-CSRF-Token`。JSON 使用 camelCase，响应不缓存，错误为 `{ "error": "中文说明" }`。SSH 密码或私钥、免费配置和执行信封仅短期保存在内存，任务审计不存密码、私钥或原始远端日志。唯一例外是中转码暂存的 SSH，见「中转码」一节。
 
 ## SSH 主机信任
 
-`SSH` 对象为 `{host,port,user:"root",password,fingerprint,trustMode?,replaceFingerprint?}`。`trustMode` 接受 `tofu`、`strict`；省略时兼容原有已确认指纹客户端。两种模式都要求真实指纹，不会关闭 SSH 主机校验。
+`SSH` 对象为 `{host,port,user:"root",authMethod?:"password"|"key",password,privateKey?,passphrase?,fingerprint,trustMode?,replaceFingerprint?}`。`authMethod` 省略或为 `password` 时只接受 `password`；为 `key` 时只接受 `privateKey`（OpenSSH 读得懂的 ed25519、ECDSA、RSA 私钥，不超过 16 KB，PuTTY `.ppk` 需先导出）和可选 `passphrase`，`password` 必须为空。私钥在接受任务前即完整解析，格式错误或口令不对直接返回 400。`trustMode` 接受 `tofu`、`strict`；省略时兼容原有已确认指纹客户端。两种模式都要求真实指纹，不会关闭 SSH 主机校验。
 
 - `POST /api/fingerprints` 接受 `{host,port}`，不接收密码。在线执行机进行真实公钥握手，最多等待约 28 秒。
 - 返回 `{host,port,fingerprint,algorithm,checkedAt,rememberedFingerprint,authenticationChecked:false}`，时间为 Unix 毫秒。未记住过的主机返回空 `rememberedFingerprint`。**获得公钥不代表密码正确，认证只在实际任务连接时进行。**
@@ -16,15 +16,15 @@
 
 ## 用户任务
 
-`GET /api/tasks` 返回 `{tasks:Task[],limits:{deploy,relay,dd,fingerprint,cleanup,cleanup-preview}}`。限额字段为 `minutes,count,remaining,nextAt`；`nextAt` 为 Unix 毫秒，未受限时为零。指纹任务不进入用户普通任务列表。
+`GET /api/tasks` 返回 `{tasks:Task[],limits:{deploy,relay,dd,fingerprint,cleanup,cleanup-preview,relay-manage}}`。限额字段为 `minutes,count,remaining,nextAt`；`nextAt` 为 Unix 毫秒，未受限时为零。`relay` 限额同时计入手动配置中转、使用中转码（`relay-code`）和生成中转码时的服务器检查（`relay-check`）；`relay-manage` 是中转服务器读取和操作的单独限额。指纹任务、`relay-inventory` 和 `relay-manage` 不进入用户普通任务列表。
 
 `POST /api/tasks` 要求 8–128 字符的 `Idempotency-Key`；HTTP 202 表示新任务，200 表示同一参数的幂等结果。重复键不能提交不同参数，幂等重投不重新执行动作。
 
 | kind | 额外参数 |
 |---|---|
 | `deploy` | `ssh`；仅接受 `mode:"fresh"`。每次重新生成受管节点认证与端口，不重装操作系统；失败时安装器仍以私有快照回滚。部署前只读核验目标为 Debian 11 或以上版本。 |
-| `relay` | `ssh`；`clientConfig` 为 JSON 对象，只允许一个 profile、server 和 TCP 端口；可选 `front:SSH` 增加第二台前置机，不能替代中转；`remark` 可选、最多 60 字符且不得含换行。中转及前置 VPS 均先只读核验为 Debian 11 或以上版本。 |
-| `dd` | `ssh`；`dd:{confirmErase:true,portMode:"keep"\|"new",newPort?,passwordMode:"keep"\|"new",newPassword?}`，仅固定 Debian 12 重装流程 |
+| `relay` | `ssh`；`clientConfig` 为 JSON 对象，只允许一个 profile、server 和 TCP 端口，其余字段（如 `trafficPattern`）原样保留；可选 `front:SSH` 增加第二台前置机，不能替代中转；`remark` 可选、最多 60 字符且不得含换行；`rateMbps` 可选，上下行各限速，省略为管理员设置的默认值（5），须在管理员设置的范围（1–10）内。网站另行写入使用者记录（`source:"manual"`、配置人邮箱），浏览器不能提交 `meta`。中转及前置 VPS 均先只读核验为 Debian 11 或以上版本。 |
+| `dd` | `ssh`；`dd:{confirmErase:true,portMode:"keep"\|"new",newPort?,passwordMode:"keep"\|"new",newPassword?,loginMode?}`，仅固定 Debian 12 重装流程。密钥登录时必须给 `loginMode`：`key` 把当前私钥推导出的公钥写入新系统（`passwordMode:"keep"`，不设 root 密码，私钥本身不写入），`password` 改为新 root 密码（`passwordMode:"new"` 与 `newPassword`）；重装脚本不能同时设置密码和公钥。密码登录时不接受 `loginMode:"key"`。 |
 | `cleanup-preview` / `cleanup` | 见下节；不接受前置机、客户端配置或 DD 参数 |
 
 `GET /api/tasks/{id}` 返回元数据，所有者和管理员可审计；管理员不能读取其他用户的临时配置。
@@ -32,11 +32,11 @@
 `GET /api/admin/tasks` 仅管理员可读，返回 `{tasks:[{...Task,userName}]}`，按 `createdAt` 从新到旧排列。`userName` 显示操作人的当前登录邮箱；关联账号已删除或缺失时为“已删除用户”，账号邮箱为空时为“未设置邮箱”。原 `userId` 保留，便于核对同名或已删除用户；显示名称仅在读取审计列表时计算，不写回历史任务，也不加入普通用户任务 API。
 
 - `q`：可选关键词，去除首尾空白后，不区分大小写地匹配 `userName,userId,id,host,kind,state,remark` 中任一字段的子串；为空时不限制。
-- `kind`：去除首尾空白后，精确匹配 `deploy,relay,dd,fingerprint,front,cleanup-preview,cleanup`；省略或为空时显示全部，未知类型返回 HTTP 400。
+- `kind`：去除首尾空白后，精确匹配 `deploy,relay,dd,fingerprint,front,cleanup-preview,cleanup,relay-check,relay-code,relay-inventory,relay-manage`；省略或为空时显示全部，未知类型返回 HTTP 400。
 - 同时提供 `q` 和 `kind` 时取交集，不增加分页或总数字段；无匹配项返回 `{tasks:[]}`。先核验管理员权限，再校验参数和读取任务；普通用户或未登录请求返回 HTTP 403。
 - 搜索仅检查上述公开审计字段，不读取密码、执行信封或客户端配置。`configAvailable` 仍仅对任务所有者且临时配置未过期时为真；管理员不能凭审计结果下载其他用户的配置。
 
-Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,phase,message,errorCode?,nextStep?,createdAt,updatedAt,configAvailable,configHost?,configPort?,health?,hops?,cleanup?`。指纹是公钥摘要，不是私钥；内部幂等摘要和租约不属于普通审计字段。
+Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,phase,message,errorCode?,nextStep?,createdAt,updatedAt,configAvailable,configHost?,configPort?,health?,hops?,cleanup?,rateMbps?,codeTail?`。使用中转码的任务对使用者只显示打码的中转服务器 IP，不返回拥有者的 SSH 端口和指纹。指纹是公钥摘要，不是私钥；内部幂等摘要和租约不属于普通审计字段。
 
 状态为 `queued,running,succeeded,failed,executed,unknown,interrupted`。客户端轮询至终态。`executed` 仅用于 DD：准备成功、获得重启提交标志并确认预期断线；不声称新系统已经安装完成。提交证据不完整为 `unknown`，需从 VPS 控制台核实。控制面重启或响应超时不会重放已交付动作；非 DD 中断为 `interrupted`，对应 DD 为 `unknown`。
 
@@ -45,6 +45,30 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 `health` 分离 `service,localSelfTest,publicTCP,game`；`game` 保留协议兼容，当前没有游戏探测，UI 不显示未检测的 Game 行。页面显示“服务运行 / 本地自测 / 公网 TCP 可达性”，并说明游戏需自行验证。`target_tcp_reachable` 仅表示目标 TCP 可达。`hops` 字段为 `fromHost,fromPort,toHost,toPort`。
 
 维护模式对所有角色（含管理员）阻止新部署、中转、DD、清理及权益前置执行任务；已接受任务不自动取消。历史元数据、所有者临时配置和无密码的只读指纹探测仍可使用。指纹探测要求已认证的 active 账户、正常配额、公网地址及在线执行机，不套用免费工具邮箱要求；实际创建免费任务仍在读取 SSH 凭据前执行邮箱门禁，权益前置仍检查维护状态和权益。
+
+## 中转码
+
+拥有者生成中转码后，朋友用中转码在拥有者的中转服务器上配置中转，拥有者不用交出 SSH。网站只在拥有者设定的次数（1–10，默认 1）和有效期（1–72 小时，默认 24）内用主密钥加密暂存 SSH（集合 `relay_code_secrets`，不进入任何备份，任何接口都不返回），到期、用完、作废、拥有者账号停用、管理员停用或删除全部、关闭功能时立即删除，删除检查每分钟一次。已经建立的中转不受影响。中转码形如 `MSB-XXXX-XXXX-XXXX`（60 位随机），查找使用 HMAC 摘要，不区分大小写。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/relay-codes` | `{ssh,maxUses,ttlHours,rateMbps,note,acknowledge:true}`，需要 `Idempotency-Key` 和 30 分钟内的指纹检查。创建状态为 `checking` 的中转码和一次 `relay-check` 任务（计入 `relay` 限额）。检查通过才加密暂存 SSH、固定指纹并转为 `active`，有效期从此时算起；检查失败不保存任何信息并删除这个中转码。每人同时有效（含检查中）最多 5 个。返回 `{code,task}`，浏览器轮询任务后读取详情。 |
+| GET | `/api/relay-codes` | 我的中转码：`{codes,stats,settings,disabled,limit,manageLimit}`。`codes[]` 含完整 `code`（仅拥有者）、`masked`、`tail`、服务器、指纹、登录方式、次数、预占、带宽、到期、`secretHeld`、删除原因、建立和失败数。 |
+| GET | `/api/relay-codes/{id}` | 详情与使用记录：使用者完整邮箱、打码节点 IP、中转端口、结果和失败原因。 |
+| PATCH | `/api/relay-codes/{id}` | `{extendHours?,maxUses?,note?}`，仅 SSH 暂存期间。有效期从生成时算起不超过上限（72 小时），次数只能增加且不超过上限（10）。中转服务器、登录信息和带宽不能改。 |
+| POST | `/api/relay-codes/{id}/revoke` | `{deleteRelays}`。中转码立即失效，SSH 在同一事务中删除。`deleteRelays:true` 时另建一次 `relay-manage` 删除任务，SSH 只在这个任务的内存信封里；无法建立任务时照常作废并返回 `warning`。 |
+| POST | `/api/relay-codes/preview` | `{code}`，返回 `{ownerMasked,serverMasked,os,maxUses,remaining,expiresAt,rateMbps,tail,usable}`。无效 404，用完、过期或作废 410。 |
+| POST | `/api/relay-codes/redeem` | `{code,clientConfig,remark,front?,consent:true}`，需要 `Idempotency-Key`；`front` 为使用者自己的前置机 SSH（需指纹检查）。先预占一次，任务成功才计次，失败、中断或前置机失败（执行机会删除刚建立的中转）都归还；最后一次用完时立即删除 SSH。创建 `relay-code` 任务（计入使用者的 `relay` 限额），带宽按中转码设定。拥有者服务器上只写入使用者邮箱和节点 IP、端口，不写节点认证。 |
+| GET | `/api/relay-codes/used` | 我使用的中转：打码服务器 IP 和拥有者邮箱、入口端口、我的节点、带宽、来源中转码尾号。只显示建立时的结果。 |
+| POST | `/api/relay-servers/inventory` | `{ssh}` 或 `{codeId}`（需管理员允许使用暂存 SSH），只读读取服务器上全部 MSBOOST 中转。 |
+| POST | `/api/relay-servers/actions` | `{ssh 或 codeId,action:rate\|pause\|resume\|restart\|delete,items,rateMbps?}`，`items` 为受管编号（1–100 条），只作用于列出的中转。 |
+| GET | `/api/relay-servers/results/{taskId}` | 读取或操作完成后 10 分钟内，请求者取回 `{os,relays}` 或 `{managed}`。列表只返回打码节点 IP。 |
+
+`preview` 和 `redeem` 共用使用尝试限流：每账号每小时 10 次、每 IP 每小时 30 次（管理员可调）。读取和操作共用 `relay-manage` 限额（默认每 15 分钟 20 次），每次写审计（不含 SSH）。只读的 `relay-check`、`relay-inventory` 不占用服务器，也不被其他任务阻挡。
+
+使用者记录为每条中转目录下的 `meta.json`（root，0600）：`version:1,source:"code"|"manual",codeTail?,user,panel,target,port,rateMbps,remark,createdAt`（RFC 3339 UTC）。中转码来源的 `remark` 是拥有者给中转码写的备注，只写在拥有者的服务器上；使用者前置机上的记录用使用者自己的配置备注。修改带宽同步更新 `rateMbps`；暂停写入 `paused` 标记并停用服务。没有 `meta.json` 的旧中转显示为「升级前配置」。
+
+管理员接口：`GET /api/admin/relay-codes`（统计、按用户、SSH 删除记录、设置）、`GET /api/admin/relay-codes/users/{id}`、`POST /api/admin/relay-codes/users/{id}/revoke`、`POST /api/admin/relay-codes/users/{id}/feature`（`{enabled,reason}`，停用同时作废其全部中转码）、`POST /api/admin/relay-codes/purge`（`{confirm:"DELETE_ALL_RELAY_CODE_SSH"}`）。设置通过 `PUT /api/admin/settings` 的 `relayCodes` 字段保存；关闭功能会立即删除全部暂存的 SSH。
 
 ## 预览与清理
 
@@ -75,7 +99,7 @@ UI 折叠入口为“卸载 MSBOOST”或“卸载自备中转”。点击“继
 执行机重新枚举并验证所有权、完整文件摘要、服务及受管防火墙记录；内容变化即中止。运行中的 `cache.db` 或规则更新也会使预览失效，这是安全约束，不能跳过。成功结果必须返回相同摘要和 `removed:true`；失败可能已停止部分服务或移除部分文件，不能声称全部完成，不自动重试。
 
 - `msboost`：仅 `/etc/msboost`、`/var/lib/msboost`、`/usr/local/bin/msboost`、`/etc/systemd/system/msboost.service`、`/root/直连.json` 及原状态记录为本项目创建的防火墙规则。要求 `msboost-installer-v1` 标记与匹配服务/配置；未知子文件、符号链接、挂载点、权限异常或额外 systemd 执行钩子均拒绝。
-- `relay`：仅本项目 `msboost-free-*` 服务及对应 `/etc/msboost-free/<任务ID>`，检查完整布局、固定二进制路径、配置和防火墙所有权。旧版本无 `managed-by` 时仍须通过完整旧布局验证；不删除第三方 GOST。
+- `relay`：仅本项目 `msboost-free-*` 服务及对应 `/etc/msboost-free/<任务ID>`，检查完整布局、固定二进制路径、配置和防火墙所有权；目录里允许使用者记录 `meta.json` 和暂停标记 `paused`。旧版本无 `managed-by` 时仍须通过完整旧布局验证；不删除第三方 GOST。
 - 备份、系统账户、依赖和共享二进制缓存保留；不清理网站、Docker、其他软件或全局防火墙。不同 VPS 的前置与中转需分别预览、清理。
 
 ## 失败诊断白名单
@@ -86,7 +110,7 @@ UI 折叠入口为“卸载 MSBOOST”或“卸载自备中转”。点击“继
 |---|---|
 | `ssh_timeout` / `ssh_refused` / `ssh_connect` | SSH 超时、端口拒绝、连接失败 |
 | `ssh_host_changed` | 主机指纹变化，停止连接 |
-| `ssh_auth` | 认证失败；不能断言一定是密码错误，也可能禁止 root 密码登录 |
+| `ssh_auth` | 认证失败；不能断言一定是密码或私钥错误，也可能禁止 root 用这种方式登录 |
 | `ssh_handshake` / `ssh_session` | 握手或会话建立失败 |
 | `task_timeout` / `executor_offline` | 执行超时/连接中断，或执行机响应中断 |
 | `unsupported_system` / `missing_dependency` | 系统/架构不支持，或依赖不可用 |
@@ -118,6 +142,8 @@ GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/
 - 执行机与 relay Agent 接口（`/api/executor/*`、`/api/relay-agent/register`、`/api/relay-agent/v2/sync`、`/api/relay-agent/enrollment-check`）先在内存中核对令牌哈希，未知令牌不进入数据库事务；已知令牌仍在各自事务内再次校验，撤销立即生效。同一来源（IPv6 按 /64）10 分钟内鉴权失败 30 次后，后续未知令牌返回 429 并带 `Retry-After`，有效令牌不受影响；控制面暂时无法核对时返回 503。两者均应稍后重试，只有 401 表示令牌被拒绝。
 
 执行机以 `msboost-agent --capability executor` 运行，配置 `MSBOOST_SERVER_URL`、`MSBOOST_EXECUTOR_TOKEN` 和两架构的 `GOST_*_URL` / `GOST_*_SHA256`。控制面要求 HTTPS，仅 loopback 开发允许 HTTP。GOST 使用固定官方 `go-gost/gost` Release，不使用 `latest`。远端免费中转要求 root SSH、systemd 247+ / `LoadCredential`；安装可在 Debian/Ubuntu 补齐 Python 3、curl、tar，其他系统需预先准备。清理预览不安装依赖。
+
+执行机在每次轮询和心跳中声明能力：`X-MSBOOST-Executor-Capabilities: free_relay_socks_guard`（中转防护）、`X-MSBOOST-Scoped-Cleanup: 1`（按任务清理）、`X-MSBOOST-SSH-Key: 1`（密钥登录）和 `X-MSBOOST-Relay-Code: 1`（中转带宽、使用者记录、`relay-check`、`relay-code`、`relay-inventory`、`relay-manage`）。新能力使用独立请求头，旧面板对第一个请求头做精确比较，不受影响。控制面只把任务派给声明了全部所需能力的执行机；创建时没有这样的在线执行机则拒绝并说明需要升级。手动配置中转现在也需要 `X-MSBOOST-Relay-Code`，以保证带宽和使用者记录生效。
 
 网站升级不会自动更新独立 Agent。v0.2.2 新诊断与清理需要新版执行机，参见 [Agent 安装与升级](agent-installation.md)。
 

@@ -27,7 +27,21 @@ func PublicIP(host string) error {
 	}
 	return nil
 }
+
+// ValidateSSH also parses a private key, so a malformed key or a wrong
+// passphrase is rejected before any task is queued.
 func ValidateSSH(s SSH) error {
+	if err := validateSSHFields(s); err != nil {
+		return err
+	}
+	if s.UsesKey() {
+		_, err := ParsePrivateKey(s.PrivateKey, s.Passphrase)
+		return err
+	}
+	return nil
+}
+
+func validateSSHFields(s SSH) error {
 	if err := PublicIP(s.Host); err != nil {
 		return err
 	}
@@ -41,8 +55,23 @@ func ValidateSSH(s SSH) error {
 	if s.User != "root" {
 		return errors.New("当前安装器要求 root SSH 登录")
 	}
-	if len(s.Password) < 1 || len(s.Password) > 512 || strings.ContainsAny(s.Password, "\x00\r\n") {
-		return errors.New("SSH 密码无效")
+	switch s.AuthMethod {
+	case "", "password":
+		if len(s.Password) < 1 || len(s.Password) > 512 || strings.ContainsAny(s.Password, "\x00\r\n") {
+			return errors.New("SSH 密码无效")
+		}
+		if s.PrivateKey != "" || s.Passphrase != "" {
+			return errors.New("密码登录不能同时提交私钥")
+		}
+	case "key":
+		if s.Password != "" {
+			return errors.New("密钥登录不能同时提交密码")
+		}
+		if len(s.PrivateKey) == 0 || len(s.PrivateKey) > maxPrivateKeyBytes {
+			return errors.New("SSH 私钥为空或超过 16 KB")
+		}
+	default:
+		return errors.New("SSH 登录方式无效")
 	}
 	if !fingerprintPattern.MatchString(s.Fingerprint) {
 		return errors.New("请先检查并核对真实 SSH SHA256 指纹")
@@ -68,6 +97,13 @@ func ValidateRequest(r Request) error {
 	if r.Kind != "cleanup" && r.Kind != "cleanup-preview" && r.Cleanup != nil {
 		return errors.New("清理参数不匹配")
 	}
+	relayInstall := r.Kind == "relay" || r.Kind == "relay-code"
+	if !relayInstall && (r.RateMbps != 0 || r.Meta != nil) {
+		return errors.New("中转带宽和使用者记录只用于中转任务")
+	}
+	if r.Kind != "relay-manage" && r.Manage != nil {
+		return errors.New("中转管理参数不匹配")
+	}
 	switch r.Kind {
 	case "cleanup", "cleanup-preview":
 		if r.Cleanup == nil || (r.Cleanup.Scope != "msboost" && r.Cleanup.Scope != "relay") || r.Front != nil || r.DD != nil || len(r.ClientConfig) > 0 {
@@ -92,7 +128,7 @@ func ValidateRequest(r Request) error {
 		if r.Front != nil || r.DD != nil || len(r.ClientConfig) > 0 {
 			return errors.New("部署参数不匹配")
 		}
-	case "relay":
+	case "relay", "relay-code":
 		if _, err := ParseClientConfig(r.ClientConfig); err != nil {
 			return err
 		}
@@ -103,6 +139,26 @@ func ValidateRequest(r Request) error {
 			if net.ParseIP(r.Front.Host).Equal(net.ParseIP(r.SSH.Host)) {
 				return errors.New("前置机和中转机必须是两台服务器")
 			}
+		}
+		if r.RateMbps < 0 || r.RateMbps > MaxRelayRateMbps || (r.Kind == "relay-code" && r.RateMbps == 0) {
+			return errors.New("中转带宽必须为 1–10 Mbps")
+		}
+		if err := validateRelayMeta(r.Meta, r.Kind); err != nil {
+			return err
+		}
+		if r.Mode != "" || r.DD != nil {
+			return errors.New("中转参数不匹配")
+		}
+	case "relay-check", "relay-inventory":
+		if r.Front != nil || r.DD != nil || len(r.ClientConfig) > 0 || r.Mode != "" || r.Remark != "" {
+			return errors.New("中转服务器读取参数不匹配")
+		}
+	case "relay-manage":
+		if r.Front != nil || r.DD != nil || len(r.ClientConfig) > 0 || r.Mode != "" || r.Remark != "" {
+			return errors.New("中转管理参数不匹配")
+		}
+		if err := validateRelayManage(r.Manage); err != nil {
+			return err
 		}
 	case "dd":
 		if r.DD == nil || !r.DD.ConfirmErase {
@@ -117,6 +173,24 @@ func ValidateRequest(r Request) error {
 		if r.DD.PasswordMode != "keep" && r.DD.PasswordMode != "new" {
 			return errors.New("DD 密码策略无效")
 		}
+		// The pinned reinstall script cannot set a password and a key at once.
+		if r.SSH.UsesKey() {
+			switch r.DD.LoginMode {
+			case "key":
+				if r.DD.PasswordMode != "keep" || r.DD.NewPassword != "" {
+					return errors.New("继续使用当前密钥时不能设置新的 root 密码")
+				}
+				return nil
+			case "password":
+				if r.DD.PasswordMode != "new" {
+					return errors.New("改用密码登录时请填写新的 root 密码")
+				}
+			default:
+				return errors.New("请选择重装后的登录方式")
+			}
+		} else if r.DD.LoginMode != "" && r.DD.LoginMode != "password" {
+			return errors.New("密码登录的服务器只能用密码重装")
+		}
 		p := r.SSH.Password
 		if r.DD.PasswordMode == "new" {
 			p = r.DD.NewPassword
@@ -126,6 +200,82 @@ func ValidateRequest(r Request) error {
 		}
 	default:
 		return errors.New("不支持的任务类型")
+	}
+	return nil
+}
+
+const (
+	DefaultRelayRateMbps = 5
+	MaxRelayRateMbps     = 10
+)
+
+var managedRelayID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
+var codeTailPattern = regexp.MustCompile(`^[A-Z0-9]{4}$`)
+
+// RelayRateBytes converts the per-direction Mbps setting for the GOST limiter.
+func RelayRateBytes(mbps int) int {
+	if mbps == 0 {
+		mbps = DefaultRelayRateMbps
+	}
+	return mbps * 125000
+}
+
+func validateRelayMeta(m *RelayMeta, kind string) error {
+	if m == nil {
+		if kind == "relay-code" {
+			return errors.New("中转码任务缺少使用者记录")
+		}
+		return nil
+	}
+	switch m.Source {
+	case "manual":
+		if kind != "relay" || m.CodeTail != "" {
+			return errors.New("使用者记录来源无效")
+		}
+	case "code":
+		if kind != "relay-code" || !codeTailPattern.MatchString(m.CodeTail) {
+			return errors.New("使用者记录来源无效")
+		}
+	default:
+		return errors.New("使用者记录来源无效")
+	}
+	if len(m.User) < 3 || len(m.User) > 254 || !strings.Contains(m.User, "@") || strings.ContainsAny(m.User, "\x00\r\n\t ") {
+		return errors.New("使用者邮箱无效")
+	}
+	if len(m.Panel) > 200 || strings.ContainsAny(m.Panel, "\x00\r\n\t ") || (m.Panel != "" && !strings.HasPrefix(m.Panel, "https://") && !strings.HasPrefix(m.Panel, "http://")) {
+		return errors.New("网站地址无效")
+	}
+	if len([]rune(m.Remark)) > 60 || strings.ContainsAny(m.Remark, "\x00\r\n") {
+		return errors.New("备注最多 60 个字符，不能包含换行")
+	}
+	return nil
+}
+
+func validateRelayManage(m *RelayManage) error {
+	if m == nil {
+		return errors.New("中转管理参数无效")
+	}
+	switch m.Action {
+	case "rate":
+		if m.RateMbps < 1 || m.RateMbps > MaxRelayRateMbps {
+			return errors.New("中转带宽必须为 1–10 Mbps")
+		}
+	case "pause", "resume", "restart", "delete":
+		if m.RateMbps != 0 {
+			return errors.New("只有修改带宽需要带宽参数")
+		}
+	default:
+		return errors.New("不支持的中转管理操作")
+	}
+	if len(m.Items) < 1 || len(m.Items) > 100 {
+		return errors.New("请选择 1–100 条中转")
+	}
+	seen := map[string]bool{}
+	for _, id := range m.Items {
+		if !managedRelayID.MatchString(id) || seen[id] {
+			return errors.New("中转编号无效")
+		}
+		seen[id] = true
 	}
 	return nil
 }

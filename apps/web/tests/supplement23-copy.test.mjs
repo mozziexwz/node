@@ -243,11 +243,16 @@ test(
               "配置中转服务器",
             );
             await expect(page.locator(".page-heading p")).toHaveText(
-              "上传MSBOOST配置文件，中转你或朋友的MSBOOST节点",
+              "上传MSBOOST配置文件，中转你的MSBOOST节点",
             );
+            // 使用中转码 is the default; the original form is the third mode.
+            await expect(page.getByRole("tab", { selected: true })).toContainText(
+              "使用中转码",
+            );
+            await page.getByRole("tab", { name: /手动配置中转/ }).click();
             await expect(
               page.getByText(
-                "入口使用实际中转服务器的 IP；监听端口随机分配，每端口固定 5 Mbps。",
+                "入口使用实际中转服务器的 IP；监听端口随机分配，带宽按你的选择（默认 5 Mbps）。",
                 { exact: true },
               ),
             ).toBeVisible();
@@ -285,7 +290,7 @@ test(
               "DD 系统",
             );
             await expect(page.locator(".page-heading p")).toHaveText(
-              "在线重装系统，默认保持当前SSH端口和密码。",
+              "在线重装系统，默认保持当前 SSH 端口和登录方式。",
             );
             await expect(
               page.getByLabel("重装系统", { exact: true }),

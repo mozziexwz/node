@@ -43,8 +43,8 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 		if memoryBusy || operationsBusy(s, ssh.Host) {
 			return errors.New("该前置机已有未结束任务")
 		}
-		if !t.hasExecutorFor(s, "front") {
-			return errors.New("没有已确认默认 SOCKS 屏蔽的在线执行机；请联系管理员升级 Executor Agent")
+		if !t.hasExecutorFor(s, envelope.Job.Request) {
+			return t.executorUnavailable(s, envelope.Job.Request)
 		}
 		if err := trustSSH(s, userID, ssh); err != nil {
 			return err

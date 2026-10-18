@@ -7,7 +7,10 @@ export function navigationGroups(
 ): NavigationGroup[] {
   return [
     { title: "开始使用", items: ["tutorials", "home"] },
-    { title: "免费部署工具", items: ["deploy", "relay", "dd", "tasks"] },
+    {
+      title: "免费部署工具",
+      items: ["deploy", "relay", "codes", "dd", "tasks"],
+    },
     {
       title: admin ? "捐赠权益管理" : "捐赠权益",
       items: admin
@@ -26,6 +29,7 @@ export function navigationGroups(
             items: [
               "users",
               "executors",
+              "relayAudit",
               "invitations",
               "backups",
               "settings",

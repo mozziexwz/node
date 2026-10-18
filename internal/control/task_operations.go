@@ -39,19 +39,24 @@ func taskHost(host string) string {
 
 func saveTaskOperation(s *State, e *taskEnvelope) error {
 	r := e.Job.Request
-	r.SSH.Password, r.ClientConfig, r.DD = "", nil, nil
+	r.SSH, r.ClientConfig, r.DD = r.SSH.WithoutSecrets(), nil, nil
 	hosts := []string{taskHost(r.SSH.Host)}
 	if r.Front != nil {
-		front := *r.Front
-		front.Password = ""
+		front := r.Front.WithoutSecrets()
 		r.Front = &front
 		hosts = append(hosts, taskHost(front.Host))
 	}
 	return SaveDoc(s, "task_operations", e.Job.ID, taskOperation{ID: e.Job.ID, LeaseHash: taskHash([]byte(e.Job.Lease)), Hosts: hosts, Request: r, Status: "queued", Deadline: e.Job.Deadline, UpdatedAt: time.Now().UnixMilli()})
 }
 
+// Read-only checks and relay lists change nothing on the server, so they
+// neither wait for nor block another operation on it.
+func readOnlyTaskKind(kind string) bool {
+	return kind == "fingerprint" || kind == "relay-check" || kind == "relay-inventory"
+}
+
 func operationBusy(o taskOperation) bool {
-	return o.Request.Kind != "fingerprint" && o.Status != "resolved"
+	return !readOnlyTaskKind(o.Request.Kind) && o.Status != "resolved"
 }
 
 func executorPending(s *State, id string) []string {

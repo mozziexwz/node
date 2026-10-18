@@ -21,7 +21,7 @@ func adminTaskUserName(user *User) string {
 
 func validTaskAuditKind(kind string) bool {
 	switch kind {
-	case "", "deploy", "relay", "dd", "fingerprint", "front", "cleanup-preview", "cleanup":
+	case "", "deploy", "relay", "dd", "fingerprint", "front", "cleanup-preview", "cleanup", "relay-check", "relay-code", "relay-inventory", "relay-manage":
 		return true
 	default:
 		return false

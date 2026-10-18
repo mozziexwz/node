@@ -22,6 +22,8 @@ import {
   Package,
   FileText,
   Bell,
+  Share2,
+  FileSearch,
 } from "lucide-react";
 import { api, post, RecordData } from "./api";
 import {
@@ -36,6 +38,12 @@ import {
 } from "./ui";
 import { AuthPage } from "./auth";
 import { ToolPage, TasksPage } from "./tools";
+import {
+  RelayPage,
+  RelayCodesPage,
+  RelayCodeAudit,
+  relayCodeFromURL,
+} from "./relay-code";
 import { Account, Wallet, Plans, Orders, Routes, Traffic } from "./business";
 import { ResourcePage, CodesPage, Settings, AdminRules } from "./admin";
 import { Articles, Tickets } from "./content";
@@ -50,6 +58,7 @@ const labels: Record<string, [string, typeof Server]> = {
   home: ["工作台", LayoutDashboard],
   deploy: ["部署 MSBOOST", Server],
   relay: ["配置中转服务器", Route],
+  codes: ["中转码管理", Share2],
   dd: ["DD 系统", RefreshCw],
   tasks: ["任务记录", Clock],
   plans: ["枫叶兑换", Package],
@@ -63,6 +72,7 @@ const labels: Record<string, [string, typeof Server]> = {
   users: ["用户管理", Users],
   agents: ["节点", Server],
   executors: ["控制执行机", Server],
+  relayAudit: ["中转码审计", FileSearch],
   cards: ["兑换码管理", CreditCard],
   invitations: ["邀请码管理", KeyRound],
   payments: ["兑换渠道", CreditCard],
@@ -249,7 +259,14 @@ export default function App() {
       <AuthPage
         settings={settings}
         onLogin={() => {
-          navigate(paymentReturnOrder() ? "orders" : "tutorials");
+          // A shared relay-code link opens the relay page after signing in.
+          navigate(
+            relayCodeFromURL()
+              ? "relay"
+              : paymentReturnOrder()
+                ? "orders"
+                : "tutorials",
+          );
           void refresh();
         }}
       />
@@ -263,7 +280,6 @@ export default function App() {
       page = <Articles admin={admin} />;
       break;
     case "deploy":
-    case "relay":
     case "dd":
       page = (
         <ToolPage
@@ -274,6 +290,19 @@ export default function App() {
           onNavigate={navigate}
         />
       );
+      break;
+    case "relay":
+      page = (
+        <RelayPage user={user} settings={settings} onNavigate={navigate} />
+      );
+      break;
+    case "codes":
+      page = (
+        <RelayCodesPage user={user} settings={settings} onNavigate={navigate} />
+      );
+      break;
+    case "relayAudit":
+      page = admin ? <RelayCodeAudit /> : <Empty />;
       break;
     case "tasks":
       page = <TasksPage user={user} settings={settings} />;

@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"mime"
 	"net/http"
 	"net/netip"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +49,8 @@ type Task struct {
 	SSHFingerprint  string                  `json:"sshFingerprint,omitempty"`
 	SSHPort         int                     `json:"sshPort,omitempty"`
 	NeedsReview     bool                    `json:"needsReview,omitempty"`
+	RateMbps        int                     `json:"rateMbps,omitempty"`
+	CodeTail        string                  `json:"codeTail,omitempty"`
 }
 
 // Internal idempotency metadata stays separate because Task is also a public response.
@@ -114,13 +118,18 @@ type TaskService struct {
 	envelopes map[string]*taskEnvelope
 	configs   map[string]taskConfig
 	probes    map[string]taskProbe
-	digestKey []byte
-	initErr   error
+	// Sealed SSH of a relay code whose server check is still running. It is
+	// stored only if that check succeeds and is never written before then.
+	codeSecrets map[string]pendingCodeSecret
+	// Relay server lists and action reports, held only for their requester.
+	relayResults map[string]relayResult
+	digestKey    []byte
+	initErr      error
 	// An executor obtains a job once. Lost responses cannot replay a destructive action.
 }
 
 func NewTaskService(app *App) *TaskService {
-	t := &TaskService{app: app, envelopes: map[string]*taskEnvelope{}, configs: map[string]taskConfig{}, probes: map[string]taskProbe{}}
+	t := &TaskService{app: app, envelopes: map[string]*taskEnvelope{}, configs: map[string]taskConfig{}, probes: map[string]taskProbe{}, codeSecrets: map[string]pendingCodeSecret{}, relayResults: map[string]relayResult{}}
 	t.initErr = app.Store.Update(func(s *State) error {
 		secret, ok := LoadDoc[taskDigestSecret](s, "task_internal", "digest_key")
 		if !ok {
@@ -167,12 +176,13 @@ func (t *TaskService) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/executor/next", t.next)
 	mux.HandleFunc("POST /api/executor/heartbeat", t.heartbeat)
 	mux.HandleFunc("POST /api/executor/result", t.result)
+	t.registerRelayCodes(mux)
 }
 func (t *TaskService) Start(ctx context.Context) {
 	// A restart deliberately loses SSH/password/config envelopes, never replays them.
 	err := t.app.Store.Update(func(s *State) error {
 		for _, job := range ListDocs[Task](s, "tasks") {
-			if _, known := LoadDoc[taskOperation](s, "task_operations", job.ID); !known && (job.State == "interrupted" || job.State == "unknown" || job.State == "executed") && job.Kind != "fingerprint" {
+			if _, known := LoadDoc[taskOperation](s, "task_operations", job.ID); !known && (job.State == "interrupted" || job.State == "unknown" || job.State == "executed") && !readOnlyTaskKind(job.Kind) {
 				job.NeedsReview = true
 				if err := SaveDoc(s, "task_operations", job.ID, taskOperation{ID: job.ID, Hosts: []string{taskHost(job.Host)}, Request: executor.Request{Kind: job.Kind, SSH: executor.SSH{Host: job.Host}}, Status: "review"}); err != nil {
 					return err
@@ -188,7 +198,7 @@ func (t *TaskService) Start(ctx context.Context) {
 					o = taskOperation{ID: job.ID, Hosts: []string{taskHost(job.Host)}, Request: executor.Request{Kind: job.Kind, SSH: executor.SSH{Host: job.Host}}}
 				}
 				o.Status = "resolved"
-				if wasRunning && job.Kind != "fingerprint" {
+				if wasRunning && !readOnlyTaskKind(job.Kind) {
 					o.Status = "review"
 					job.NeedsReview = true
 				}
@@ -216,7 +226,8 @@ func (t *TaskService) Start(ctx context.Context) {
 				return err
 			}
 		}
-		return nil
+		// Checks and uses interrupted above can never report; settle them now.
+		return sweepRelayCodes(s, time.Now())
 	})
 	if err != nil {
 		t.initErr = err
@@ -225,16 +236,23 @@ func (t *TaskService) Start(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
+		// Stored relay-code SSH is deleted on expiry within a minute.
+		codes := time.NewTicker(time.Minute)
+		defer codes.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				t.mu.Lock()
 				clear(t.envelopes)
 				clear(t.configs)
+				clear(t.codeSecrets)
+				clear(t.relayResults)
 				t.mu.Unlock()
 				return
 			case <-ticker.C:
 				t.expire()
+			case <-codes.C:
+				t.sweepRelayCodes()
 			}
 		}
 	}()
@@ -263,6 +281,16 @@ func (t *TaskService) expire() {
 	for id, p := range t.probes {
 		if now.After(p.Expires) {
 			delete(t.probes, id)
+		}
+	}
+	for id, p := range t.codeSecrets {
+		if now.After(p.Expires) {
+			delete(t.codeSecrets, id)
+		}
+	}
+	for id, result := range t.relayResults {
+		if now.After(result.Expires) {
+			delete(t.relayResults, id)
 		}
 	}
 	for id, e := range t.envelopes {
@@ -296,7 +324,7 @@ func (t *TaskService) expire() {
 			o, exists := LoadDoc[taskOperation](s, "task_operations", item.id)
 			if exists {
 				o.Status = "resolved"
-				if claimed && v.Kind != "fingerprint" {
+				if claimed && !readOnlyTaskKind(v.Kind) {
 					o.Status = "review"
 					v.NeedsReview = true
 				}
@@ -313,6 +341,9 @@ func (t *TaskService) expire() {
 			v.ErrorCode, v.Message, v.NextStep = d.Code, d.Message, d.NextStep
 			v.UpdatedAt = now.UnixMilli()
 			if err := SaveDoc(s, "tasks", item.id, v); err != nil {
+				return err
+			}
+			if _, err := settleRelayCodeTask(s, item.id, nil, now); err != nil {
 				return err
 			}
 			return finishExecutorDrain(s, item.agentID)
@@ -339,13 +370,29 @@ type TaskLimit struct {
 	NextAt    int64 `json:"nextAt"`
 }
 
+// limitKinds lists the task kinds that share one limit. Every relay setup,
+// including the server check that precedes a relay code, uses the relay
+// quota; reading and managing a relay server has its own separate quota.
+func limitKinds(kind string) []string {
+	switch kind {
+	case "relay":
+		return []string{"relay", "relay-code", "relay-check"}
+	case "relay-manage":
+		return []string{"relay-inventory", "relay-manage"}
+	}
+	return []string{kind}
+}
+
 func toolLimit(s *State, kind, user string, now int64) TaskLimit {
 	v := TaskLimit{Minutes: 15, Count: 5}
 	if kind == "fingerprint" {
 		v.Minutes = 30
 		v.Count = 10
 	}
-	if limits, ok := s.Settings["limits"].(map[string]any); ok {
+	if kind == "relay-manage" {
+		settings := relayCodeSettings(s)
+		v.Minutes, v.Count = settings.ManageMinutes, settings.ManageCount
+	} else if limits, ok := s.Settings["limits"].(map[string]any); ok {
 		if q, ok := limits[kind].(map[string]any); ok {
 			if n, ok := q["minutes"].(float64); ok && n >= 1 && n <= 1440 {
 				v.Minutes = int(n)
@@ -355,9 +402,10 @@ func toolLimit(s *State, kind, user string, now int64) TaskLimit {
 			}
 		}
 	}
+	kinds := limitKinds(kind)
 	var times []int64
 	for _, job := range ListDocs[Task](s, "tasks") {
-		if job.UserID == user && job.Kind == kind && job.CreatedAt > now-int64(v.Minutes)*60000 {
+		if job.UserID == user && job.CreatedAt > now-int64(v.Minutes)*60000 && slices.Contains(kinds, job.Kind) {
 			times = append(times, job.CreatedAt)
 		}
 	}
@@ -414,16 +462,81 @@ func executorCapabilitiesFromRequest(r *http.Request) []string {
 	if r.Header.Get("X-MSBOOST-Scoped-Cleanup") == "1" {
 		out = append(out, executor.ScopedCleanupCapability)
 	}
+	if r.Header.Get(executor.SSHKeyHeader) == "1" {
+		out = append(out, executor.SSHKeyCapability)
+	}
+	if r.Header.Get(executor.RelayCodeHeader) == "1" {
+		out = append(out, executor.RelayCodeCapability)
+	}
 	return out
 }
 
-func (t *TaskService) hasExecutorFor(s *State, kind string) bool {
+// requiredCapabilities is the single rule for both task creation and claim:
+// an executor receives a job only when it declared everything the job needs.
+func requiredCapabilities(r executor.Request) []string {
+	var out []string
+	switch r.Kind {
+	case "relay", "front", "relay-code":
+		out = append(out, executor.FreeRelayGuardCapability)
+	}
+	switch r.Kind {
+	case "relay", "relay-code", "relay-check", "relay-inventory", "relay-manage":
+		// Customer relays carry a bandwidth choice and the user record.
+		out = append(out, executor.RelayCodeCapability)
+	}
+	if r.Cleanup != nil && r.Cleanup.ManagedTaskID != "" {
+		out = append(out, executor.ScopedCleanupCapability)
+	}
+	if r.SSH.UsesKey() || (r.Front != nil && r.Front.UsesKey()) {
+		out = append(out, executor.SSHKeyCapability)
+	}
+	return out
+}
+
+func capabilitiesSatisfy(have, need []string) bool {
+	for _, capability := range need {
+		if !slices.Contains(have, capability) {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *TaskService) hasExecutorFor(s *State, request executor.Request) bool {
+	need := requiredCapabilities(request)
 	for _, record := range ListDocs[ExecutorRecord](s, "executors") {
-		if record.Status == "active" && record.LastSeenAt > time.Now().Add(-90*time.Second).UnixMilli() && (kind != "relay" && kind != "front" || executorHasFreeRelayGuard(record)) {
+		if record.Status == "active" && record.LastSeenAt > time.Now().Add(-90*time.Second).UnixMilli() && capabilitiesSatisfy(record.Capabilities, need) {
 			return true
 		}
 	}
 	return false
+}
+
+// executorUnavailable explains which upgrade is missing, most specific first.
+func (t *TaskService) executorUnavailable(s *State, request executor.Request) error {
+	online := false
+	declared := map[string]bool{}
+	for _, record := range ListDocs[ExecutorRecord](s, "executors") {
+		if record.Status == "active" && record.LastSeenAt > time.Now().Add(-90*time.Second).UnixMilli() {
+			online = true
+			for _, capability := range record.Capabilities {
+				declared[capability] = true
+			}
+		}
+	}
+	need := requiredCapabilities(request)
+	switch {
+	case !online:
+		return errors.New("当前没有在线的 executor 执行机，请联系管理员")
+	case slices.Contains(need, executor.FreeRelayGuardCapability) && !declared[executor.FreeRelayGuardCapability]:
+		return errors.New("没有已确认默认 SOCKS 屏蔽的在线执行机；请联系管理员升级 Executor Agent")
+	case slices.Contains(need, executor.SSHKeyCapability) && !declared[executor.SSHKeyCapability]:
+		return errors.New("当前在线执行机不支持密钥登录，请联系管理员升级执行机，或改用密码登录")
+	case slices.Contains(need, executor.ScopedCleanupCapability) && !declared[executor.ScopedCleanupCapability]:
+		return errors.New("请先升级在线执行机后使用按任务清理；旧执行机不会接收此操作")
+	default:
+		return errors.New("当前在线执行机版本过旧，不支持此中转功能，请联系管理员升级执行机")
+	}
 }
 func taskPublicMessage(state string) string {
 	switch state {
@@ -456,6 +569,17 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 	var request executor.Request
 	if err = Decode(r, &request); err != nil {
 		Fail(w, 400, "任务参数格式无效")
+		return
+	}
+	// Relay-code work uses SSH the user never sees; it has its own endpoints.
+	switch request.Kind {
+	case "deploy", "relay", "dd", "cleanup", "cleanup-preview":
+	default:
+		Fail(w, 400, "不支持的任务类型")
+		return
+	}
+	if request.Meta != nil {
+		Fail(w, 400, "使用者记录由网站生成")
 		return
 	}
 	if err = executor.ValidateRequest(request); err != nil {
@@ -567,11 +691,23 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		if memoryBusy || operationsBusy(s, request.SSH.Host) || (request.Front != nil && operationsBusy(s, request.Front.Host)) {
 			return errors.New("该服务器已有未结束任务，请先核实其结果")
 		}
-		if !t.hasExecutorFor(s, request.Kind) {
-			if request.Kind == "relay" {
-				return errors.New("没有已确认默认 SOCKS 屏蔽的在线执行机；请联系管理员升级 Executor Agent")
+		if request.Kind == "relay" {
+			// The bandwidth range is an administrator setting shared with relay
+			// codes. The user record is written by the website, never the browser.
+			settings := relayCodeSettings(s)
+			rate := request.RateMbps
+			if rate == 0 {
+				rate = settings.DefaultRateMbps
 			}
-			return errors.New("当前没有在线的 executor 执行机，请联系管理员")
+			if rate < settings.RateMinMbps || rate > settings.RateMaxMbps {
+				return fmt.Errorf("中转带宽需为 %d–%d Mbps", settings.RateMinMbps, settings.RateMaxMbps)
+			}
+			envelope.Job.Request.RateMbps = rate
+			envelope.Job.Request.Meta = &executor.RelayMeta{Source: "manual", User: fresh.Email, Panel: t.app.Config.PublicURL, Remark: request.Remark}
+			job.RateMbps = rate
+		}
+		if !t.hasExecutorFor(s, envelope.Job.Request) {
+			return t.executorUnavailable(s, envelope.Job.Request)
 		}
 		if !(fresh.Role == "admin" && request.Kind == "deploy") && toolLimit(s, request.Kind, u.ID, now.UnixMilli()).Remaining == 0 {
 			return errors.New("本工具已达到次数限制，请等待下一次可用时间")
@@ -628,7 +764,7 @@ func operationsBusy(s *State, host string) bool {
 func (t *TaskService) envelopesBusyLocked(host string) bool {
 	parsed, _ := netip.ParseAddr(host)
 	for _, e := range t.envelopes {
-		if e.Job.Request.Kind == "fingerprint" {
+		if readOnlyTaskKind(e.Job.Request.Kind) {
 			continue
 		}
 		other, _ := netip.ParseAddr(e.Job.Request.SSH.Host)
@@ -652,11 +788,12 @@ func (t *TaskService) list(w http.ResponseWriter, r *http.Request) {
 	limits := map[string]TaskLimit{}
 	_ = t.app.Store.View(func(s *State) error {
 		for _, v := range ListDocs[Task](s, "tasks") {
-			if v.UserID == u.ID && v.Kind != "fingerprint" {
-				rows = append(rows, v)
+			// Relay server reads and actions are audited separately, not listed.
+			if v.UserID == u.ID && v.Kind != "fingerprint" && v.Kind != "relay-inventory" && v.Kind != "relay-manage" {
+				rows = append(rows, publicTask(v))
 			}
 		}
-		for _, k := range []string{"deploy", "relay", "dd", "fingerprint", "cleanup", "cleanup-preview"} {
+		for _, k := range []string{"deploy", "relay", "dd", "fingerprint", "cleanup", "cleanup-preview", "relay-manage"} {
 			limits[k] = toolLimit(s, k, u.ID, time.Now().UnixMilli())
 		}
 		return nil
@@ -684,6 +821,9 @@ func (t *TaskService) get(w http.ResponseWriter, r *http.Request) {
 	if job.ID == "" || (job.UserID != u.ID && u.Role != "admin") {
 		Fail(w, 404, "任务不存在")
 		return
+	}
+	if u.Role != "admin" {
+		job = publicTask(job)
 	}
 	t.mu.Lock()
 	c, ok := t.configs[job.ID]
@@ -943,14 +1083,15 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 	defer timer.Stop()
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
+	declared := executorCapabilitiesFromRequest(r)
 	for {
 		t.mu.Lock()
 		var next *taskEnvelope
 		for _, e := range t.envelopes {
-			if e.Job.Request.Cleanup != nil && e.Job.Request.Cleanup.ManagedTaskID != "" && r.Header.Get("X-MSBOOST-Scoped-Cleanup") != "1" {
+			if !capabilitiesSatisfy(declared, requiredCapabilities(e.Job.Request)) {
 				continue
 			}
-			if e.AgentID == "" && time.Now().UnixMilli() < e.Job.Deadline && ((e.Job.Request.Kind != "relay" && e.Job.Request.Kind != "front") || r.Header.Get("X-MSBOOST-Executor-Capabilities") == executor.FreeRelayGuardCapability) && (next == nil || e.QueuedAt.Before(next.QueuedAt)) {
+			if e.AgentID == "" && time.Now().UnixMilli() < e.Job.Deadline && (next == nil || e.QueuedAt.Before(next.QueuedAt)) {
 				next = e
 			}
 		}
@@ -995,10 +1136,10 @@ func (t *TaskService) next(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			next.ClaimedAt = time.Now()
-			next.Job.Request.SSH.Password = ""
+			// The delivered copy is the only one that keeps credentials.
+			next.Job.Request.SSH = next.Job.Request.SSH.WithoutSecrets()
 			if next.Job.Request.Front != nil {
-				front := *next.Job.Request.Front
-				front.Password = ""
+				front := next.Job.Request.Front.WithoutSecrets()
 				next.Job.Request.Front = &front
 			}
 			next.Job.Request.ClientConfig = nil
@@ -1063,6 +1204,9 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 			t.configs[out.ID] = taskConfig{Data: append([]byte(nil), out.Config...), UserID: task.UserID, Expires: expires}
 			t.mu.Unlock()
 		}
+		if task.State == "succeeded" && time.Now().Before(expires) {
+			t.keepRelayResult(task, out, expires)
+		}
 		WriteJSON(w, 200, map[string]bool{"ok": true, "duplicate": true})
 		return
 	}
@@ -1096,8 +1240,13 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "DD 只能报告已提交、失败或提交不明确，不能声称系统安装完成")
 		return
 	}
-	if (envelope.Job.Request.Kind == "deploy" || envelope.Job.Request.Kind == "relay") && out.State == "succeeded" && len(out.Config) == 0 {
+	configKind := envelope.Job.Request.Kind == "deploy" || envelope.Job.Request.Kind == "relay" || envelope.Job.Request.Kind == "relay-code"
+	if configKind && out.State == "succeeded" && len(out.Config) == 0 {
 		Fail(w, 400, "成功结果缺少客户端配置")
+		return
+	}
+	if err := validRelayServerResult(envelope.Job.Request, out); err != nil {
+		Fail(w, 400, err.Error())
 		return
 	}
 	// A probe is remembered only once its result has been committed.
@@ -1118,7 +1267,7 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 			Fail(w, 400, "失败任务不能交付配置")
 			return
 		}
-		if envelope.Job.Request.Kind != "deploy" && envelope.Job.Request.Kind != "relay" {
+		if !configKind {
 			Fail(w, 400, "该任务不生成配置")
 			return
 		}
@@ -1140,6 +1289,10 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "该任务不接受清理结果")
 		return
 	}
+	t.mu.Lock()
+	pendingSecret := t.codeSecrets[out.ID]
+	t.mu.Unlock()
+	var notice *relayCodeNotice
 	err = t.app.Store.Update(func(s *State) error {
 		current, exists := LoadDoc[taskOperation](s, "task_operations", out.ID)
 		// An overlapping retry of the same delivery committed first.
@@ -1215,6 +1368,17 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		if err := SaveDoc(s, "task_operations", job.ID, current); err != nil {
 			return err
 		}
+		// Relay-code counting and SSH storage commit with the result itself.
+		now := time.Now()
+		if job.Kind == "relay-check" && out.State == "succeeded" {
+			if err := activateRelayCode(s, job.ID, pendingSecret, out.OS, now); err != nil {
+				return err
+			}
+		}
+		var err error
+		if notice, err = settleRelayCodeTask(s, job.ID, &out, now); err != nil {
+			return err
+		}
 		return finishExecutorDrain(s, a.ID)
 	})
 	switch {
@@ -1228,7 +1392,14 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 500, "结果保存失败")
 		return
 	}
+	if out.State == "succeeded" {
+		t.keepRelayResult(Task{ID: out.ID, UserID: envelope.UserID, Kind: envelope.Job.Request.Kind}, out, time.Now().Add(10*time.Minute))
+	}
+	if notice != nil {
+		t.notifyRelayCodeOwner(*notice)
+	}
 	t.mu.Lock()
+	delete(t.codeSecrets, out.ID)
 	if len(out.Config) > 0 {
 		t.configs[out.ID] = taskConfig{Data: append([]byte(nil), out.Config...), UserID: envelope.UserID, Expires: time.Now().Add(10 * time.Minute)}
 	}

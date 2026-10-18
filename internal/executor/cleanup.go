@@ -285,7 +285,7 @@ try:
             if not os.path.isdir(conf): reject()
             # Older releases have no marker; the complete unit and config layout
             # below must still prove this project's installation convention.
-            allowed={'config.json','guard.json','guard.py','managed-by','ufw-owned','firewalld-runtime-owned','firewalld-permanent-owned'}
+            allowed={'config.json','guard.json','guard.py','managed-by','meta.json','paused','ufw-owned','firewalld-runtime-owned','firewalld-permanent-owned'}
             if not set(os.listdir(conf)).issubset(allowed) or not os.path.isfile(conf+'/config.json'): reject()
             if os.path.exists(conf+'/managed-by') and read(conf+'/managed-by').strip()!='msboost-free-v1': reject()
             validate(unitpath)

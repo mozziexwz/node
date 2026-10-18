@@ -161,6 +161,19 @@ PY
           printf '%s %s\n' "$firewalld_zone" "$port" > "$confdir/firewalld-permanent-owned"
         fi
       fi
+      if [ -n "$meta_source" ]; then
+        # User record for relay server management. It holds the user's email
+        # and node address only, never node credentials or SSH secrets.
+        python3 - "$confdir/meta.json" "$port" "$target_host" "$target_port" "$meta_rate" "$meta_source" "$meta_code_tail" "$meta_user" "$meta_panel" "$meta_remark" <<'PY'
+import datetime,json,os,sys
+path,port,host,target,rate,source,tail,user,panel,remark=sys.argv[1:]
+record={'version':1,'source':source}
+if tail: record['codeTail']=tail
+record.update({'user':user,'panel':panel,'target':('['+host+']' if ':' in host else host)+':'+target,'port':int(port),'rateMbps':int(rate),'remark':remark,'createdAt':datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')})
+descriptor=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+with os.fdopen(descriptor,'w',encoding='utf-8') as stream: json.dump(record,stream,ensure_ascii=False)
+PY
+      fi
       systemctl enable "$unit" >/dev/null
       installed=1
       printf 'MSBOOST_RELAY_PORT=%s\n' "$port"

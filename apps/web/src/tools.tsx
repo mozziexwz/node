@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, ShieldCheck, Upload, Download } from "lucide-react";
+import {
+  ArrowRight,
+  ShieldCheck,
+  Upload,
+  Download,
+  KeyRound,
+  LockKeyhole,
+  CircleCheck,
+} from "lucide-react";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { api, post, requestID, download, RecordData, array } from "./api";
 import { saveLocal, getLocal, deleteLocal } from "./vault";
 import {
@@ -21,25 +30,125 @@ export type SSH = {
   host: string;
   port: number;
   user: string;
+  authMethod?: "password" | "key";
   password: string;
+  privateKey?: string;
+  passphrase?: string;
   fingerprint: string;
   trustMode?: "tofu" | "strict";
   replaceFingerprint?: string;
   _rememberedFingerprint?: string;
 };
-const newSSH = (): SSH => ({
+export const newSSH = (): SSH => ({
   host: "",
   port: 22,
   user: "root",
+  authMethod: "password",
   password: "",
+  privateKey: "",
+  passphrase: "",
   fingerprint: "",
   trustMode: "tofu",
 });
+// Clears every secret after a submission; nothing is kept for the next task.
+export const withoutSecrets = (value: SSH): SSH => ({
+  ...value,
+  password: "",
+  privateKey: "",
+  passphrase: "",
+});
+// Only the chosen login method's secret is sent.
+function sshPayload(value: SSH): SSH {
+  const { _rememberedFingerprint: _unused, ...input } = value;
+  return input.authMethod === "key"
+    ? { ...input, password: "" }
+    : { ...input, authMethod: "password", privateKey: "", passphrase: "" };
+}
+const keyLimit = 16 * 1024;
+export type KeyInfo = { label: string; fingerprint?: string; error?: string };
+// Reads only the public part of an OpenSSH private key to show what was
+// pasted. The key itself is validated again by the server before any use.
+export function describePrivateKey(text: string): KeyInfo | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("PuTTY-User-Key-File-"))
+    return {
+      label: "",
+      error: "PuTTY 的 .ppk 请先用 PuTTYgen 导出为 OpenSSH 格式。",
+    };
+  if (new TextEncoder().encode(text).length > keyLimit)
+    return { label: "", error: "私钥不能超过 16 KB。" };
+  const match = trimmed.match(
+    /^-----BEGIN ([A-Z0-9 ]+)-----\s+([\s\S]*?)\s*-----END \1-----$/,
+  );
+  if (!match)
+    return {
+      label: "",
+      error: "无法识别私钥，请粘贴完整的 OpenSSH 私钥（含 BEGIN 和 END 行）。",
+    };
+  const kind = match[1];
+  if (kind === "RSA PRIVATE KEY") return { label: "RSA 私钥（PEM）" };
+  if (kind === "EC PRIVATE KEY") return { label: "ECDSA 私钥（PEM）" };
+  if (kind === "PRIVATE KEY" || kind === "ENCRYPTED PRIVATE KEY")
+    return { label: "PKCS#8 私钥" };
+  if (kind !== "OPENSSH PRIVATE KEY")
+    return { label: "", error: "仅支持 ed25519、ECDSA、RSA 私钥。" };
+  try {
+    const raw = Uint8Array.from(atob(match[2].replace(/\s+/g, "")), (c) =>
+      c.charCodeAt(0),
+    );
+    const magic = "openssh-key-v1\0";
+    if (new TextDecoder().decode(raw.slice(0, magic.length)) !== magic)
+      throw new Error();
+    let offset = magic.length;
+    const view = new DataView(raw.buffer);
+    const next = () => {
+      const size = view.getUint32(offset);
+      const value = raw.slice(offset + 4, offset + 4 + size);
+      if (value.length !== size) throw new Error();
+      offset += 4 + size;
+      return value;
+    };
+    const cipher = new TextDecoder().decode(next());
+    next();
+    next();
+    offset += 4;
+    const blob = next();
+    const type = new TextDecoder().decode(
+      blob.slice(4, 4 + new DataView(blob.buffer).getUint32(0)),
+    );
+    const name =
+      type === "ssh-ed25519"
+        ? "ED25519"
+        : type === "ssh-rsa"
+          ? "RSA"
+          : type.startsWith("ecdsa-sha2-")
+            ? "ECDSA"
+            : "";
+    if (!name) return { label: "", error: "仅支持 ed25519、ECDSA、RSA 私钥。" };
+    const digest = btoa(String.fromCharCode(...sha256(blob))).replace(
+      /=+$/,
+      "",
+    );
+    return {
+      label:
+        name + " 私钥" + (cipher === "none" ? "" : "（已加密，请填写口令）"),
+      fingerprint: "SHA256:" + digest.slice(0, 4) + "…" + digest.slice(-4),
+    };
+  } catch {
+    return { label: "", error: "私钥内容不完整，请重新复制或从文件读取。" };
+  }
+}
 export async function prepareSSH(
   value: SSH,
   onChange?: (s: SSH) => void,
 ): Promise<SSH> {
-  const { _rememberedFingerprint: _unused, ...input } = value;
+  const input = sshPayload(value);
+  if (input.authMethod === "key") {
+    const info = describePrivateKey(input.privateKey || "");
+    if (!info) throw new Error("请粘贴 SSH 私钥，或从文件读取。");
+    if (info.error) throw new Error(info.error);
+  }
   if (value.trustMode === "strict") {
     if (!value.fingerprint)
       throw new Error("请展开高级设置，核对这台服务器的身份后再继续。");
@@ -72,6 +181,17 @@ export async function prepareSSH(
       previous !== probe.fingerprint ? value.replaceFingerprint : "",
   };
 }
+// New nodes set a Mieru low-entropy traffic pattern, which older clients
+// (mieru before v3.35.0) refuse to load.
+const launcherNotice =
+  "此配置需要 MSBOOST 启动器；旧版 BAT 启动器请把 msboost.exe 更新到 v3.35.0 以上。";
+function usesTrafficPattern(config: unknown) {
+  const profiles = (config as RecordData | null)?.profiles;
+  return (
+    Array.isArray(profiles) &&
+    profiles.some((profile) => profile && profile.trafficPattern != null)
+  );
+}
 function configName(task: RecordData) {
   const base = String(
     task.remark || (task.kind === "deploy" ? "直连" : "自备中转"),
@@ -90,15 +210,30 @@ export function SSHFields({
   onChange,
   title,
   showHelp = true,
+  label = "SSH 登录方式",
+  passwordHint = "仅用于本次任务，不进入任务记录。",
+  keyHint = "仅用于本次任务，不进入任务记录，也不保存到浏览器。",
+  keyNote = "",
+  keyHelp = false,
+  trustNote = "",
 }: {
   value: SSH;
   onChange: (s: SSH) => void;
   title: string;
   showHelp?: boolean;
+  label?: string;
+  passwordHint?: string;
+  keyHint?: string;
+  keyNote?: string;
+  keyHelp?: boolean;
+  trustNote?: string;
 }) {
   const [checking, setChecking] = useState(false),
     [observed, setObserved] = useState(""),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [fileError, setFileError] = useState("");
+  const usesKey = value.authMethod === "key";
+  const keyInfo = usesKey ? describePrivateKey(value.privateKey || "") : null;
   function change(k: keyof SSH, v: string | number) {
     onChange({
       ...value,
@@ -140,19 +275,140 @@ export function SSHFields({
           onChange={(e) => change("user", e.target.value)}
           required
         />
-        <Field
-          label="SSH 密码"
-          value={value.password}
-          onChange={(e) => change("password", e.target.value)}
-          type="password"
-          autoComplete="off"
-          hint="仅用于本次任务，不进入任务记录。"
-          required
-        />
+        <div className="field">
+          <span>登录方式</span>
+          <div className="segmented full" role="tablist" aria-label={label}>
+            {(
+              [
+                ["password", "密码", LockKeyhole],
+                ["key", "密钥", KeyRound],
+              ] as const
+            ).map(([method, name, Icon]) => (
+              <button
+                type="button"
+                role="tab"
+                key={method}
+                aria-selected={(value.authMethod || "password") === method}
+                className={
+                  (value.authMethod || "password") === method ? "active" : ""
+                }
+                onClick={() => {
+                  setFileError("");
+                  // Switching drops the other method's secret at once.
+                  onChange({
+                    ...value,
+                    authMethod: method,
+                    password: "",
+                    privateKey: "",
+                    passphrase: "",
+                  });
+                }}
+              >
+                <Icon size={14} />
+                {name}
+              </button>
+            ))}
+          </div>
+        </div>
+        {!usesKey ? (
+          <label className="field span-all">
+            <span>SSH 密码</span>
+            <input
+              value={value.password}
+              onChange={(e) => change("password", e.target.value)}
+              type="password"
+              autoComplete="off"
+              required
+            />
+            {passwordHint && <small>{passwordHint}</small>}
+          </label>
+        ) : (
+          <>
+            <label className="field span-all">
+              <span>SSH 私钥</span>
+              <textarea
+                className="key-input"
+                rows={5}
+                wrap="off"
+                spellCheck={false}
+                autoComplete="off"
+                placeholder={
+                  "-----BEGIN OPENSSH PRIVATE KEY-----\n粘贴私钥全文，或从文件读取\n-----END OPENSSH PRIVATE KEY-----"
+                }
+                value={value.privateKey || ""}
+                onChange={(e) => change("privateKey", e.target.value)}
+                required
+              />
+              {keyHint && <small>{keyHint}</small>}
+            </label>
+            <div className="key-tools span-all">
+              <label className="btn small file-btn">
+                <Upload size={14} />
+                从文件读取
+                <input
+                  type="file"
+                  className="sr-only"
+                  aria-label="从文件读取私钥"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    setFileError("");
+                    if (!file) return;
+                    if (file.size > keyLimit) {
+                      setFileError("私钥文件不能超过 16 KB。");
+                      return;
+                    }
+                    change("privateKey", await file.text());
+                  }}
+                />
+              </label>
+              {keyInfo?.label && (
+                <span className="key-ok">
+                  <CircleCheck size={14} />
+                  已识别 {keyInfo.label}
+                  {keyInfo.fingerprint && ` · 公钥指纹 ${keyInfo.fingerprint}`}
+                </span>
+              )}
+              {!keyInfo?.label && keyNote && (
+                <span className="muted">{keyNote}</span>
+              )}
+            </div>
+            {(keyInfo?.error || fileError) && (
+              <div className="span-all">
+                <ErrorNotice error={keyInfo?.error || fileError} />
+              </div>
+            )}
+            <label className="field">
+              <span>私钥口令（可选）</span>
+              <input
+                type="password"
+                autoComplete="off"
+                placeholder="私钥没有口令时留空"
+                value={value.passphrase || ""}
+                onChange={(e) => change("passphrase", e.target.value)}
+              />
+            </label>
+            {keyHelp && (
+              <details className="span-all key-help">
+                <summary>建议：为中转码单独生成一把密钥</summary>
+                <p className="muted mt8">
+                  中转码失效后，在服务器上删掉这把公钥即可彻底收回权限，不影响你自己的登录。在自己电脑上运行：
+                </p>
+                <div className="code-panel">
+                  {`ssh-keygen -t ed25519 -f msboost-relay -C msboost-relay -N ""\nssh-copy-id -i msboost-relay.pub root@${value.host || "服务器IP"}`}
+                </div>
+                <p className="muted mt8">
+                  然后把 msboost-relay（私钥）填到上面。中转码失效后，删除服务器
+                  ~/.ssh/authorized_keys 里注释为 msboost-relay 的那一行。
+                </p>
+              </details>
+            )}
+          </>
+        )}
       </div>
       {showHelp && (
         <Notice>
-          填写服务器信息即可，提交时会自动核对服务器身份。首次连接会记住这台服务器，以后身份变化会暂停操作。密码会在连接时验证。
+          填写服务器信息即可，提交时会自动核对服务器身份。首次连接会记住这台服务器，以后身份变化会暂停操作。密码或密钥会在连接时验证。
         </Notice>
       )}
       <details
@@ -164,7 +420,8 @@ export function SSHFields({
       >
         <summary>高级设置：核对服务器身份</summary>
         <p className="muted mt8">
-          “指纹”是服务器的身份标记，不是密码。首次自动记住的身份还未经过服务商确认；需要更严格的检查时，可与服务商控制台提供的指纹核对。重装后指纹可能变化，没有重装却发生变化时请停止操作。
+          {trustNote ||
+            "“指纹”是服务器的身份标记，不是密码。首次自动记住的身份还未经过服务商确认；需要更严格的检查时，可与服务商控制台提供的指纹核对。重装后指纹可能变化，没有重装却发生变化时请停止操作。"}
         </p>
         <Select
           label="验证方式"
@@ -315,7 +572,7 @@ const states: Record<string, string> = {
   interrupted: "已中断",
   executed: "已执行 DD 操作",
 };
-const taskKinds: Record<string, string> = {
+export const taskKinds: Record<string, string> = {
   deploy: "部署 MSBOOST",
   relay: "自备中转",
   dd: "DD 系统",
@@ -323,7 +580,22 @@ const taskKinds: Record<string, string> = {
   front: "前置机",
   "cleanup-preview": "卸载检查",
   cleanup: "卸载组件",
+  "relay-check": "生成中转码检查",
+  "relay-code": "使用中转码",
+  "relay-inventory": "读取中转列表",
+  "relay-manage": "管理中转",
 };
+// Kinds whose result never contains a client configuration.
+const noConfigKinds = [
+  "dd",
+  "fingerprint",
+  "front",
+  "cleanup",
+  "cleanup-preview",
+  "relay-check",
+  "relay-inventory",
+  "relay-manage",
+];
 const phases: Record<string, string> = {
   queued: "等待执行机",
   executing: "执行中",
@@ -535,6 +807,11 @@ export function TaskDetail({
             {status || "配置已就绪"}
             。配置已保存在当前浏览器时，请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复。
           </Notice>
+          {usesTrafficPattern(config) && (
+            <div className="mt16">
+              <Notice>{launcherNotice}</Notice>
+            </div>
+          )}
           <Button
             primary
             className="mt16"
@@ -587,39 +864,121 @@ export function TaskDetail({
     </Modal>
   );
 }
-export function ToolPage({
+export function EmailGate({ onNavigate }: { onNavigate: (p: string) => void }) {
+  return (
+    <div className="card email-gate41">
+      <ShieldCheck size={30} className="orange" />
+      <h2>请先验证注册邮箱</h2>
+      <p>请先验证注册邮箱，再使用部署 MSBOOST、自备中转和 DD 系统。</p>
+      <div className="actions">
+        <Button primary onClick={() => onNavigate("account")}>
+          前往验证邮箱
+        </Button>
+        <Button onClick={() => onNavigate("tasks")}>查看历史任务</Button>
+      </div>
+    </div>
+  );
+}
+export function needsEmailGate(user: RecordData, settings: RecordData) {
+  return (
+    user.role !== "admin" &&
+    settings.freeToolsRequireVerifiedEmail &&
+    !user.emailVerifiedAt
+  );
+}
+export function QuotaBar({
+  q,
+  note,
+  aside,
+}: {
+  q?: RecordData;
+  note?: string;
+  aside?: React.ReactNode;
+}) {
+  if (!q) return null;
+  return (
+    <div className="quota">
+      <span>
+        操作限额 每 <b>{q.minutes} 分钟</b>最多 <b>{q.count} 次</b> · 剩余{" "}
+        <b>{q.remaining} 次</b>
+      </span>
+      <small>
+        {aside ??
+          `${note || (q.remaining ? "当前可操作" : `下次可用：${date(q.nextAt)}`)} · 失败操作也计次`}
+      </small>
+    </div>
+  );
+}
+export function rateRange(settings: RecordData) {
+  const codes = settings.relayCodes || {};
+  const min = Number(codes.rateMinMbps) || 1,
+    max = Number(codes.rateMaxMbps) || 10;
+  const fallback = Number(codes.defaultRateMbps) || 5;
+  return {
+    min,
+    max,
+    fallback: Math.min(max, Math.max(min, fallback)),
+  };
+}
+export function RateSelect({
+  label,
+  value,
+  onChange,
+  settings,
+  hint,
+}: {
+  label: string;
+  value: number;
+  onChange: (n: number) => void;
+  settings: RecordData;
+  hint?: string;
+}) {
+  const range = rateRange(settings);
+  const options = [];
+  for (let n = range.min; n <= range.max; n++) options.push(n);
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select value={value} onChange={(e) => onChange(Number(e.target.value))}>
+        {options.map((n) => (
+          <option key={n} value={n}>
+            {n} Mbps{n === range.fallback ? "（默认）" : ""}
+          </option>
+        ))}
+      </select>
+      {hint && <small>{hint}</small>}
+    </label>
+  );
+}
+// The working form of one free tool. The relay page embeds it as its
+// manual mode; deploy and DD use it inside ToolPage.
+export function ToolForm({
   kind,
   user,
   settings,
-  onNavigate,
 }: {
   kind: string;
   user: RecordData;
   settings: RecordData;
-  onNavigate: (p: string) => void;
 }) {
   const [ssh, setSSH] = useState(newSSH),
     [front, setFront] = useState(newSSH),
     [useFront, setUseFront] = useState(false),
     [portMode, setPortMode] = useState("keep"),
     [passwordMode, setPasswordMode] = useState("keep"),
+    [loginMode, setLoginMode] = useState<"key" | "password">("key"),
     [newPort, setNewPort] = useState(""),
     [newPassword, setNewPassword] = useState(""),
     [config, setConfig] = useState<RecordData | null>(null),
     [remark, setRemark] = useState(""),
+    [rate, setRate] = useState(() => rateRange(settings).fallback),
     [erase, setErase] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [task, setTask] = useState<RecordData | null>(null);
   const { data: quotas, reload } = useData("/api/tasks");
-  const title =
-    { deploy: "部署 MSBOOST", relay: "配置中转服务器", dd: "DD 系统" }[kind] ||
-    "";
-  const gate =
-    user.role !== "admin" &&
-    settings.freeToolsRequireVerifiedEmail &&
-    !user.emailVerifiedAt;
   const q = quotas?.limits?.[kind];
+  const keyLogin = ssh.authMethod === "key";
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (busy) return;
@@ -635,6 +994,12 @@ export function ToolPage({
         kind === "relay" && useFront
           ? await prepareSSH(front, setFront)
           : undefined;
+      // With key login the new system gets either this key or a new password.
+      const ddPassword = keyLogin
+        ? loginMode === "password"
+          ? "new"
+          : "keep"
+        : passwordMode;
       const r = await post(
         "/api/tasks",
         {
@@ -645,6 +1010,7 @@ export function ToolPage({
             ? {
                 clientConfig: config,
                 remark,
+                rateMbps: rate,
                 ...(pinnedFront ? { front: pinnedFront } : {}),
               }
             : {}),
@@ -654,8 +1020,9 @@ export function ToolPage({
                   confirmErase: erase,
                   portMode,
                   newPort: Number(newPort) || undefined,
-                  passwordMode,
-                  newPassword: passwordMode === "new" ? newPassword : undefined,
+                  passwordMode: ddPassword,
+                  newPassword: ddPassword === "new" ? newPassword : undefined,
+                  ...(keyLogin ? { loginMode } : {}),
                 },
               }
             : {}),
@@ -665,8 +1032,8 @@ export function ToolPage({
       );
       setTask(r.task || r);
       setErase(false);
-      setSSH({ ...ssh, password: "" });
-      setFront({ ...front, password: "" });
+      setSSH(withoutSecrets(ssh));
+      setFront(withoutSecrets(front));
       setNewPassword("");
       setConfig(null);
       reload();
@@ -678,208 +1045,282 @@ export function ToolPage({
   }
   return (
     <>
+      <div className="card">
+        <QuotaBar q={q} />
+        <form onSubmit={submit}>
+          {kind === "relay" && (
+            <>
+              <div className="step-label">
+                <b>1</b>上传节点配置
+              </div>
+              <ConfigUpload onLoad={setConfig} />
+              <div className="step-label">
+                <b>2</b>填写中转服务器
+              </div>
+            </>
+          )}
+          <SSHFields
+            title={kind === "relay" ? "中转服务器地址" : "服务器 IP 地址"}
+            value={ssh}
+            onChange={setSSH}
+          />
+          {kind === "deploy" && <ErrorNotice error={error} />}
+          {kind === "deploy" && (
+            <>
+              <Notice tone="orange">
+                每次均全新部署受管 MSBOOST
+                组件，重新生成认证和端口；不会重装操作系统。原配置部署成功后将失效。
+              </Notice>
+              <Notice tone="orange">
+                本功能仅限游戏用途，禁止用于翻墙、公共代理、违法活动或其他与游戏无关的用途。(MSBOOST
+                将屏蔽部分网站)
+              </Notice>
+            </>
+          )}
+          {kind === "relay" && (
+            <>
+              <div className="form-grid mt16">
+                <Field
+                  label="配置备注"
+                  placeholder="例如：东京中转（将用于配置名称和文件名）"
+                  value={remark}
+                  maxLength={60}
+                  onChange={(e) => setRemark(e.target.value)}
+                />
+                <RateSelect
+                  label="中转带宽"
+                  value={rate}
+                  onChange={setRate}
+                  settings={settings}
+                  hint="每条中转的上行、下行各自限速。"
+                />
+              </div>
+              <Check
+                checked={useFront}
+                onChange={(e) => setUseFront(e.target.checked)}
+                label="使用自备前置机"
+              />
+              {useFront && (
+                <div className="mt16">
+                  <Notice tone="orange">
+                    前置机 → 自备中转机 → MSBOOST
+                    节点。请同时填写两台服务器信息。
+                  </Notice>
+                  <div className="mt16">
+                    <SSHFields
+                      title="前置机 IP 地址"
+                      label="前置机登录方式"
+                      value={front}
+                      onChange={setFront}
+                      showHelp={false}
+                    />
+                  </div>
+                </div>
+              )}
+              <div className="flow">
+                {[
+                  "客户电脑",
+                  ...(useFront ? ["自备前置机"] : []),
+                  "自备中转机",
+                  "MSBOOST 节点",
+                ].map((x, i) => (
+                  <span className="flex" key={x}>
+                    {i > 0 && <ArrowRight size={13} />}
+                    <span className="flow-node">{x}</span>
+                  </span>
+                ))}
+              </div>
+              <Notice>
+                {`入口使用实际中转服务器的 IP；监听端口随机分配，带宽按你的选择（默认 ${rateRange(settings).fallback} Mbps）。`}
+              </Notice>
+            </>
+          )}
+          {kind === "dd" && (
+            <>
+              <fieldset className="fieldset">
+                <legend>重装参数</legend>
+                <div className="form-grid">
+                  <Field label="重装系统" value="Debian 12" disabled />
+                  <Select
+                    label="重装后 SSH 端口"
+                    value={portMode}
+                    onChange={(e) => setPortMode(e.target.value)}
+                  >
+                    <option value="keep">保持不变</option>
+                    <option value="new">输入新端口</option>
+                  </Select>
+                  {portMode === "new" && (
+                    <Field
+                      label="新 SSH 端口"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={newPort}
+                      onChange={(e) => setNewPort(e.target.value)}
+                      required
+                    />
+                  )}
+                  {!keyLogin && (
+                    <Select
+                      label="重装密码策略"
+                      value={passwordMode}
+                      onChange={(e) => setPasswordMode(e.target.value)}
+                    >
+                      <option value="keep">保持不变</option>
+                      <option value="new">输入新密码</option>
+                    </Select>
+                  )}
+                  {!keyLogin && passwordMode === "new" && (
+                    <Field
+                      label="新 root 密码"
+                      type="password"
+                      autoComplete="new-password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      required
+                    />
+                  )}
+                </div>
+                {keyLogin && (
+                  <div>
+                    <span className="field-label">重装后登录方式</span>
+                    <div className="radio-cards">
+                      <label className="radio-card">
+                        <input
+                          type="radio"
+                          name="dd-login"
+                          checked={loginMode === "key"}
+                          onChange={() => setLoginMode("key")}
+                        />
+                        <span>
+                          <strong>继续使用当前密钥</strong>
+                          <br />
+                          <small className="muted">
+                            把当前私钥对应的公钥写入新系统；新系统不设置 root
+                            密码，只能用这把密钥登录。
+                          </small>
+                        </span>
+                      </label>
+                      <label className="radio-card">
+                        <input
+                          type="radio"
+                          name="dd-login"
+                          checked={loginMode === "password"}
+                          onChange={() => setLoginMode("password")}
+                        />
+                        <span>
+                          <strong>改用密码登录</strong>
+                          <br />
+                          <small className="muted">
+                            为新系统设置新的 root 密码；新系统不再接受当前密钥。
+                          </small>
+                        </span>
+                      </label>
+                    </div>
+                    {loginMode === "password" && (
+                      <div className="form-grid mt16">
+                        <Field
+                          label="新 root 密码"
+                          type="password"
+                          autoComplete="new-password"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          required
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </fieldset>
+              <Notice tone="red">
+                DD系统会清除服务器原有系统和数据，操作前请先备份或确保无重要数据。操作提交后请等待15分钟以上，再执行部署
+                MSBOOST。
+              </Notice>
+              <Check
+                checked={erase}
+                onChange={(e) => setErase(e.target.checked)}
+                required
+                label="我已备份重要数据，并理解重装会清除原系统和数据"
+              />
+            </>
+          )}
+          {kind !== "deploy" && <ErrorNotice error={error} />}
+          {(kind === "deploy" || kind === "relay") && (
+            <Notice tone="orange">
+              仅支持 Debian 11、12、13，不支持其他发行版或版本。
+            </Notice>
+          )}
+          <div className="form-actions">
+            <Button type="submit" primary disabled={busy}>
+              {busy
+                ? "正在提交…"
+                : kind === "deploy"
+                  ? "开始部署"
+                  : kind === "relay"
+                    ? "开始配置"
+                    : "开始DD"}
+              <ArrowRight size={15} />
+            </Button>
+          </div>
+        </form>
+      </div>
+      {["deploy", "relay"].includes(kind) && (
+        <CleanupPanel
+          scope={kind === "deploy" ? "msboost" : "relay"}
+          user={user}
+        />
+      )}
+      {task && (
+        <TaskDetail
+          task={task}
+          owner={user.id}
+          save={settings.localSave !== false}
+          onClose={() => setTask(null)}
+        />
+      )}
+    </>
+  );
+}
+export function ToolPage({
+  kind,
+  user,
+  settings,
+  onNavigate,
+}: {
+  kind: string;
+  user: RecordData;
+  settings: RecordData;
+  onNavigate: (p: string) => void;
+}) {
+  const title = { deploy: "部署 MSBOOST", dd: "DD 系统" }[kind] || "";
+  return (
+    <>
       <Header
         title={title}
         sub={
           kind === "deploy"
             ? "在你的VPS上部署游戏节点，并下载MSBOOST配置文件。"
-            : kind === "relay"
-              ? "上传MSBOOST配置文件，中转你或朋友的MSBOOST节点"
-              : "在线重装系统，默认保持当前SSH端口和密码。"
+            : "在线重装系统，默认保持当前 SSH 端口和登录方式。"
         }
       />
-      {gate ? (
-        <div className="card email-gate41">
-          <ShieldCheck size={30} className="orange" />
-          <h2>请先验证注册邮箱</h2>
-          <p>请先验证注册邮箱，再使用部署 MSBOOST、自备中转和 DD 系统。</p>
-          <div className="actions">
-            <Button primary onClick={() => onNavigate("account")}>
-              前往验证邮箱
-            </Button>
-            <Button onClick={() => onNavigate("tasks")}>查看历史任务</Button>
-          </div>
-        </div>
+      {needsEmailGate(user, settings) ? (
+        <EmailGate onNavigate={onNavigate} />
       ) : settings[kind] === false ? (
         <Notice>该功能当前由管理员关闭，已有任务仍可查看。</Notice>
       ) : (
         <div className="tool-layout">
           <div>
-            <div className="card">
-              {q && (
-                <div className="quota">
-                  <span>
-                    每 <b>{q.minutes} 分钟</b>最多 <b>{q.count} 次</b> · 剩余{" "}
-                    <b>{q.remaining} 次</b>
-                  </span>
-                  <small>
-                    {q.remaining ? "当前可操作" : `下次可用：${date(q.nextAt)}`}{" "}
-                    · 失败操作也计次
-                  </small>
-                </div>
-              )}
-              <form onSubmit={submit}>
-                {kind === "relay" && (
-                  <>
-                    <div className="step-label">
-                      <b>1</b>上传节点配置
-                    </div>
-                    <ConfigUpload onLoad={setConfig} />
-                    <div className="step-label">
-                      <b>2</b>填写中转服务器
-                    </div>
-                  </>
-                )}
-                <SSHFields
-                  title={kind === "relay" ? "中转服务器地址" : "服务器 IP 地址"}
-                  value={ssh}
-                  onChange={setSSH}
-                />
-                {kind === "deploy" && <ErrorNotice error={error} />}
-                {kind === "deploy" && (
-                  <>
-                    <Notice tone="orange">
-                      每次均全新部署受管 MSBOOST
-                      组件，重新生成认证和端口；不会重装操作系统。原配置部署成功后将失效。
-                    </Notice>
-                    <Notice tone="orange">
-                      本功能仅限游戏用途，禁止用于翻墙、公共代理、违法活动或其他与游戏无关的用途。(MSBOOST
-                      将屏蔽部分网站)
-                    </Notice>
-                  </>
-                )}
-                {kind === "relay" && (
-                  <>
-                    <Field
-                      label="配置备注"
-                      placeholder="例如：东京中转（将用于配置名称和文件名）"
-                      value={remark}
-                      maxLength={60}
-                      onChange={(e) => setRemark(e.target.value)}
-                    />
-                    <Check
-                      checked={useFront}
-                      onChange={(e) => setUseFront(e.target.checked)}
-                      label="使用自备前置机"
-                    />
-                    {useFront && (
-                      <div className="mt16">
-                        <Notice tone="orange">
-                          前置机 → 自备中转机 → MSBOOST
-                          节点。请同时填写两台服务器信息。
-                        </Notice>
-                        <div className="mt16">
-                          <SSHFields
-                            title="前置机 IP 地址"
-                            value={front}
-                            onChange={setFront}
-                          />
-                        </div>
-                      </div>
-                    )}
-                    <div className="flow">
-                      {[
-                        "客户电脑",
-                        ...(useFront ? ["自备前置机"] : []),
-                        "自备中转机",
-                        "MSBOOST 节点",
-                      ].map((x, i) => (
-                        <span className="flex" key={x}>
-                          {i > 0 && <ArrowRight size={13} />}
-                          <span className="flow-node">{x}</span>
-                        </span>
-                      ))}
-                    </div>
-                    <Notice>
-                      入口使用实际中转服务器的 IP；监听端口随机分配，每端口固定
-                      5 Mbps。
-                    </Notice>
-                  </>
-                )}
-                {kind === "dd" && (
-                  <>
-                    <fieldset className="fieldset">
-                      <legend>重装参数</legend>
-                      <div className="form-grid">
-                        <Field label="重装系统" value="Debian 12" disabled />
-                        <Select
-                          label="重装后 SSH 端口"
-                          value={portMode}
-                          onChange={(e) => setPortMode(e.target.value)}
-                        >
-                          <option value="keep">保持不变</option>
-                          <option value="new">输入新端口</option>
-                        </Select>
-                        {portMode === "new" && (
-                          <Field
-                            label="新 SSH 端口"
-                            type="number"
-                            min={1}
-                            max={65535}
-                            value={newPort}
-                            onChange={(e) => setNewPort(e.target.value)}
-                            required
-                          />
-                        )}
-                        <Select
-                          label="重装密码策略"
-                          value={passwordMode}
-                          onChange={(e) => setPasswordMode(e.target.value)}
-                        >
-                          <option value="keep">保持不变</option>
-                          <option value="new">输入新密码</option>
-                        </Select>
-                        {passwordMode === "new" && (
-                          <Field
-                            label="新 root 密码"
-                            type="password"
-                            value={newPassword}
-                            onChange={(e) => setNewPassword(e.target.value)}
-                            required
-                          />
-                        )}
-                      </div>
-                    </fieldset>
-                    <Notice tone="red">
-                      DD系统会清除服务器原有系统和数据，操作前请先备份或确保无重要数据。操作提交后请等待15分钟以上，再执行部署
-                      MSBOOST。
-                    </Notice>
-                    <Check
-                      checked={erase}
-                      onChange={(e) => setErase(e.target.checked)}
-                      required
-                      label="我已备份重要数据，并理解重装会清除原系统和数据"
-                    />
-                  </>
-                )}
-                {kind !== "deploy" && <ErrorNotice error={error} />}
-                {(kind === "deploy" || kind === "relay") && (
-                  <Notice tone="orange">
-                    仅支持 Debian 11、12、13，不支持其他发行版或版本。
-                  </Notice>
-                )}
-                <div className="form-actions">
-                  <Button type="submit" primary disabled={busy}>
-                    {busy
-                      ? "正在提交…"
-                      : kind === "deploy"
-                        ? "开始部署"
-                        : kind === "relay"
-                          ? "开始配置"
-                          : "开始DD"}
-                    <ArrowRight size={15} />
-                  </Button>
-                </div>
-              </form>
-            </div>
-            {["deploy", "relay"].includes(kind) && (
-              <CleanupPanel
-                scope={kind === "deploy" ? "msboost" : "relay"}
-                user={user}
-              />
-            )}
+            <ToolForm kind={kind} user={user} settings={settings} />
           </div>
           <aside className="stack" style={{ alignContent: "start" }}>
+            {kind === "dd" && (
+              <div className="card">
+                <h3>密钥登录说明</h3>
+                <p className="muted mt8">
+                  私钥只用于本次连接，不进入任务记录，也不保存在浏览器。选择「继续使用当前密钥」时，写入新系统的是由私钥推导出的公钥，私钥本身不会写入新系统。
+                </p>
+              </div>
+            )}
             <div className="card">
               <h3>{kind === "dd" ? "DD 提交后" : "配置文件在哪里？"}</h3>
               <p className="muted mt8">
@@ -894,7 +1335,7 @@ export function ToolPage({
             <div className="card">
               <h3>操作须知</h3>
               <p className="muted mt8">
-                仅操作自己有权管理的服务器。密码和配置请妥善保管。
+                仅操作自己有权管理的服务器。密码、密钥和配置请妥善保管。
               </p>
               <Button className="mt16" onClick={() => onNavigate("tutorials")}>
                 公告/教程
@@ -902,14 +1343,6 @@ export function ToolPage({
             </div>
           </aside>
         </div>
-      )}
-      {task && (
-        <TaskDetail
-          task={task}
-          owner={user.id}
-          save={settings.localSave !== false}
-          onClose={() => setTask(null)}
-        />
       )}
     </>
   );
@@ -1174,7 +1607,8 @@ export function TasksPage({
       )}
       <ErrorNotice error={error || message} />
       <Notice tone="orange">
-        免费配置请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复；捐赠权益线路文件请到线路页使用“中转配置下载”。
+        免费配置请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复；捐赠权益线路文件请到线路页使用“中转配置下载”。新部署的节点配置需要
+        MSBOOST 启动器；旧版 BAT 启动器请把 msboost.exe 更新到 v3.35.0 以上。
       </Notice>
       <div className="card flush mt24">
         {!loading && !error && !tasks.length ? (
@@ -1220,13 +1654,7 @@ export function TasksPage({
               >
                 {states[t.state] || t.state}
               </Badge>,
-              [
-                "dd",
-                "fingerprint",
-                "front",
-                "cleanup",
-                "cleanup-preview",
-              ].includes(t.kind)
+              noConfigKinds.includes(t.kind)
                 ? "不生成配置"
                 : files[t.id]
                   ? "已存当前浏览器"

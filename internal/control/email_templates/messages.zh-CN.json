@@ -51,6 +51,19 @@
     "EventLabel": "变更时间",
     "StatusText": "密码更新完成"
   },
+  "relay_code_used": {
+    "Subject": "[MSBOOST] 中转码已被使用",
+    "Preheader": "有人用你生成的中转码在你的中转服务器上建立了一条中转。",
+    "Category": "中转码提醒",
+    "Title": "你的中转码已被使用",
+    "Intro": "您好！您生成的中转码刚刚被使用，已在您的中转服务器上建立了一条中转。",
+    "Instruction": "如需查看使用者、修改带宽、暂停或删除这条中转，请登录 MSBOOST，在「中转码管理」中操作。",
+    "NoticeTitle": "不是您分享的？",
+    "Notice": "请立即在「中转码管理」作废该中转码，暂存的 SSH 会立即删除；再到「中转服务器管理」删除不认识的中转。",
+    "UsesCode": false,
+    "EventLabel": "使用时间",
+    "StatusText": "中转已建立"
+  },
   "smtp_test": {
     "Subject": "[MSBOOST] 邮件服务测试",
     "Preheader": "这是一封测试邮件，请检查中文标题和正文显示。",

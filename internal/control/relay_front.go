@@ -71,7 +71,7 @@ func (a *App) startRelayFront(rule UserRule, ssh executor.SSH, config []byte) {
 				err = errors.New("front executor unavailable")
 			}
 		}
-		ssh.Password = ""
+		ssh = ssh.WithoutSecrets()
 		if err == nil && (hop.FromHost != ssh.Host || hop.FromPort < 1 || hop.FromPort > 65535 || hop.ToHost != rule.EntryAddress || hop.ToPort != rule.EntryPort) {
 			err = errors.New("front result mismatch")
 		}

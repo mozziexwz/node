@@ -89,7 +89,12 @@ func (b *limitedOutput) Bytes() []byte {
 	return append([]byte(nil), b.buffer.Bytes()...)
 }
 func (remote SSHRemote) Run(ctx context.Context, s SSH, script string) ([]byte, error) {
-	if err := ValidateSSH(s); err != nil {
+	if err := validateSSHFields(s); err != nil {
+		return nil, err
+	}
+	// Parsing also validates the key; it is done once per connection.
+	auth, err := sshAuthMethods(s)
+	if err != nil {
 		return nil, err
 	}
 	address := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
@@ -105,7 +110,7 @@ func (remote SSHRemote) Run(ctx context.Context, s SSH, script string) ([]byte, 
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
 	hostChanged := false
 	pin := PinnedHostKey(s.Fingerprint)
-	clientConn, chans, reqs, err := ssh.NewClientConn(conn, address, &ssh.ClientConfig{User: s.User, Auth: []ssh.AuthMethod{ssh.Password(s.Password)}, HostKeyCallback: func(host string, addr net.Addr, key ssh.PublicKey) error {
+	clientConn, chans, reqs, err := ssh.NewClientConn(conn, address, &ssh.ClientConfig{User: s.User, Auth: auth, HostKeyCallback: func(host string, addr net.Addr, key ssh.PublicKey) error {
 		err := pin(host, addr, key)
 		hostChanged = err != nil
 		return err

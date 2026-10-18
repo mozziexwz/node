@@ -200,7 +200,7 @@ test('real server: browser permissions, admin pages, content and account flows',
     const deploymentBox=await mp.locator('.tool-layout > div > .card').first().boundingBox();
     const cleanupBox=await cleanup.boundingBox();
     assert.ok(Math.abs(deploymentBox.x-cleanupBox.x)<1 && Math.abs(deploymentBox.width-cleanupBox.width)<1,'uninstall panel aligns with deployment form');
-    await expect(mp.getByText('填写服务器信息即可，提交时会自动核对服务器身份。首次连接会记住这台服务器，以后身份变化会暂停操作。密码会在连接时验证。').first()).toBeVisible();
+    await expect(mp.getByText('填写服务器信息即可，提交时会自动核对服务器身份。首次连接会记住这台服务器，以后身份变化会暂停操作。密码或密钥会在连接时验证。').first()).toBeVisible();
     await mp.screenshot({path:'../../.runtime/remediation-deploy.png',fullPage:true});
 
     // UI-only transport fixture. Documentation IPs are never sent to the real

@@ -703,7 +703,9 @@ func filteredSettings(s *State, admin bool) map[string]any {
 	out["registrationEmailVerification"] = out["registrationEmailVerificationRequired"]
 	out["freeToolsVerifiedOnly"] = out["freeToolsRequireVerifiedEmail"]
 	out["smtpReady"] = smtpReady(s)
+	out["relayCodes"] = publicRelayCodeSettings(relayCodeSettings(s))
 	if admin {
+		out["relayCodes"] = relayCodeSettings(s)
 		out["disasterBackupEmailEnabled"] = boolSetting(s, "disasterBackupEmailEnabled")
 		c, _ := getSMTP(s)
 		c.CredentialConfigured = c.Secret != ""
@@ -789,6 +791,22 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 					s.Settings[key] = limits
+				case "relayCodes":
+					before := relayCodeSettings(s)
+					value := before
+					if json.Unmarshal(raw, &value) != nil {
+						return errors.New("中转码设置格式无效")
+					}
+					if err := validateRelayCodeSettings(value); err != nil {
+						return err
+					}
+					s.Settings[key] = value
+					// Turning the feature off deletes every stored SSH at once.
+					if before.Enabled && !value.Enabled {
+						if _, err := endOwnerRelayCodes(s, "", "feature_disabled", actor.ID, time.Now()); err != nil {
+							return err
+						}
+					}
 				default:
 					return fmt.Errorf("不支持的设置字段 %s", key)
 				}
@@ -1003,6 +1021,9 @@ func (a *App) adminUser(w http.ResponseWriter, r *http.Request) {
 		if u.Role == "admin" && activeAdminCount(s) <= 1 {
 			return errors.New("不能删除最后一个管理员")
 		}
+		if _, err := endOwnerRelayCodes(s, id, "owner_disabled", actor.ID, time.Now()); err != nil {
+			return err
+		}
 		delete(s.Users, id)
 		revokeSessions(s, id)
 		for _, collection := range []string{"email_challenges", "sessions"} {
@@ -1106,6 +1127,12 @@ func (a *App) saveAdminUser(w http.ResponseWriter, r *http.Request, actor *User,
 				return errors.New("用户状态无效")
 			}
 			u.Status = *in.Status
+			// A suspended owner's stored relay-code SSH is deleted at once.
+			if u.Status != "active" && !created {
+				if _, err := endOwnerRelayCodes(s, u.ID, "owner_disabled", actor.ID, time.Now()); err != nil {
+					return err
+				}
+			}
 		}
 		if !created && before.Role == "admin" && (u.Role != "admin" || u.Status != "active") {
 			if actor.ID == u.ID {
