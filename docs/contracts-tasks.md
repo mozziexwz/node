@@ -126,7 +126,7 @@ UI 折叠入口为“卸载 MSBOOST”或“卸载自备中转”。点击“继
 
 GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/libexec/msboost-free` 磁盘目录暂存、校验和原子发布；不在 Debian 默认可能挂载为 `noexec` 的 `/run` 中执行 ELF，也不修改挂载安全选项。已有共享缓存程序只核验、不覆盖。DD 使用仓库固定版本的 `bin456789/reinstall` 脚本，显式传入 `--username root`、密码与 SSH 端口，关闭其标准输入以避免交互提示吞掉外层执行指令。
 
-免费工具的 `deploy`、`relay` 及其自备前置目标在客户自有 VPS 写入专用 `/etc/sysctl.d/99-msboost-bbr.conf`，执行 `sysctl -p /etc/sysctl.d/99-msboost-bbr.conf` 和 `sysctl --system`，再逐项读取核对补充 2.4 指定的全部 13 个 BBR/FQ 与 TCP 参数；重复执行保持幂等，不覆盖整份 `/etc/sysctl.conf`。控制执行机和本站捐赠权益 Relay 节点不执行该步骤。内核不支持、文件安全检查失败、加载失败或任一参数未生效时，任务按 `bbr`/安装阶段失败，不假报成功。
+免费工具的 `deploy`、`relay` 及其自备前置目标在客户自有 VPS 调优 BBR：先记录原值，用 `sysctl -p` 只加载补充 2.4 指定的 13 个 BBR/FQ 与 TCP 参数中内核提供的项（不执行 `sysctl --system`，不重新加载其他配置），逐项读取核对后再原子写入专用 `/etc/sysctl.d/zz-msboost-bbr.conf`；重复执行保持幂等，不覆盖整份 `/etc/sysctl.conf`。控制执行机和本站捐赠权益 Relay 节点不执行该步骤。内核不支持 BBR、加载失败或任一参数未生效时恢复原值、不写入文件，任务继续并在 `health.bbr` 报告 `unavailable`（原值恢复失败为 `review_required`），不假报已启用；`/etc/sysctl.d` 或该文件的所有者、权限、符号链接检查不通过时任务在 `bbr` 阶段失败。
 
 ## 执行机管理
 
