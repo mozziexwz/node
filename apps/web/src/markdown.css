@@ -152,17 +152,31 @@
   border-spacing: 0;
   font-size: 14px;
 }
+/* Cells break only between words and at punctuation, so a narrow column never
+   splits "CN2" or "2G内存"; a table wider than its box scrolls in .md-table. */
 .markdown th,
 .markdown td {
   padding: 10px 14px;
   border: 0;
   border-bottom: 1px solid var(--line);
   text-align: left;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 .markdown th {
   background: #faf6f2;
   color: #5d554d;
   font-weight: 650;
+  white-space: nowrap;
+}
+/* Keeps the external-link arrow on the same line as the link in a cell. */
+.markdown td a[target="_blank"] {
+  white-space: nowrap;
+}
+/* A wide table on a narrow screen scrolls with readable columns instead of
+   shrinking every cell to one word per line. */
+.markdown table:has(th:nth-child(6)) td {
+  min-width: 6.5em;
 }
 .markdown [align="center"] {
   text-align: center;
