@@ -1,5 +1,9 @@
 export type NavigationGroup = { title: string; items: string[] };
 
+// A link elsewhere in the console (the member guide's latest articles) sets
+// this before opening the article page, which then shows that article first.
+export const openArticleKey = "msboost-open-article";
+
 // Homepage links such as /#deploy open these after signing in.
 export const freeTools = [
   "launcher",

@@ -50,6 +50,7 @@ import type {
   MarkdownEditorHandle,
   MarkdownEditorProps,
 } from "./markdown-editor";
+import { openArticleKey } from "./navigation";
 import "./content-extra.css";
 
 // CodeMirror is only downloaded when an administrator opens the editor. If it
@@ -108,7 +109,16 @@ export function Articles({ admin = false }: { admin?: boolean }) {
   const { data, error, reload, setData } = useData(
       admin ? "/api/admin/articles" : "/api/articles",
     ),
-    [active, setActive] = useState(""),
+    [active, setActive] = useState(() => {
+      // Opened from a link to one article, such as the guide's latest list.
+      try {
+        const id = sessionStorage.getItem(openArticleKey) || "";
+        sessionStorage.removeItem(openArticleKey);
+        return id;
+      } catch {
+        return "";
+      }
+    }),
     [editing, setEditing] = useState<RecordData | null>(null),
     [tab, setTab] = useState("content"),
     [message, setMessage] = useState(""),

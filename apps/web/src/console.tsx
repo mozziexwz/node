@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import {
   BookOpen,
-  LayoutDashboard,
+  Compass,
   Server,
   Route,
   RefreshCw,
@@ -53,11 +53,12 @@ import { RouteBuilder } from "./tunnels";
 import { Backups } from "./backups";
 import { freeTools, navigationGroups } from "./navigation";
 import { LauncherPage } from "./launcher";
+import { Guide } from "./guide";
 import { paymentReturnOrder } from "./payment-return";
 import { SiteSwitcher } from "./site-switcher";
 const labels: Record<string, [string, typeof Server]> = {
   tutorials: ["公告/教程", BookOpen],
-  home: ["工作台", LayoutDashboard],
+  home: ["使用指南", Compass],
   launcher: ["MSBOOST 启动器", MonitorDown],
   deploy: ["部署 MSBOOST", Server],
   relay: ["配置中转服务器", Route],
@@ -84,51 +85,29 @@ const labels: Record<string, [string, typeof Server]> = {
   rules: ["用户中转", Route],
   release: ["发布维护", Package],
 };
-function Overview({
-  admin,
-  navigate,
-}: {
-  admin: boolean;
-  navigate: (v: string) => void;
-}) {
-  const { data, error } = useData(admin ? "/api/admin/overview" : null);
+// Administrators' overview; members get the guide instead.
+function Overview({ navigate }: { navigate: (v: string) => void }) {
+  const { data, error } = useData("/api/admin/overview");
   return (
     <>
-      <Header
-        title={admin ? "运营概览" : "从你的专属节点开始"}
-        sub={
-          admin
-            ? "查看免费工具、线路和系统的运行情况。"
-            : "部署、配置和再次下载，都在一个工作空间里。"
-        }
-      />
+      <Header title="运营概览" sub="查看免费工具、线路和系统的运行情况。" />
       <ErrorNotice error={error} />
-      {admin ? (
-        <div className="grid4">
-          {[
-            ["users", "注册用户", "人"],
-            ["tasks", "任务", "次"],
-            ["routes", "隧道", "条"],
-            ["orders", "兑换记录", "笔"],
-          ].map(([k, n, u]) => (
-            <div className="card stat" key={k}>
-              <div className="stat-top">{n}</div>
-              <div className="stat-value">
-                {data?.[k] ?? "—"}
-                <span>{u}</span>
-              </div>
+      <div className="grid4">
+        {[
+          ["users", "注册用户", "人"],
+          ["tasks", "任务", "次"],
+          ["routes", "隧道", "条"],
+          ["orders", "兑换记录", "笔"],
+        ].map(([k, n, u]) => (
+          <div className="card stat" key={k}>
+            <div className="stat-top">{n}</div>
+            <div className="stat-value">
+              {data?.[k] ?? "—"}
+              <span>{u}</span>
             </div>
-          ))}
-        </div>
-      ) : (
-        <div className="welcome">
-          <div>
-            <h2>准备好服务器，接下来交给工具。</h2>
-            <p>选择一项操作开始。完成后，请及时下载并备份配置。</p>
           </div>
-          <Route size={64} className="orange" />
-        </div>
-      )}
+        ))}
+      </div>
       <div className="grid3 mt24">
         {["deploy", "relay", "dd"].map((k) => {
           const [n, I] = labels[k];
@@ -155,21 +134,19 @@ function Overview({
           );
         })}
       </div>
-      {admin && (
-        <div className="card mt24">
-          <h3>首次配置</h3>
-          <p className="muted mt8">
-            添加控制执行机后即可使用在线工具。添加节点、隧道和权益后可提供捐赠权益中转服务。
-          </p>
-          <div className="actions mt16">
-            {["executors", "agents", "routes", "plans", "settings"].map((k) => (
-              <Button key={k} onClick={() => navigate(k)}>
-                {k === "routes" ? "隧道" : labels[k][0]}
-              </Button>
-            ))}
-          </div>
+      <div className="card mt24">
+        <h3>首次配置</h3>
+        <p className="muted mt8">
+          添加控制执行机后即可使用在线工具。添加节点、隧道和权益后可提供捐赠权益中转服务。
+        </p>
+        <div className="actions mt16">
+          {["executors", "agents", "routes", "plans", "settings"].map((k) => (
+            <Button key={k} onClick={() => navigate(k)}>
+              {k === "routes" ? "隧道" : labels[k][0]}
+            </Button>
+          ))}
         </div>
-      )}
+      </div>
     </>
   );
 }
@@ -281,7 +258,11 @@ export default function App() {
   let page: React.ReactNode;
   switch (view) {
     case "home":
-      page = <Overview admin={admin} navigate={navigate} />;
+      page = admin ? (
+        <Overview navigate={navigate} />
+      ) : (
+        <Guide navigate={navigate} />
+      );
       break;
     case "tutorials":
       page = <Articles admin={admin} />;
@@ -385,13 +366,15 @@ export default function App() {
       page = <Articles admin={admin} />;
   }
   const title =
-    admin && view === "plans"
-      ? "权益管理"
-      : admin && view === "routes"
-        ? "隧道"
-        : admin && view === "tasks"
-          ? "任务审计"
-          : labels[view]?.[0] || "工作台";
+    admin && view === "home"
+      ? "运营概览"
+      : admin && view === "plans"
+        ? "权益管理"
+        : admin && view === "routes"
+          ? "隧道"
+          : admin && view === "tasks"
+            ? "任务审计"
+            : labels[view]?.[0] || labels.tutorials[0];
   return (
     <>
       {drawer && (
