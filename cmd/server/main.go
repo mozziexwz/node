@@ -77,6 +77,7 @@ func main() {
 	tasks.Register(mux)
 	tasks.Start(ctx)
 	app.SetFrontProvisioner(tasks.ProvisionFront)
+	app.SetRouteVerifier(tasks.VerifyRoute)
 	backups := control.NewBackupService(app)
 	backups.Register(mux)
 	backups.Start(ctx)

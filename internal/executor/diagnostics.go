@@ -14,33 +14,36 @@ type Diagnostic struct{ Code, Phase, Message, NextStep string }
 func (d Diagnostic) Error() string { return d.Message }
 
 var diagnostics = map[string]Diagnostic{
-	"ssh_timeout":            {"ssh_timeout", "ssh_connect", "SSH 连接超时", "检查 VPS 是否开机、SSH 端口和安全组是否允许执行机访问。"},
-	"ssh_refused":            {"ssh_refused", "ssh_connect", "SSH 端口拒绝连接", "通过 VPS 控制台检查 SSH 服务及实际监听端口。"},
-	"ssh_connect":            {"ssh_connect", "ssh_connect", "无法连接 SSH 服务", "检查公网 IP、端口、VPS 网络和安全组。"},
-	"ssh_host_changed":       {"ssh_host_changed", "ssh_host_key", "SSH 主机指纹已变化，操作已中止", "先通过 VPS 控制台核实是否重装或更换主机，再在高级 SSH 设置中明确确认新指纹。"},
-	"ssh_auth":               {"ssh_auth", "ssh_auth", "SSH 认证失败", "检查用户名、密码或私钥，以及 SSH 是否允许 root 用这种方式登录；此结果不一定表示密码或私钥错误。"},
-	"ssh_handshake":          {"ssh_handshake", "ssh_handshake", "SSH 握手失败", "确认端口提供的是 SSH 服务，并检查服务端算法配置和网络连接。"},
-	"ssh_session":            {"ssh_session", "ssh_session", "SSH 会话建立失败", "检查 VPS 的会话数、资源限制和 SSH 服务状态。"},
-	"task_timeout":           {"task_timeout", "execution", "任务执行超时或连接中断", "先核实 VPS 状态和服务是否已经创建；不会自动重试操作。"},
-	"unsupported_system":     {"unsupported_system", "preflight", "服务器系统或架构不受支持", "客户节点请使用完整 systemd 的 Debian 11/12/13 amd64 或 arm64 VPS；建议优先 Debian 12/13。"},
-	"unsupported_debian":     {"unsupported_debian", "preflight", "当前服务器非 Debian 系统，请在 VPS 服务商面板重装 Debian 11 或以上版本系统后再次尝试。", "部署 MSBOOST 和自备中转仅支持 Debian 11 或以上版本；请先从 VPS 服务商面板核对系统版本。"},
-	"missing_dependency":     {"missing_dependency", "dependencies", "必需的系统依赖不可用", "检查 apt 软件源、网络和磁盘空间，再安装缺失的依赖。"},
-	"download_failed":        {"download_failed", "download", "远端下载失败", "检查 VPS 到 GitHub 和软件源的 DNS、HTTPS 网络及代理设置。"},
-	"integrity_failed":       {"integrity_failed", "integrity", "安装资源完整性校验失败", "停止使用该资源，检查下载是否完整并联系管理员核对固定版本校验值。"},
-	"archive_failed":         {"archive_failed", "extract", "安装资源解压失败或归档内容无效", "检查磁盘可用空间及 tar 支持；不要删除 SHA256 校验或执行未验证的资源。"},
-	"binary_unusable":        {"binary_unusable", "binary", "已校验程序无法通过架构或启动检查", "检查程序架构与可执行目录的挂载选项；不要将 /run 改为可执行，也不要跳过资源校验。"},
-	"install_failed":         {"install_failed", "install", "写入受管组件失败", "检查 /usr/local/libexec 的磁盘空间、文件权限和只读挂载；不要覆盖未知或使用中的共享文件。"},
-	"target_unreachable":     {"target_unreachable", "target", "中转目标 TCP 连接失败", "检查目标节点端口的公网连通性、本机防火墙（如 UFW）及服务商安全组；本地监听成功不代表公网可达。前置配置失败时先检查权益节点入口，不必反复重装前置机。"},
-	"service_failed":         {"service_failed", "service", "远端服务启动或监听检查失败", "检查服务监听端口是否被占用，以及 VPS 的 systemd 和资源限制。"},
-	"bbr_failed":             {"bbr_failed", "bbr", "目标 VPS 的 BBR 网络参数未能配置", "检查内核是否支持 tcp_bbr，以及 sysctl.d 权限、软件源和网络参数。"},
-	"executor_configuration": {"executor_configuration", "executor", "执行机缺少固定版本下载配置", "请管理员升级执行机，确认当前架构的 GOST 地址和 SHA256 已配置。"},
-	"ownership_failed":       {"ownership_failed", "ownership", "受管文件所有权检查失败", "检测到未知安装、符号链接或第三方修改；请人工检查，系统不会删除或覆盖这些文件。"},
-	"cleanup_changed":        {"cleanup_changed", "cleanup", "清理范围在预览后发生变化", "重新预览并核对新的清理范围后再确认。"},
-	"cleanup_failed":         {"cleanup_failed", "cleanup", "清理未全部完成", "部分服务可能已停止或文件已移除；请先重新预览检查，不能假定所有内容已清理。"},
-	"invalid_config":         {"invalid_config", "config", "客户端配置校验或生成失败", "检查上传文件是否为单节点 TCP 配置；如果安装已运行，请先核实 VPS 上的服务状态。"},
-	"invalid_request":        {"invalid_request", "validate", "任务参数校验失败", "核对服务器地址、SSH 参数和所选操作。"},
-	"execution_failed":       {"execution_failed", "execution", "远端步骤执行失败，未获得足够证据确定原因", "请管理员根据失败阶段检查 VPS；不要提供密码、密钥或完整配置，系统不会自动重试。"},
-	"executor_offline":       {"executor_offline", "executor", "执行机响应中断", "联系管理员检查执行机在线状态，并核实 VPS 上的任务结果；系统不会自动重放。"},
+	"ssh_timeout":              {"ssh_timeout", "ssh_connect", "SSH 连接超时", "检查 VPS 是否开机、SSH 端口和安全组是否允许执行机访问。"},
+	"ssh_refused":              {"ssh_refused", "ssh_connect", "SSH 端口拒绝连接", "通过 VPS 控制台检查 SSH 服务及实际监听端口。"},
+	"ssh_connect":              {"ssh_connect", "ssh_connect", "无法连接 SSH 服务", "检查公网 IP、端口、VPS 网络和安全组。"},
+	"ssh_host_changed":         {"ssh_host_changed", "ssh_host_key", "SSH 主机指纹已变化，操作已中止", "先通过 VPS 控制台核实是否重装或更换主机，再在高级 SSH 设置中明确确认新指纹。"},
+	"ssh_auth":                 {"ssh_auth", "ssh_auth", "SSH 认证失败", "检查用户名、密码或私钥，以及 SSH 是否允许 root 用这种方式登录；此结果不一定表示密码或私钥错误。"},
+	"ssh_handshake":            {"ssh_handshake", "ssh_handshake", "SSH 握手失败", "确认端口提供的是 SSH 服务，并检查服务端算法配置和网络连接。"},
+	"ssh_session":              {"ssh_session", "ssh_session", "SSH 会话建立失败", "检查 VPS 的会话数、资源限制和 SSH 服务状态。"},
+	"task_timeout":             {"task_timeout", "execution", "任务执行超时或连接中断", "先核实 VPS 状态和服务是否已经创建；不会自动重试操作。"},
+	"unsupported_system":       {"unsupported_system", "preflight", "服务器系统或架构不受支持", "客户节点请使用完整 systemd 的 Debian 11/12/13 amd64 或 arm64 VPS；建议优先 Debian 12/13。"},
+	"unsupported_debian":       {"unsupported_debian", "preflight", "当前服务器非 Debian 系统，请在 VPS 服务商面板重装 Debian 11 或以上版本系统后再次尝试。", "部署 MSBOOST 和自备中转仅支持 Debian 11 或以上版本；请先从 VPS 服务商面板核对系统版本。"},
+	"missing_dependency":       {"missing_dependency", "dependencies", "必需的系统依赖不可用", "检查 apt 软件源、网络和磁盘空间，再安装缺失的依赖。"},
+	"download_failed":          {"download_failed", "download", "远端下载失败", "检查 VPS 到 GitHub 和软件源的 DNS、HTTPS 网络及代理设置。"},
+	"integrity_failed":         {"integrity_failed", "integrity", "安装资源完整性校验失败", "停止使用该资源，检查下载是否完整并联系管理员核对固定版本校验值。"},
+	"archive_failed":           {"archive_failed", "extract", "安装资源解压失败或归档内容无效", "检查磁盘可用空间及 tar 支持；不要删除 SHA256 校验或执行未验证的资源。"},
+	"binary_unusable":          {"binary_unusable", "binary", "已校验程序无法通过架构或启动检查", "检查程序架构与可执行目录的挂载选项；不要将 /run 改为可执行，也不要跳过资源校验。"},
+	"install_failed":           {"install_failed", "install", "写入受管组件失败", "检查 /usr/local/libexec 的磁盘空间、文件权限和只读挂载；不要覆盖未知或使用中的共享文件。"},
+	"target_unreachable":       {"target_unreachable", "target", "中转目标 TCP 连接失败", "检查目标节点端口的公网连通性、本机防火墙（如 UFW）及服务商安全组；本地监听成功不代表公网可达。前置配置失败时先检查权益节点入口，不必反复重装前置机。"},
+	"service_failed":           {"service_failed", "service", "远端服务启动或监听检查失败", "检查服务监听端口是否被占用，以及 VPS 的 systemd 和资源限制。"},
+	"bbr_failed":               {"bbr_failed", "bbr", "目标 VPS 的 BBR 网络参数未能配置", "检查内核是否支持 tcp_bbr，以及 sysctl.d 权限、软件源和网络参数。"},
+	"executor_configuration":   {"executor_configuration", "executor", "执行机缺少固定版本下载配置", "请管理员升级执行机，确认当前架构的 GOST 地址和 SHA256 已配置。"},
+	"ownership_failed":         {"ownership_failed", "ownership", "受管文件所有权检查失败", "检测到未知安装、符号链接或第三方修改；请人工检查，系统不会删除或覆盖这些文件。"},
+	"cleanup_changed":          {"cleanup_changed", "cleanup", "清理范围在预览后发生变化", "重新预览并核对新的清理范围后再确认。"},
+	"cleanup_failed":           {"cleanup_failed", "cleanup", "清理未全部完成", "部分服务可能已停止或文件已移除；请先重新预览检查，不能假定所有内容已清理。"},
+	"invalid_config":           {"invalid_config", "config", "客户端配置校验或生成失败", "检查上传文件是否为单节点 TCP 配置；如果安装已运行，请先核实 VPS 上的服务状态。"},
+	"invalid_request":          {"invalid_request", "validate", "任务参数校验失败", "核对服务器地址、SSH 参数和所选操作。"},
+	"execution_failed":         {"execution_failed", "execution", "远端步骤执行失败，未获得足够证据确定原因", "请管理员根据失败阶段检查 VPS；不要提供密码、密钥或完整配置，系统不会自动重试。"},
+	"executor_offline":         {"executor_offline", "executor", "执行机响应中断", "联系管理员检查执行机在线状态，并核实 VPS 上的任务结果；系统不会自动重放。"},
+	"verify_tunnel_failed":     {"verify_tunnel_failed", "verify", "配置文件与节点不匹配，或目标不是 mieru", "请重新上传节点的配置文件；节点重新部署过的话，旧配置已经失效。"},
+	"verify_not_msboost":       {"verify_not_msboost", "verify", "不是 MSBOOST 节点，或节点版本较低，请重新部署MSBOOST节点。", "重新部署会生成新的配置文件，部署完成后用新配置重新创建中转。"},
+	"verify_entry_unreachable": {"verify_entry_unreachable", "verify", "新建的中转入口暂时连不上", "请稍后重试；一直失败时，请检查中转服务器的防火墙和服务商安全组是否放行了中转端口。"},
 }
 
 func PublicDiagnostic(code, phase string) Diagnostic {
@@ -55,7 +58,7 @@ func PublicDiagnostic(code, phase string) Diagnostic {
 }
 func ValidPhase(phase string) bool {
 	switch phase {
-	case "queued", "executing", "complete", "fingerprint", "validate", "install", "config", "prepare", "submitted", "submission_unknown", "preflight", "target", "relay", "front", "integrity", "extract", "binary", "bbr", "dependencies", "download", "service", "self_test", "execution", "ssh_connect", "ssh_host_key", "ssh_auth", "ssh_handshake", "ssh_session", "executor", "ownership", "cleanup":
+	case "queued", "executing", "complete", "fingerprint", "validate", "install", "config", "prepare", "submitted", "submission_unknown", "preflight", "target", "relay", "front", "integrity", "extract", "binary", "bbr", "dependencies", "download", "service", "self_test", "execution", "ssh_connect", "ssh_host_key", "ssh_auth", "ssh_handshake", "ssh_session", "executor", "ownership", "cleanup", "verify":
 		return true
 	}
 	return false

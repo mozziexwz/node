@@ -285,6 +285,7 @@ test(
           "relay-code",
           "relay-inventory",
           "relay-manage",
+          "relay-verify",
         ],
       );
       for (const width of [1440, 375]) {

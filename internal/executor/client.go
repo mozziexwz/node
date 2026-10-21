@@ -35,6 +35,7 @@ func setCapabilityHeaders(h http.Header) {
 	h.Set("X-MSBOOST-Scoped-Cleanup", "1")
 	h.Set(SSHKeyHeader, "1")
 	h.Set(RelayCodeHeader, "1")
+	h.Set(RelayVerifyHeader, "1")
 	h.Set("X-MSBOOST-Agent-Version", buildinfo.Version)
 }
 

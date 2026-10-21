@@ -27,6 +27,7 @@ import {
   ErrorNotice,
   Empty,
 } from "./ui";
+import { SelfTest } from "./relay-verify";
 export type SSH = {
   host: string;
   port: number;
@@ -574,6 +575,7 @@ export const taskKinds: Record<string, string> = {
   "relay-code": "使用中转码",
   "relay-inventory": "读取中转列表",
   "relay-manage": "管理中转",
+  "relay-verify": "中转校验",
 };
 // Kinds whose result never contains a client configuration.
 const noConfigKinds = [
@@ -622,6 +624,7 @@ const phases: Record<string, string> = {
   executor_revoked: "执行机已撤销，需核实 VPS",
   ownership: "受管所有权检查",
   cleanup: "清理",
+  verify: "目标校验",
 };
 const healthLabels: Record<string, string> = {
   bbr: "BBR 网络优化",
@@ -750,11 +753,12 @@ export function TaskDetail({
           ])}
         />
       )}
-      {current.health && (
+      {current.health && !current.verify && (
         <p className="muted mt8">
           游戏实际连接需由客户端自行验证；TCP 可达不代表游戏可正常使用。
         </p>
       )}
+      {current.verify && <SelfTest verify={current.verify} />}
       {current.cleanup && (
         <Table
           headers={["清理对象", "类型"]}

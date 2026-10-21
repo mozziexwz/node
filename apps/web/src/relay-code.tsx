@@ -63,6 +63,7 @@ import {
   needsEmailGate,
 } from "./tools";
 import { getLocal } from "./vault";
+import { VerifyBadge } from "./relay-verify";
 
 type Mode = "use" | "make" | "manual";
 type CodesTab = "codes" | "servers" | "used";
@@ -1445,7 +1446,7 @@ function CodeDetail({
           </div>
           <div className="card flush">
             <Table
-              headers={["使用者", "中转端口", "结果", "时间"]}
+              headers={["使用者", "中转端口", "结果", "目标校验", "时间"]}
               rows={uses.map((use) => [
                 <span className="user-cell">
                   <b>{use.userEmail}</b>
@@ -1465,6 +1466,11 @@ function CodeDetail({
                     <Badge tone="red">失败</Badge>
                     <small>{use.failReason || "建立失败"} · 不计次</small>
                   </>
+                ),
+                use.verify ? (
+                  <VerifyBadge verify={use.verify} at={use.verifiedAt} />
+                ) : (
+                  "—"
                 ),
                 fullTime(use.createdAt),
               ])}
@@ -2173,6 +2179,12 @@ function ServerManager({
                   <span className={"user-cell " + (row.user ? "" : "unknown")}>
                     <b>{row.user || "未记录使用者"}</b>
                     <span>（{row.maskedIp}）</span>
+                    {row.verified && (
+                      <VerifyBadge
+                        verify={{ code: row.verified.code }}
+                        at={Date.parse(row.verified.at)}
+                      />
+                    )}
                   </span>,
                   <>
                     <Badge tone={row.source === "code" ? "orange" : ""}>

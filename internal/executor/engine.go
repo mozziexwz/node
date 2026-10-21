@@ -21,6 +21,8 @@ import (
 type Engine struct {
 	Remote   Remote
 	TCPProbe func(context.Context, string, int) string
+	// Verifier checks relay targets; nil uses mihomo (see verify.go).
+	Verifier *Verifier
 	// GOST archives are administrator-pinned; unsupported architectures fail closed.
 	GostAMD64URL    string
 	GostAMD64SHA256 string
@@ -137,6 +139,8 @@ func (e *Engine) Execute(ctx context.Context, job Job) Result {
 		return e.relayInventory(ctx, job, r)
 	case "relay-manage":
 		return e.relayManage(ctx, job, r)
+	case "relay-verify":
+		return e.relayVerify(ctx, job, r)
 	case "cleanup", "cleanup-preview":
 		return e.cleanup(ctx, job, r)
 	}
@@ -333,11 +337,63 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 			r.Config, _ = json.MarshalIndent(doc, "", "  ")
 		}
 	}
+	if opts := job.Request.Verify; opts != nil {
+		report := e.verifier().Verify(ctx, r.Config, *opts)
+		r.Verify = &report
+		if opts.Mode == "enforce" && (VerifyBlocks(report.Code) || report.Code == VerifyEntryUnreachable) {
+			// Nothing of a refused relay is left behind on either server.
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if job.Request.Front != nil {
+				if err := e.cleanupRelay(cleanupCtx, *job.Request.Front, job.ID+"f"); err != nil {
+					return role(failRemote(r, "cleanup", nil, diagnosticError("cleanup_failed")), "front")
+				}
+			}
+			if err := e.cleanupRelay(cleanupCtx, job.Request.SSH, job.ID+"r"); err != nil {
+				return role(failRemote(r, "cleanup", nil, diagnosticError("cleanup_failed")), "relay")
+			}
+			r.Config, r.Hops = nil, nil
+			code := map[string]string{VerifyTunnelFailed: "verify_tunnel_failed", VerifyNotMSBOOST: "verify_not_msboost", VerifyEntryUnreachable: "verify_entry_unreachable"}[report.Code]
+			return role(failRemote(r, "verify", nil, diagnosticError(code)), "target")
+		}
+		if job.Request.Meta != nil {
+			// Best effort: the owner's server notes the check for its manager.
+			e.recordVerified(ctx, job.Request.SSH, job.ID+"r", report.Code)
+		}
+	}
 	r.State = "succeeded"
 	r.Phase = "complete"
 	r.Message = "TCP 中转服务已真实绑定端口；每端口上下行各 " + strconv.Itoa(rate) + " Mbps，游戏连接尚未验证"
 	r.Health = &Health{Service: "running", LocalSelfTest: "target_tcp_reachable", PublicTCP: e.TCPProbe(ctx, entryHost, entryPort), Game: "not_tested", BBR: bbr}
 	return r
+}
+
+func (e *Engine) verifier() *Verifier {
+	if e.Verifier == nil {
+		e.Verifier = &Verifier{}
+	}
+	return e.Verifier
+}
+
+// relayVerify checks a paid route's entry with the route configuration the
+// panel supplied. The configuration exists only in this job's memory.
+func (e *Engine) relayVerify(ctx context.Context, job Job, r Result) Result {
+	report := e.verifier().Verify(ctx, job.Request.ClientConfig, *job.Request.Verify)
+	r.Verify = &report
+	r.State, r.Phase, r.Message = "succeeded", "complete", "已完成中转目标校验"
+	return r
+}
+
+// recordVerified adds the result to the relay's meta.json for the server's
+// manager. The values come from a fixed vocabulary and a clock.
+func (e *Engine) recordVerified(ctx context.Context, s SSH, id, code string) {
+	if !managedRelayID.MatchString(id) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	script := "set -Eeuo pipefail\numask 077\n" + encodedAssignment("task_id", id) + encodedAssignment("verify_code", code) + encodedAssignment("verify_at", time.Now().UTC().Format(time.RFC3339)) + relayVerifiedScript
+	_, _ = e.Remote.Run(ctx, s, script)
 }
 func (e *Engine) front(ctx context.Context, job Job, r Result) Result {
 	if err := ValidateSSH(job.Request.SSH); err != nil {

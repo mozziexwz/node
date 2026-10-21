@@ -12,6 +12,13 @@ import { SiteSettings } from "./site-settings";
 import { RelayCodeSettings } from "./relay-code";
 import { LauncherSettings, settingsTabKey } from "./launcher";
 import {
+  AdminRuleVerify,
+  RelayVerifySettings,
+  VerifyBadge,
+  matchesVerifyFilter,
+  verifyFilterOptions,
+} from "./relay-verify";
+import {
   Header,
   Button,
   Field,
@@ -1367,6 +1374,7 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           ["limits", "操作限额"],
           ["site", "主页与 SEO"],
           ["relayCodes", "中转码"],
+          ["relayVerify", "中转校验"],
           ["launcher", "MSBOOST 启动器"],
         ].map(([k, t]) => (
           <button
@@ -1388,6 +1396,8 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           <RelayCodeSettings onSaved={onRefresh} />
         ) : tab === "launcher" ? (
           <LauncherSettings onSaved={onRefresh} />
+        ) : tab === "relayVerify" ? (
+          <RelayVerifySettings onSaved={onRefresh} />
         ) : tab === "captcha" ? (
           <AsyncForm
             onSubmit={async (f) => {
@@ -1610,6 +1620,7 @@ export function AdminRules() {
   const [query, setQuery] = useState(""),
     [state, setState] = useState(""),
     [route, setRoute] = useState(""),
+    [verifyFilter, setVerifyFilter] = useState(""),
     [message, setMessage] = useState(""),
     [selectedID, setSelectedID] = useState(""),
     [busy, setBusy] = useState(false);
@@ -1639,7 +1650,8 @@ export function AdminRules() {
           .toLowerCase()
           .includes(query.toLowerCase())) &&
       (!state || r.state === state) &&
-      (!route || r.routeId === route),
+      (!route || r.routeId === route) &&
+      matchesVerifyFilter(r, verifyFilter),
   );
   useEffect(() => {
     const timer = setInterval(() => {
@@ -1783,6 +1795,17 @@ export function AdminRules() {
             </option>
           ))}
         </select>
+        <select
+          aria-label="按目标校验筛选"
+          value={verifyFilter}
+          onChange={(e) => setVerifyFilter(e.target.value)}
+        >
+          {verifyFilterOptions.map(([value, name]) => (
+            <option key={value} value={value}>
+              {name}
+            </option>
+          ))}
+        </select>
       </div>
       <div className="card flush mt16">
         <Table
@@ -1794,6 +1817,7 @@ export function AdminRules() {
             "目标",
             "每规则限速",
             "管理 / 运行报告",
+            "目标校验",
             "计费流量",
             "操作",
           ]}
@@ -1819,6 +1843,7 @@ export function AdminRules() {
                 <small>{relayStatus(r).stopText}</small>
               )}
             </span>,
+            <VerifyBadge verify={r.verify} />,
             (r.trafficBytes / 1e9).toFixed(2) + " GB",
             <div className="actions">
               <Button onClick={() => setSelectedID(r.id)}>详情</Button>
@@ -1850,6 +1875,7 @@ export function AdminRules() {
               </p>
               <p className="mt8">状态：{status(selected)}</p>
               <RelayStatusDetail rule={selected} />
+              <AdminRuleVerify rule={selected} onChanged={reload} />
               <Table
                 headers={[
                   "节点 ID",

@@ -27,6 +27,8 @@ MSBOOST 脚本运行时使用 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mi
 
 脚本还读取 `meta-rules-dat` 的 [gfw.mrs](https://github.com/MetaCubeX/meta-rules-dat/blob/meta/geo/geosite/gfw.mrs)；该 URL 的资源会随上游分支变化，不能把脚本自身哈希误认为所有运行时资源均已冻结。
 
+执行机的中转目标校验（`internal/executor/verify_mihomo.go`）也用同一版本的 mihomo 作为隧道客户端：第一次校验时下载 `mihomo-linux-amd64-compatible-v1.19.32.gz` 或 `mihomo-linux-arm64-v1.19.32.gz`，与上表写死的 SHA256 核对后解压到执行机服务的私有临时目录，作为单独程序启动；它不链接进执行机，也不随本项目的程序或镜像分发。`MSBOOST_MIHOMO_BINARY` 可改用管理员自备的文件，其来源与许可由管理员负责。执行机为传递 mieru 流量模式而做的 protobuf 编码（`EncodeTrafficPattern`）依据 mieru 公开的 `TrafficPattern` 字段编号自行编写，没有复制上游代码。
+
 ## 2. bin456789/reinstall
 
 用户指定来源为 [reinstall.sh 的 main 链接](https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh)。本仓库没有在客户执行时直接追踪此可变链接，而是保存以下固定提交：

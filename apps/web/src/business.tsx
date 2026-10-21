@@ -22,6 +22,7 @@ import { ConfigUpload, SSHFields, SSH, prepareSSH, TaskDetail } from "./tools";
 import { PaymentReturn } from "./payment-return";
 import { relayMemberLabel, relayNeedsRecovery } from "./relay-status";
 import { RelayStatusDetail } from "./relay-status-view";
+import { RuleVerify } from "./relay-verify";
 
 export function Account({
   user,
@@ -442,6 +443,17 @@ export function Orders({
     </>
   );
 }
+// With enforcement, a new rule is handed out only after its target passed.
+function verifyHoldsDownload(rule: RecordData) {
+  const verify = rule.verify;
+  return (
+    rule.verifyMode === "enforce" &&
+    !!verify &&
+    !verify.passedAt &&
+    ["pending", "failed"].includes(verify.state)
+  );
+}
+
 export function Routes({ user }: { user: RecordData }) {
   const [frontTask, setFrontTask] = useState<RecordData | null>(null);
   const { data, error, reload } = useData("/api/routes"),
@@ -569,6 +581,13 @@ export function Routes({ user }: { user: RecordData }) {
                   member
                 />
               )}
+              {rule && (
+                <RuleVerify
+                  rule={rule}
+                  routeId={route.id}
+                  onDone={reloadRules}
+                />
+              )}
               {rule?.frontStatus === "check_customer_vps" && (
                 <Notice tone="orange">
                   前置机执行结果需要核查。请核查并按本次任务清理残留；完成前会保留线路端口，不要重复部署。
@@ -593,6 +612,7 @@ export function Routes({ user }: { user: RecordData }) {
                   <div className="actions">
                     <Button
                       primary
+                      disabled={verifyHoldsDownload(rule)}
                       onClick={() =>
                         void action(async () =>
                           download(
@@ -602,7 +622,9 @@ export function Routes({ user }: { user: RecordData }) {
                         )
                       }
                     >
-                      中转配置下载
+                      {verifyHoldsDownload(rule)
+                        ? "校验通过后可下载"
+                        : "中转配置下载"}
                     </Button>
                     <Button
                       disabled={diagnosing || relayNeedsRecovery(rule)}
@@ -628,7 +650,9 @@ export function Routes({ user }: { user: RecordData }) {
                     <Button
                       disabled={
                         relayNeedsRecovery(rule) ||
-                        ["revoking", "awaiting_front"].includes(rule.state)
+                        ["revoking", "awaiting_front"].includes(rule.state) ||
+                        (rule.state === "paused" &&
+                          rule.verify?.state === "paused")
                       }
                       onClick={() =>
                         !relayNeedsRecovery(rule) &&

@@ -71,6 +71,9 @@ type relayCodeUseView struct {
 	Result     string `json:"result"`
 	FailReason string `json:"failReason,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
+	// The target check of this use: whether it led to an MSBOOST node.
+	Verify     *executor.VerifyReport `json:"verify,omitempty"`
+	VerifiedAt int64                  `json:"verifiedAt,omitempty"`
 }
 
 func (t *TaskService) relayCodeView(s *State, code RelayCode, withCode bool) relayCodeView {
@@ -102,7 +105,7 @@ func relayCodeUses(s *State, codeID string) []relayCodeUseView {
 	rows := []relayCodeUseView{}
 	for _, use := range ListDocs[RelayCodeUse](s, relayCodeUsesCollection) {
 		if use.CodeID == codeID {
-			rows = append(rows, relayCodeUseView{ID: use.ID, UserEmail: use.UserEmail, MaskedIP: maskIP(use.TargetHost), ListenPort: use.ListenPort, ViaFront: use.ViaFront, Result: use.Result, FailReason: use.FailReason, CreatedAt: use.CreatedAt})
+			rows = append(rows, relayCodeUseView{ID: use.ID, UserEmail: use.UserEmail, MaskedIP: maskIP(use.TargetHost), ListenPort: use.ListenPort, ViaFront: use.ViaFront, Result: use.Result, FailReason: use.FailReason, CreatedAt: use.CreatedAt, Verify: use.Verify, VerifiedAt: use.VerifiedAt})
 		}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].CreatedAt > rows[j].CreatedAt })
@@ -704,6 +707,8 @@ func (t *TaskService) redeemRelayCode(w http.ResponseWriter, r *http.Request) {
 		}
 		// The owner's private note is recorded only on the owner's server.
 		request := executor.Request{Kind: "relay-code", SSH: ssh, ClientConfig: in.ClientConfig, Front: in.Front, Remark: in.Remark, RateMbps: code.RateMbps, Meta: &executor.RelayMeta{Source: "code", CodeTail: code.Tail, User: fresh.Email, Panel: t.app.Config.PublicURL, Remark: code.Note}}
+		// The owner's line must lead to a real MSBOOST node.
+		t.withRelayVerify(s, &request, relayVerifySettings(s).Code)
 		if err := executor.ValidateRequest(request); err != nil {
 			return err
 		}
@@ -861,7 +866,7 @@ func (t *TaskService) queueRelayServerTask(w http.ResponseWriter, r *http.Reques
 		if err != nil {
 			return err
 		}
-		request := executor.Request{Kind: kind, SSH: ssh, Manage: manage}
+		request := executor.Request{Kind: kind, SSH: ssh, Manage: manage, ReportVerified: kind == "relay-inventory"}
 		if err := executor.ValidateRequest(request); err != nil {
 			return err
 		}
@@ -968,6 +973,8 @@ type relayServerRow struct {
 	Connections int    `json:"connections"`
 	CreatedAt   int64  `json:"createdAt"`
 	Recorded    bool   `json:"recorded"`
+	// Verified is the last target check written on the relay server.
+	Verified *executor.RelayVerified `json:"verified,omitempty"`
 }
 
 // relayServerRow masks the user's node IP; the owner sees the full email the
@@ -978,7 +985,7 @@ func relayServerRowFor(entry executor.RelayEntry) relayServerRow {
 		row.Source = "route"
 	}
 	if record := entry.Record; record != nil {
-		row.Source, row.CodeTail, row.User, row.Remark, row.Recorded = record.Source, record.CodeTail, record.User, record.Remark, true
+		row.Source, row.CodeTail, row.User, row.Remark, row.Recorded, row.Verified = record.Source, record.CodeTail, record.User, record.Remark, true, record.Verified
 		if record.Target != "" {
 			row.MaskedIP = maskTargetIP(record.Target)
 		}
@@ -1018,7 +1025,7 @@ func validRelayServerResult(request executor.Request, out executor.Result) error
 	if (out.OS != "" && kind != "relay-check" && kind != "relay-inventory") || (len(out.Inventory) > 0 && kind != "relay-inventory") || (len(out.Managed) > 0 && kind != "relay-manage") || (out.FailedRole != "" && kind != "relay-code") {
 		return errors.New("该任务不接受中转服务器结果")
 	}
-	if out.FailedRole != "" && out.FailedRole != "relay" && out.FailedRole != "front" {
+	if out.FailedRole != "" && out.FailedRole != "relay" && out.FailedRole != "front" && !verifyFailedRole(request, out.FailedRole) {
 		return errors.New("失败位置无效")
 	}
 	if kind == "relay-manage" && out.State == "succeeded" {

@@ -89,6 +89,9 @@ type RelayCodeUse struct {
 	FailReason  string `json:"failReason,omitempty"`
 	CreatedAt   int64  `json:"createdAt"`
 	UpdatedAt   int64  `json:"updatedAt"`
+	// Verify holds the target check of this use; never node credentials.
+	Verify     *executor.VerifyReport `json:"verify,omitempty"`
+	VerifiedAt int64                  `json:"verifiedAt,omitempty"`
 }
 
 // relayCodeTaskLink ties a server check or a use task to its code so every
@@ -411,6 +414,10 @@ func settleRelayCodeTask(s *State, taskID string, out *executor.Result, now time
 		link.Outcome = "failed"
 	case "use":
 		use, useFound := LoadDoc[RelayCodeUse](s, relayCodeUsesCollection, taskID)
+		if out != nil && out.Verify != nil {
+			report := *out.Verify
+			use.Verify, use.VerifiedAt = &report, now.UnixMilli()
+		}
 		code, codeFound := LoadDoc[RelayCode](s, relayCodesCollection, link.CodeID)
 		if codeFound && !lateSuccess && code.Reserved > 0 {
 			code.Reserved--
@@ -480,6 +487,9 @@ func relayUseFailure(task Task, found bool) string {
 
 // The user cannot inspect the owner's server, so point to the right person.
 func relayUseNextStep(task Task, failedRole string) string {
+	if step := verifyNextStep(task.ErrorCode); step != "" {
+		return step
+	}
 	switch {
 	case failedRole == "front":
 		return "自备前置机连接或安装失败；中转服务器上没有保留这次的中转。请检查前置机后重试，本次没有计次。"

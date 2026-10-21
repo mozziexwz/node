@@ -136,6 +136,8 @@ type UserRule struct {
 	TrafficMultiplierPermille int64          `json:"trafficMultiplierPermille"`
 	TLSExpiresAt              int64          `json:"tlsExpiresAt,omitempty"`
 	ReconcileState            string         `json:"reconcileState,omitempty"`
+	// Verify is the target verification of this rule (see relay_verify_routes.go).
+	Verify *RuleVerify `json:"verify,omitempty"`
 }
 type UserTarget struct {
 	Hash       string `json:"hash"`
@@ -174,6 +176,10 @@ type RelayRuleView struct {
 	OfflinePolicy      string `json:"offlinePolicy,omitempty"`
 	KeepLastConfirmed  bool   `json:"keepLastConfirmed"`
 	AccountingDegraded bool   `json:"accountingDegraded,omitempty"`
+	// VerifyMode is the policy now in force; VerifyPauseAt, while a failed
+	// rule is in its grace period, is when it will be paused.
+	VerifyMode    string `json:"verifyMode,omitempty"`
+	VerifyPauseAt int64  `json:"verifyPauseAt,omitempty"`
 }
 
 func relaySegmentReady(s *State, seg RelaySegment, now int64) bool {
@@ -277,6 +283,7 @@ func relayRuleView(s *State, rule UserRule, admin bool, now int64) RelayRuleView
 			}
 		}
 	}
+	relayVerifyView(s, &out, rule, admin)
 	return out
 }
 
@@ -601,6 +608,7 @@ func (a *App) RegisterRelay(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/user/routes/{route}/rules", a.relayDeleteRule)
 	mux.HandleFunc("GET /api/user/routes/{route}/config", a.relayDownload)
 	mux.HandleFunc("POST /api/user/routes/{route}/diagnose", a.relayDiagnose)
+	mux.HandleFunc("POST /api/user/routes/{route}/verify", a.relayVerifyNow)
 	mux.HandleFunc("POST /api/user/target/reset", a.relayResetTarget)
 	mux.HandleFunc("GET /api/user/traffic", a.relayTraffic)
 	mux.HandleFunc("GET /api/admin/relay-agents", a.relayAgents)
@@ -621,6 +629,7 @@ func (a *App) RegisterRelay(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/admin/user-rules/{id}", a.relayAdminRule)
 	mux.HandleFunc("PATCH /api/admin/user-rules/{id}", a.relayEditRule)
 	mux.HandleFunc("DELETE /api/admin/user-rules/{id}", a.relayDeleteRule)
+	mux.HandleFunc("POST /api/admin/user-rules/{id}/verify", a.relayAdminVerify)
 	mux.HandleFunc("POST /api/relay-agent/register", a.relayRegisterAgent)
 	mux.HandleFunc("POST /api/relay-agent/enrollment-check", a.relayEnrollmentCheck)
 	mux.HandleFunc("POST /api/relay-agent/sync", func(w http.ResponseWriter, r *http.Request) {
@@ -1322,6 +1331,10 @@ func (a *App) relayCreateRule(w http.ResponseWriter, r *http.Request) {
 		if in.Front != nil {
 			out.State = "awaiting_front"
 		}
+		if relayVerifySettings(s).Donation != "off" {
+			// Checked as soon as every segment is running.
+			out.Verify = &RuleVerify{State: "pending"}
+		}
 		created = true
 		stages := []RouteStage{{AgentIDs: []string{route.EntryAgentID}, Protocol: "tcp", Strategy: "round"}}
 		if route.Type != "port_forward" && (len(route.Hops) > 0 || len(route.Exit.AgentIDs) != 1 || route.Exit.AgentIDs[0] != route.EntryAgentID) {
@@ -1428,6 +1441,14 @@ func (a *App) relayEditRule(w http.ResponseWriter, r *http.Request) {
 		if !ok || rule.State == "revoking" || rule.State == "awaiting_front" {
 			return errors.New("规则不存在或已在撤销")
 		}
+		if !*in.Paused && rule.Verify != nil && rule.Verify.State == "paused" {
+			if !admin {
+				return errors.New("线路因目标校验未通过已暂停：请修好节点后点「重新校验」，通过后自动恢复")
+			}
+			// An administrator's resume starts a new grace period.
+			rule.Verify.State, rule.Verify.PausedAt = "failed", 0
+			rule.Verify.FailedSince, rule.Verify.NextAt = time.Now().UnixMilli(), time.Now().UnixMilli()
+		}
 		if *in.Paused {
 			rule.State = "paused"
 		} else {
@@ -1528,6 +1549,11 @@ func (a *App) relayDownload(w http.ResponseWriter, r *http.Request) {
 		route, routeOK := LoadDoc[Route](s, "routes", rule.RouteID)
 		if !routeOK || !userCanUseRoute(user, route) {
 			return errors.New("当前权益等级不足，配置已失效")
+		}
+		// With enforcement a new rule is handed out only once its target has
+		// been verified as an MSBOOST node.
+		if check := rule.Verify; check != nil && check.PassedAt == 0 && (check.State == "pending" || check.State == "failed") && relayVerifySettings(s).Donation == "enforce" {
+			return errors.New("线路正在校验目标节点，通过后才能下载配置；通常一两分钟内完成")
 		}
 		var err error
 		raw, err = a.Open(rule.SealedConfig)
@@ -1783,6 +1809,7 @@ func (a *App) StartRelay(ctx context.Context) {
 			}
 		}
 	}()
+	go a.relayVerifyLoop(ctx)
 }
 func relayCleanup(s *State, now int64) error {
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {

@@ -32,11 +32,11 @@
 `GET /api/admin/tasks` 仅管理员可读，返回 `{tasks:[{...Task,userName}]}`，按 `createdAt` 从新到旧排列。`userName` 显示操作人的当前登录邮箱；关联账号已删除或缺失时为“已删除用户”，账号邮箱为空时为“未设置邮箱”。原 `userId` 保留，便于核对同名或已删除用户；显示名称仅在读取审计列表时计算，不写回历史任务，也不加入普通用户任务 API。
 
 - `q`：可选关键词，去除首尾空白后，不区分大小写地匹配 `userName,userId,id,host,kind,state,remark` 中任一字段的子串；为空时不限制。
-- `kind`：去除首尾空白后，精确匹配 `deploy,relay,dd,fingerprint,front,cleanup-preview,cleanup,relay-check,relay-code,relay-inventory,relay-manage`；省略或为空时显示全部，未知类型返回 HTTP 400。
+- `kind`：去除首尾空白后，精确匹配 `deploy,relay,dd,fingerprint,front,cleanup-preview,cleanup,relay-check,relay-code,relay-inventory,relay-manage,relay-verify`；省略或为空时显示全部，未知类型返回 HTTP 400。
 - 同时提供 `q` 和 `kind` 时取交集，不增加分页或总数字段；无匹配项返回 `{tasks:[]}`。先核验管理员权限，再校验参数和读取任务；普通用户或未登录请求返回 HTTP 403。
 - 搜索仅检查上述公开审计字段，不读取密码、执行信封或客户端配置。`configAvailable` 仍仅对任务所有者且临时配置未过期时为真；管理员不能凭审计结果下载其他用户的配置。
 
-Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,phase,message,errorCode?,nextStep?,createdAt,updatedAt,configAvailable,configHost?,configPort?,health?,hops?,cleanup?,rateMbps?,codeTail?`。使用中转码的任务对使用者只显示打码的中转服务器 IP，不返回拥有者的 SSH 端口和指纹。指纹是公钥摘要，不是私钥；内部幂等摘要和租约不属于普通审计字段。
+Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,phase,message,errorCode?,nextStep?,createdAt,updatedAt,configAvailable,configHost?,configPort?,health?,hops?,cleanup?,rateMbps?,codeTail?,verify?`。`verify` 是中转目标校验的结果，见下文「中转目标校验」。使用中转码的任务对使用者只显示打码的中转服务器 IP，不返回拥有者的 SSH 端口和指纹。指纹是公钥摘要，不是私钥；内部幂等摘要和租约不属于普通审计字段。
 
 状态为 `queued,running,succeeded,failed,executed,unknown,interrupted`。客户端轮询至终态。`executed` 仅用于 DD：准备成功、获得重启提交标志并确认预期断线；不声称新系统已经安装完成。提交证据不完整为 `unknown`，需从 VPS 控制台核实。控制面重启或响应超时不会重放已交付动作；非 DD 中断为 `interrupted`，对应 DD 为 `unknown`。
 
@@ -66,9 +66,32 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 
 `preview` 和 `redeem` 共用使用尝试限流：每账号每小时 10 次、每 IP 每小时 30 次（管理员可调）。读取和操作共用 `relay-manage` 限额（默认每 15 分钟 20 次），每次写审计（不含 SSH）。只读的 `relay-check`、`relay-inventory` 不占用服务器，也不被其他任务阻挡。
 
-使用者记录为每条中转目录下的 `meta.json`（root，0600）：`version:1,source:"code"|"manual",codeTail?,user,panel,target,port,rateMbps,remark,createdAt`（RFC 3339 UTC）。中转码来源的 `remark` 是拥有者给中转码写的备注，只写在拥有者的服务器上；使用者前置机上的记录用使用者自己的配置备注。修改带宽同步更新 `rateMbps`；暂停写入 `paused` 标记并停用服务。没有 `meta.json` 的旧中转显示为「升级前配置」。
+使用者记录为每条中转目录下的 `meta.json`（root，0600）：`version:1,source:"code"|"manual",codeTail?,user,panel,target,port,rateMbps,remark,createdAt,verified?`（RFC 3339 UTC）。`verified:{code,at}` 是最近一次目标校验的结果代码和时间，不含节点认证。中转码来源的 `remark` 是拥有者给中转码写的备注，只写在拥有者的服务器上；使用者前置机上的记录用使用者自己的配置备注。修改带宽同步更新 `rateMbps`；暂停写入 `paused` 标记并停用服务。没有 `meta.json` 的旧中转显示为「升级前配置」。
 
 管理员接口：`GET /api/admin/relay-codes`（统计、按用户、SSH 删除记录、设置）、`GET /api/admin/relay-codes/users/{id}`、`POST /api/admin/relay-codes/users/{id}/revoke`、`POST /api/admin/relay-codes/users/{id}/feature`（`{enabled,reason}`，停用同时作废其全部中转码）、`POST /api/admin/relay-codes/purge`（`{confirm:"DELETE_ALL_RELAY_CODE_SSH"}`）。设置通过 `PUT /api/admin/settings` 的 `relayCodes` 字段保存；关闭功能会立即删除全部暂存的 SSH。
+
+## 中转目标校验
+
+校验证明一条中转确实通往 MSBOOST 节点。执行机从中转入口出发，用使用者自己的节点配置建立一次短时 mieru 隧道，经隧道连接节点只监听回环地址的探测服务 `127.0.0.1:20424` 并完成一次 hello：回复必须恰好是 `version,operation,nonce,success,node_id` 五个字段，`nonce` 与本次随机值相同，`node_id` 为 32 位十六进制。只有 MSBOOST 节点运行这个服务，且只能经隧道访问，所以只通过 mieru 认证不算通过。随后经同一服务请节点向游戏检测目标发起一次 TCP 连接，再经隧道分别与对照站点和本应被节点拒绝的站点做 TLS 握手，检查节点的过滤规则；这两项只记录，不影响结论。整次校验最长 90 秒，产生几 KB 流量，按普通流量计入该线路。
+
+结果为 `verify:{code,game?,filter?,elapsedMs}`，不含节点地址、账号或配置的任何部分：
+
+| `code` | 含义 | 算作目标问题 |
+|---|---|---|
+| `ok` | 目标是 MSBOOST 节点。`game`：`ok,refused,timeout,unreachable,failed,skipped`；`filter`：`ok`、`missing`（本应拒绝的站点可以访问）、`inconclusive`（对照站点也失败，无法判断）、`skipped` | — |
+| `tunnel_failed` | 15 秒内没能经隧道连上探测服务：配置与节点不匹配，或节点已重新部署 | 是 |
+| `not_msboost` | 隧道已建立，但对端没有 MSBOOST 探测服务或回复不符：不是 MSBOOST 节点，或节点版本较低 | 是 |
+| `entry_unreachable` | 7 秒内连不上中转入口 | 否，属于中转自身的问题 |
+| `target_down` | 节点没有运行；只由面板判定，执行机不会回报 | 否 |
+| `unavailable` | 执行机本次未能完成校验（下载、沙箱、时钟等） | 否 |
+
+- 校验由网站安排。浏览器在 `POST /api/tasks` 中提交 `verify` 或 `reportVerified` 返回 HTTP 400。
+- `relay`（免费自备中转）：管理员设置 `free:"selftest"` 时附带只记录的校验，任务详情显示「中转自测」，从不因此拒绝或撤销。没有声明校验能力的在线执行机时跳过校验，照常配置。
+- `relay-code`：按 `code` 设置。`log` 只把结果记入使用记录（`verify,verifiedAt`）。`enforce` 时 `tunnel_failed`、`not_msboost` 和 `entry_unreachable` 会让执行机删除刚建立的中转和前置机上的配置，任务失败（`phase:"verify"`，`errorCode` 为 `verify_tunnel_failed`、`verify_not_msboost` 或 `verify_entry_unreachable`，`failedRole:"target"`），本次不计次；`unavailable` 不阻止建立。强制校验只派给声明了校验能力的执行机，没有时拒绝使用并提示升级执行机。
+- 中转服务器 `meta.json` 写入 `verified`。网站读取服务器列表时给 `relay-inventory` 附带 `reportVerified:true`，执行机返回每条中转的 `verified`，拥有者的列表据此显示。
+- `relay-verify`：面板为捐赠权益线路发起的内部任务，只有 `clientConfig`（入口改写为该规则的线路入口；规则被校验暂停时为客户节点本身）和 `verify`，不带 SSH，也不占用服务器。期限 10 分钟，不进入用户任务列表，管理员审计可见，结束 7 天后删除记录，结果保留在规则上。调度和处理见 [商务契约](contracts-commerce.md) 的「用户配置」。
+- 隧道客户端是 mihomo v1.19.32，两架构 `.gz` 的 SHA-256 与节点安装器相同并固定在代码中。执行机第一次校验时从 GitHub Release 下载到服务私有的临时目录并核对摘要，之后每次启动前再次核对；它作为单独程序运行，只监听回环地址，关闭进程查找和 IPv6，校验结束即停止并删除工作目录。执行机不链接 mieru 代码。`MSBOOST_MIHOMO_BINARY` 可改用管理员自备的本机文件，按原样使用。
+- 校验用的配置与 SSH 凭据一样只在执行任务的内存信封中，不写入任务记录、数据库或日志。
 
 ## 预览与清理
 
@@ -141,9 +164,9 @@ GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/
 - `POST /api/executor/heartbeat` 每 20 秒更新心跳，长任务期间仍发送。
 - 执行机与 relay Agent 接口（`/api/executor/*`、`/api/relay-agent/register`、`/api/relay-agent/v2/sync`、`/api/relay-agent/enrollment-check`）先在内存中核对令牌哈希，未知令牌不进入数据库事务；已知令牌仍在各自事务内再次校验，撤销立即生效。同一来源（IPv6 按 /64）10 分钟内鉴权失败 30 次后，后续未知令牌返回 429 并带 `Retry-After`，有效令牌不受影响；控制面暂时无法核对时返回 503。两者均应稍后重试，只有 401 表示令牌被拒绝。
 
-执行机以 `msboost-agent --capability executor` 运行，配置 `MSBOOST_SERVER_URL`、`MSBOOST_EXECUTOR_TOKEN` 和两架构的 `GOST_*_URL` / `GOST_*_SHA256`。控制面要求 HTTPS，仅 loopback 开发允许 HTTP。GOST 使用固定官方 `go-gost/gost` Release，不使用 `latest`。远端免费中转要求 root SSH、systemd 247+ / `LoadCredential`；安装可在 Debian/Ubuntu 补齐 Python 3、curl、tar，其他系统需预先准备。清理预览不安装依赖。
+执行机以 `msboost-agent --capability executor` 运行，配置 `MSBOOST_SERVER_URL`、`MSBOOST_EXECUTOR_TOKEN` 和两架构的 `GOST_*_URL` / `GOST_*_SHA256`。控制面要求 HTTPS，仅 loopback 开发允许 HTTP。GOST 使用固定官方 `go-gost/gost` Release，不使用 `latest`。中转目标校验要求执行机本身能从 GitHub Release 下载固定版本的 mihomo，或设置 `MSBOOST_MIHOMO_BINARY`；下载失败时校验记为 `unavailable`，不算使用者的问题。远端免费中转要求 root SSH、systemd 247+ / `LoadCredential`；安装可在 Debian/Ubuntu 补齐 Python 3、curl、tar，其他系统需预先准备。清理预览不安装依赖。
 
-执行机在每次轮询和心跳中声明能力：`X-MSBOOST-Executor-Capabilities: free_relay_socks_guard`（中转防护）、`X-MSBOOST-Scoped-Cleanup: 1`（按任务清理）、`X-MSBOOST-SSH-Key: 1`（密钥登录）和 `X-MSBOOST-Relay-Code: 1`（中转带宽、使用者记录、`relay-check`、`relay-code`、`relay-inventory`、`relay-manage`）。新能力使用独立请求头，旧面板对第一个请求头做精确比较，不受影响。控制面只把任务派给声明了全部所需能力的执行机；创建时没有这样的在线执行机则拒绝并说明需要升级。手动配置中转现在也需要 `X-MSBOOST-Relay-Code`，以保证带宽和使用者记录生效。
+执行机在每次轮询和心跳中声明能力：`X-MSBOOST-Executor-Capabilities: free_relay_socks_guard`（中转防护）、`X-MSBOOST-Scoped-Cleanup: 1`（按任务清理）、`X-MSBOOST-SSH-Key: 1`（密钥登录）、`X-MSBOOST-Relay-Code: 1`（中转带宽、使用者记录、`relay-check`、`relay-code`、`relay-inventory`、`relay-manage`）和 `X-MSBOOST-Relay-Verify: 1`（中转目标校验：`relay`/`relay-code` 的 `verify`、`relay-inventory` 的 `reportVerified` 和 `relay-verify`）。新能力使用独立请求头，旧面板对第一个请求头做精确比较，不受影响。控制面只把任务派给声明了全部所需能力的执行机；创建时没有这样的在线执行机则拒绝并说明需要升级。手动配置中转现在也需要 `X-MSBOOST-Relay-Code`，以保证带宽和使用者记录生效。
 
 网站升级不会自动更新独立 Agent。v0.2.2 新诊断与清理需要新版执行机，参见 [Agent 安装与升级](agent-installation.md)。
 

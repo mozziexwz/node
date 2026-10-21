@@ -148,6 +148,7 @@ func TestAdminTaskAuditSearchAndKindIntersection(t *testing.T) {
 		{"front", "", "front", []string{"front-beta"}},
 		{"preview", "", "cleanup-preview", []string{"preview-alpha"}},
 		{"cleanup", "", "cleanup", []string{"cleanup-deleted"}},
+		{"relay verification", "", "relay-verify", []string{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			rows := taskAuditRows(t, taskAuditGet(t, service, admin, test.query, test.kind))

@@ -223,7 +223,7 @@ func (e *Engine) relayInventory(ctx context.Context, job Job, r Result) Result {
 	}
 	r.State, r.Phase = "succeeded", "complete"
 	r.OS = cleanOS(marker(out, "MSBOOST_OS"))
-	r.Inventory = cleanInventory(entries)
+	r.Inventory = cleanInventory(entries, job.Request.ReportVerified)
 	r.Message = "已读取中转列表"
 	return r
 }
@@ -287,7 +287,7 @@ func cleanOS(value string) string {
 
 // The server is the owner's, but its files are still untrusted input: keep
 // only well-formed fields with bounded sizes before they reach the panel.
-func cleanInventory(entries []RelayEntry) []RelayEntry {
+func cleanInventory(entries []RelayEntry, reportVerified bool) []RelayEntry {
 	out := make([]RelayEntry, 0, len(entries))
 	for _, entry := range entries {
 		if !managedRelayID.MatchString(entry.ID) || entry.Port < 1 || entry.Port > 65535 || len(out) >= 500 {
@@ -329,6 +329,7 @@ func cleanInventory(entries []RelayEntry) []RelayEntry {
 					entry.CreatedAt = at.UnixMilli()
 				}
 				record.CreatedAt = boundedText(record.CreatedAt, 40)
+				record.Verified = cleanVerified(record.Verified, reportVerified)
 				entry.Record = &record
 			}
 		}

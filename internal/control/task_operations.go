@@ -52,7 +52,7 @@ func saveTaskOperation(s *State, e *taskEnvelope) error {
 // Read-only checks and relay lists change nothing on the server, so they
 // neither wait for nor block another operation on it.
 func readOnlyTaskKind(kind string) bool {
-	return kind == "fingerprint" || kind == "relay-check" || kind == "relay-inventory"
+	return kind == "fingerprint" || kind == "relay-check" || kind == "relay-inventory" || kind == "relay-verify"
 }
 
 func operationBusy(o taskOperation) bool {

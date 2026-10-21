@@ -707,6 +707,7 @@ func filteredSettings(s *State, admin bool) map[string]any {
 	if admin {
 		out["launcher"] = loadLauncherSettings(s)
 		out["relayCodes"] = relayCodeSettings(s)
+		out["relayVerify"] = relayVerifySettings(s)
 		out["disasterBackupEmailEnabled"] = boolSetting(s, "disasterBackupEmailEnabled")
 		c, _ := getSMTP(s)
 		c.CredentialConfigured = c.Secret != ""
@@ -819,6 +820,15 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) {
 							return err
 						}
 					}
+				case "relayVerify":
+					value := relayVerifySettings(s)
+					if json.Unmarshal(raw, &value) != nil {
+						return errors.New("中转校验设置格式无效")
+					}
+					if err := validateRelayVerifySettings(value); err != nil {
+						return err
+					}
+					s.Settings[key] = value
 				default:
 					return fmt.Errorf("不支持的设置字段 %s", key)
 				}

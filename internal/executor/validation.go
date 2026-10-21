@@ -85,8 +85,22 @@ func validateSSHFields(s SSH) error {
 	return nil
 }
 func ValidateRequest(r Request) error {
+	if r.Kind == "relay-verify" {
+		return validateVerifyRequest(r)
+	}
 	if err := ValidateSSH(r.SSH); err != nil {
 		return err
+	}
+	if r.Verify != nil {
+		if r.Kind != "relay" && r.Kind != "relay-code" {
+			return errors.New("校验参数只用于中转任务")
+		}
+		if err := ValidateVerifyOptions(r.Verify); err != nil {
+			return err
+		}
+	}
+	if r.ReportVerified && r.Kind != "relay-inventory" {
+		return errors.New("校验记录参数只用于读取中转列表")
 	}
 	if r.ForwardTarget != nil {
 		return errors.New("用户任务不接受内部中转参数")
@@ -200,6 +214,24 @@ func ValidateRequest(r Request) error {
 		}
 	default:
 		return errors.New("不支持的任务类型")
+	}
+	return nil
+}
+
+// A paid-route verification connects only to the route's own entry, which the
+// panel has already written into the configuration; it needs no SSH.
+func validateVerifyRequest(r Request) error {
+	if r.Verify == nil {
+		return errors.New("缺少校验参数")
+	}
+	if err := ValidateVerifyOptions(r.Verify); err != nil {
+		return err
+	}
+	if _, err := ParseClientConfig(r.ClientConfig); err != nil {
+		return err
+	}
+	if r.SSH != (SSH{}) || r.Front != nil || r.DD != nil || r.ForwardTarget != nil || r.Cleanup != nil || r.Manage != nil || r.Meta != nil || r.RateMbps != 0 || r.Mode != "" || r.Remark != "" || r.ReportVerified {
+		return errors.New("校验任务参数不匹配")
 	}
 	return nil
 }

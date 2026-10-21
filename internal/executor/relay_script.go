@@ -220,3 +220,26 @@ rm -f -- "/etc/systemd/system/msboost-free-${task_id}.service"
 rm -rf -- "$confdir"
 systemctl daemon-reload
 `
+
+// relayVerifiedScript notes the last target verification in a relay's
+// meta.json. Only that key changes and the file stays private.
+const relayVerifiedScript = `
+[[ "$task_id" =~ ^[A-Za-z0-9_-]{1,100}$ ]]
+confdir="/etc/msboost-free/${task_id}"
+[ ! -L /etc/msboost-free ] && [ ! -L "$confdir" ] && [ -d "$confdir" ]
+[ -f "$confdir/meta.json" ] && [ ! -L "$confdir/meta.json" ]
+[ ! -L /run/msboost-customer-cleanup.lock ]
+exec 8>/run/msboost-customer-cleanup.lock
+flock -w 20 8
+python3 - "$confdir/meta.json" "$verify_code" "$verify_at" <<'PY'
+import json,os,sys
+path,code,at=sys.argv[1:]
+with open(path,encoding='utf-8') as stream: record=json.load(stream)
+if not isinstance(record,dict): raise SystemExit(1)
+record['verified']={'code':code,'at':at}
+temporary=path+'.verified'
+descriptor=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW,0o600)
+with os.fdopen(descriptor,'w',encoding='utf-8') as stream: json.dump(record,stream,ensure_ascii=False)
+os.replace(temporary,path)
+PY
+`

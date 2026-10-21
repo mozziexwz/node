@@ -51,6 +51,8 @@ type Task struct {
 	NeedsReview     bool                    `json:"needsReview,omitempty"`
 	RateMbps        int                     `json:"rateMbps,omitempty"`
 	CodeTail        string                  `json:"codeTail,omitempty"`
+	// Verify is the relay target check reported with this task, if any.
+	Verify *executor.VerifyReport `json:"verify,omitempty"`
 }
 
 // Internal idempotency metadata stays separate because Task is also a public response.
@@ -468,6 +470,9 @@ func executorCapabilitiesFromRequest(r *http.Request) []string {
 	if r.Header.Get(executor.RelayCodeHeader) == "1" {
 		out = append(out, executor.RelayCodeCapability)
 	}
+	if r.Header.Get(executor.RelayVerifyHeader) == "1" {
+		out = append(out, executor.RelayVerifyCapability)
+	}
 	return out
 }
 
@@ -489,6 +494,9 @@ func requiredCapabilities(r executor.Request) []string {
 	}
 	if r.SSH.UsesKey() || (r.Front != nil && r.Front.UsesKey()) {
 		out = append(out, executor.SSHKeyCapability)
+	}
+	if r.Verify != nil || r.Kind == "relay-verify" {
+		out = append(out, executor.RelayVerifyCapability)
 	}
 	return out
 }
@@ -534,6 +542,8 @@ func (t *TaskService) executorUnavailable(s *State, request executor.Request) er
 		return errors.New("当前在线执行机不支持密钥登录，请联系管理员升级执行机，或改用密码登录")
 	case slices.Contains(need, executor.ScopedCleanupCapability) && !declared[executor.ScopedCleanupCapability]:
 		return errors.New("请先升级在线执行机后使用按任务清理；旧执行机不会接收此操作")
+	case slices.Contains(need, executor.RelayVerifyCapability) && !declared[executor.RelayVerifyCapability]:
+		return errors.New("在线执行机需要升级后才能校验中转目标，请联系管理员升级执行机")
 	default:
 		return errors.New("当前在线执行机版本过旧，不支持此中转功能，请联系管理员升级执行机")
 	}
@@ -580,6 +590,10 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Meta != nil {
 		Fail(w, 400, "使用者记录由网站生成")
+		return
+	}
+	if request.Verify != nil || request.ReportVerified {
+		Fail(w, 400, "中转校验由网站安排")
 		return
 	}
 	if err = executor.ValidateRequest(request); err != nil {
@@ -705,6 +719,8 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 			envelope.Job.Request.RateMbps = rate
 			envelope.Job.Request.Meta = &executor.RelayMeta{Source: "manual", User: fresh.Email, Panel: t.app.Config.PublicURL, Remark: request.Remark}
 			job.RateMbps = rate
+			// A free relay only shows its self-test; it is never refused.
+			t.withRelayVerify(s, &envelope.Job.Request, relayVerifySettings(s).Free)
 		}
 		if !t.hasExecutorFor(s, envelope.Job.Request) {
 			return t.executorUnavailable(s, envelope.Job.Request)
@@ -789,7 +805,7 @@ func (t *TaskService) list(w http.ResponseWriter, r *http.Request) {
 	_ = t.app.Store.View(func(s *State) error {
 		for _, v := range ListDocs[Task](s, "tasks") {
 			// Relay server reads and actions are audited separately, not listed.
-			if v.UserID == u.ID && v.Kind != "fingerprint" && v.Kind != "relay-inventory" && v.Kind != "relay-manage" {
+			if v.UserID == u.ID && v.Kind != "fingerprint" && v.Kind != "relay-inventory" && v.Kind != "relay-manage" && v.Kind != "relay-verify" {
 				rows = append(rows, publicTask(v))
 			}
 		}
@@ -1249,6 +1265,10 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, err.Error())
 		return
 	}
+	if err := validVerifyResult(envelope.Job.Request, out); err != nil {
+		Fail(w, 400, err.Error())
+		return
+	}
 	// A probe is remembered only once its result has been committed.
 	var probe *taskProbe
 	if envelope.Job.Request.Kind == "fingerprint" && out.State == "succeeded" {
@@ -1344,6 +1364,10 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		}
 		job.UpdatedAt = time.Now().UnixMilli()
 		job.Health = cleanTaskHealth(out.Health)
+		if out.Verify != nil {
+			report := *out.Verify
+			job.Verify = &report
+		}
 		if len(out.Config) > 0 {
 			info, _ := executor.ParseClientConfig(out.Config)
 			job.ConfigHost = info.TargetHost

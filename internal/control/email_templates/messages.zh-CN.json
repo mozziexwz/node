@@ -76,5 +76,31 @@
     "UsesCode": false,
     "EventLabel": "测试时间",
     "StatusText": "请人工确认显示效果"
+  },
+  "relay_verify_failed": {
+    "Subject": "[MSBOOST] 中转线路校验未通过",
+    "Preheader": "你的中转线路连接的目标没有通过 MSBOOST 节点校验。",
+    "Category": "中转线路提醒",
+    "Title": "中转线路校验未通过",
+    "Intro": "您好！您的捐赠权益中转线路在校验中没能确认目标是 MSBOOST 节点：可能是节点重新部署后配置已经变了，也可能目标不是 MSBOOST 节点。",
+    "Instruction": "请登录 MSBOOST，在「中转线路」查看原因。节点重新部署过的话，请用新的配置文件重新配置线路；修好后点「重新校验」。",
+    "NoticeTitle": "多久需要处理？",
+    "Notice": "管理员开启强制校验时，连续校验失败超过宽限时间的线路会被暂停；修好后重新校验通过即自动恢复。",
+    "UsesCode": false,
+    "EventLabel": "校验时间",
+    "StatusText": "校验未通过"
+  },
+  "relay_verify_paused": {
+    "Subject": "[MSBOOST] 中转线路已暂停",
+    "Preheader": "你的中转线路校验持续未通过，已经暂停。",
+    "Category": "中转线路提醒",
+    "Title": "中转线路已暂停",
+    "Intro": "您好！您的捐赠权益中转线路在宽限时间内仍未通过 MSBOOST 节点校验，已经暂停。规则和流量记录都保留着，没有删除。",
+    "Instruction": "请登录 MSBOOST，在「中转线路」查看原因并修好节点后点「重新校验」，通过后线路会自动恢复。",
+    "NoticeTitle": "节点没有问题？",
+    "Notice": "如果确认节点正常运行，请提交工单，管理员会人工核查。",
+    "UsesCode": false,
+    "EventLabel": "暂停时间",
+    "StatusText": "线路已暂停"
   }
 }
