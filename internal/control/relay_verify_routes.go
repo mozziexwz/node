@@ -505,7 +505,7 @@ func (a *App) notifyRuleVerify(notice verifyNotice) {
 		return
 	}
 	a.queuePasswordMail(func(ctx context.Context) {
-		_ = a.sendAccountEmail(ctx, config, email, notice.kind, EmailData{EventAtLabel: emailTimeLabel(notice.at)})
+		_ = a.sendAccountEmail(ctx, config, notice.userID, email, notice.kind, EmailData{EventAtLabel: emailTimeLabel(notice.at)})
 	})
 }
 

@@ -25,6 +25,7 @@ import {
   Share2,
   FileSearch,
   MonitorDown,
+  Mail,
 } from "lucide-react";
 import { api, post, RecordData } from "./api";
 import {
@@ -46,7 +47,13 @@ import {
   relayCodeFromURL,
 } from "./relay-code";
 import { Account, Wallet, Plans, Orders, Routes, Traffic } from "./business";
-import { ResourcePage, CodesPage, Settings, AdminRules } from "./admin";
+import {
+  ResourcePage,
+  CodesPage,
+  Settings,
+  AdminRules,
+  EmailLog,
+} from "./admin";
 import { Articles, Tickets } from "./content";
 import { UsersPage } from "./users";
 import { RouteBuilder } from "./tunnels";
@@ -77,6 +84,7 @@ const labels: Record<string, [string, typeof Server]> = {
   agents: ["节点", Server],
   executors: ["控制执行机", Server],
   relayAudit: ["中转码审计", FileSearch],
+  emailLog: ["邮件记录", Mail],
   cards: ["兑换码管理", CreditCard],
   invitations: ["邀请码管理", KeyRound],
   payments: ["兑换渠道", CreditCard],
@@ -294,6 +302,9 @@ export default function App() {
       break;
     case "relayAudit":
       page = admin ? <RelayCodeAudit /> : <Empty />;
+      break;
+    case "emailLog":
+      page = admin ? <EmailLog /> : <Empty />;
       break;
     case "tasks":
       page = <TasksPage user={user} settings={settings} />;

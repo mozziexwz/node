@@ -12,8 +12,8 @@ for(const [role,admin,subscribed] of [['admin',true,false],['member',false,false
     assert.deepEqual(groups.find(g=>g.title==='免费部署工具').items,['launcher','deploy','relay','codes','dd','tasks']);
     assert.ok(items.indexOf('dd')<items.indexOf('plans'));
     assert.ok(items.includes('account')&&items.includes('tickets'));
-    if(admin) assert.ok(items.includes('users')&&items.includes('executors')&&items.includes('rules')&&items.includes('relayAudit'));
-    else {assert.ok(!items.includes('users')&&!items.includes('relayAudit'));assert.equal(items.includes('routes'),subscribed);}
+    if(admin) assert.ok(items.includes('users')&&items.includes('executors')&&items.includes('rules')&&items.includes('relayAudit')&&groups.find(g=>g.title==='平台管理').items.includes('emailLog'));
+    else {assert.ok(!items.includes('users')&&!items.includes('relayAudit')&&!items.includes('emailLog'));assert.equal(items.includes('routes'),subscribed);}
   });
 }
 test('favicon and Maple share the outlined leaf and semicircle',()=>{

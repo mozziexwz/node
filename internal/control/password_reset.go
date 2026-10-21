@@ -159,7 +159,7 @@ func (a *App) issuePasswordReset(ctx context.Context, email string) {
 	if err != nil || !eligible {
 		return
 	}
-	err = a.sendAccountEmail(ctx, config, email, passwordResetPurpose, EmailData{Code: code, TTLMinutes: int(passwordResetLifetime / time.Minute), ExpiresAtLabel: emailTimeLabel(challenge.ExpiresAt), Year: time.UnixMilli(challenge.CreatedAt).In(emailDisplayZone).Year()})
+	err = a.sendAccountEmail(ctx, config, challenge.Owner, email, passwordResetPurpose, EmailData{Code: code, TTLMinutes: int(passwordResetLifetime / time.Minute), ExpiresAtLabel: emailTimeLabel(challenge.ExpiresAt), Year: time.UnixMilli(challenge.CreatedAt).In(emailDisplayZone).Year()})
 	_ = a.Store.Update(func(s *State) error {
 		current, ok := LoadDoc[emailChallenge](s, "email_challenges", id)
 		if !ok || current.ID != challenge.ID {
@@ -264,7 +264,7 @@ func (a *App) passwordResetConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !notify || !a.queuePasswordMail(func(ctx context.Context) {
-		if err := a.sendAccountEmail(ctx, config, in.Email, "password_changed", EmailData{EventAtLabel: emailTimeLabel(changedAt), Year: time.UnixMilli(changedAt).In(emailDisplayZone).Year()}); err != nil {
+		if err := a.sendAccountEmail(ctx, config, owner, in.Email, "password_changed", EmailData{EventAtLabel: emailTimeLabel(changedAt), Year: time.UnixMilli(changedAt).In(emailDisplayZone).Year()}); err != nil {
 			_ = a.Store.Update(func(s *State) error {
 				return identityAudit(s, owner, "password.recovery.notice.failed", maskedEmail(in.Email), mailFailureCategory(err))
 			})

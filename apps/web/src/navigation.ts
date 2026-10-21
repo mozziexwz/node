@@ -41,6 +41,7 @@ export function navigationGroups(
               "users",
               "executors",
               "relayAudit",
+              "emailLog",
               "invitations",
               "backups",
               "settings",

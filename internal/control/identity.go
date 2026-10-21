@@ -212,6 +212,7 @@ func (a *App) RegisterIdentity(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/admin/settings", a.adminSettings)
 	mux.HandleFunc("PATCH /api/admin/settings", a.adminSettings)
 	mux.HandleFunc("POST /api/admin/smtp/test", a.smtpTest)
+	mux.HandleFunc("GET /api/admin/email-log", a.emailLog)
 	mux.HandleFunc("GET /api/admin/users", a.adminUsers)
 	mux.HandleFunc("POST /api/admin/users", a.adminUsers)
 	mux.HandleFunc("PATCH /api/admin/users/{id}", a.adminUser)
@@ -569,7 +570,7 @@ func (a *App) emailSend(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, err.Error())
 		return
 	}
-	err = a.sendAccountEmail(r.Context(), config, in.Email, in.Purpose, EmailData{
+	err = a.sendAccountEmail(r.Context(), config, owner, in.Email, in.Purpose, EmailData{
 		Code: code, TTLMinutes: int((c.ExpiresAt - c.CreatedAt) / 60000),
 		ExpiresAtLabel: emailTimeLabel(c.ExpiresAt), Year: time.UnixMilli(c.CreatedAt).In(emailDisplayZone).Year(),
 	})
@@ -924,8 +925,9 @@ func (a *App) smtpTest(w http.ResponseWriter, r *http.Request) {
 	if in.Recipient == "" {
 		in.Recipient = actor.Email
 	}
+	// The address is kept in the email log; SMTP refuses longer ones anyway.
 	address, err := mail.ParseAddress(in.Recipient)
-	if err != nil || address.Address != in.Recipient {
+	if err != nil || address.Address != in.Recipient || len(in.Recipient) > 254 {
 		Fail(w, 400, "测试收件邮箱无效")
 		return
 	}
@@ -952,7 +954,7 @@ func (a *App) smtpTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	err = a.sendAccountEmail(r.Context(), config, in.Recipient, "smtp_test", EmailData{EventAtLabel: emailTimeLabel(time.Now().UnixMilli())})
+	err = a.sendAccountEmail(r.Context(), config, "", in.Recipient, "smtp_test", EmailData{EventAtLabel: emailTimeLabel(time.Now().UnixMilli())})
 	if err != nil {
 		_ = a.Store.Update(func(s *State) error {
 			return identityAudit(s, actor.ID, "smtp.test.failed", in.Recipient, mailFailureCategory(err))
@@ -1494,6 +1496,10 @@ func (a *App) invitationBatch(w http.ResponseWriter, r *http.Request) {
 
 // Persist a bounded operational category, never raw SMTP responses or secrets.
 func mailFailureCategory(err error) string {
+	var stage *mailStageError
+	if errors.As(err, &stage) {
+		return stage.category
+	}
 	var network net.Error
 	if errors.As(err, &network) {
 		if network.Timeout() {

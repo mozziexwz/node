@@ -233,7 +233,7 @@ func TestAccountEmailUsesTrustedOriginAndPersistedExpiry(t *testing.T) {
 		got = m
 		return nil
 	}
-	if err = a.sendAccountEmail(context.Background(), SMTPConfig{Secret: secret}, "12345678@qq.com", "register", d); err != nil {
+	if err = a.sendAccountEmail(context.Background(), SMTPConfig{Secret: secret}, "", "12345678@qq.com", "register", d); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(got.HTMLBody, `href="https://trusted.example.com"`) || strings.Contains(got.HTMLBody+got.TextBody, "untrusted.example.com") ||
@@ -241,7 +241,7 @@ func TestAccountEmailUsesTrustedOriginAndPersistedExpiry(t *testing.T) {
 		t.Fatal("caller-supplied link/mask used or actual expiry changed")
 	}
 	a.Config.PublicURL = "http://127.0.0.1:8080"
-	if err = a.sendAccountEmail(context.Background(), SMTPConfig{Secret: secret}, "12345678@qq.com", "register", d); err != nil {
+	if err = a.sendAccountEmail(context.Background(), SMTPConfig{Secret: secret}, "", "12345678@qq.com", "register", d); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(got.HTMLBody, "href=") {

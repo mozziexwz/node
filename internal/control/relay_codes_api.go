@@ -1075,6 +1075,6 @@ func (t *TaskService) notifyRelayCodeOwner(notice relayCodeNotice) {
 		return
 	}
 	t.app.queuePasswordMail(func(ctx context.Context) {
-		_ = t.app.sendAccountEmail(ctx, config, email, "relay_code_used", EmailData{EventAtLabel: emailTimeLabel(notice.At)})
+		_ = t.app.sendAccountEmail(ctx, config, notice.OwnerID, email, "relay_code_used", EmailData{EventAtLabel: emailTimeLabel(notice.At)})
 	})
 }

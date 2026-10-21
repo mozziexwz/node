@@ -82,6 +82,7 @@ func main() {
 	backups.Register(mux)
 	backups.Start(ctx)
 	app.StartCommerce(ctx)
+	app.StartEmailLog(ctx)
 	app.StartRelay(ctx)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		control.WriteJSON(w, 200, map[string]any{"status": "ok", "version": version})

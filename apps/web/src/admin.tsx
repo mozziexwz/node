@@ -361,9 +361,7 @@ export function ResourcePage({ kind }: { kind: string }) {
     <>
       <Header title={s.title}>
         {(kind === "executors" || kind === "agents") && (
-          <Button onClick={() => setCleanupHelp(true)}>
-            本机清理说明
-          </Button>
+          <Button onClick={() => setCleanupHelp(true)}>本机清理说明</Button>
         )}
         <Button primary onClick={() => open()}>
           <Plus size={16} />
@@ -1910,6 +1908,119 @@ export function AdminRules() {
             <Notice>此规则已撤销归档或不再存在。</Notice>
           )}
         </Modal>
+      )}
+    </>
+  );
+}
+
+// The server stores only these categories, never the SMTP server's reply.
+const emailFailures: Record<string, string> = {
+  render_failure: "邮件内容生成失败",
+  credential_decrypt_failure: "SMTP 授权码无法解密，主密钥可能已更换",
+  authentication_failure: "SMTP 登录失败，请检查登录账号和授权码",
+  network_timeout: "连接 SMTP 服务器超时",
+  network_failure: "无法连接 SMTP 服务器",
+  tls_certificate_failure: "SMTP 服务器证书校验失败",
+  tls_failure: "TLS 加密连接失败",
+  delivery_failure: "SMTP 服务器拒收或发送中断",
+};
+
+export function EmailLog() {
+  const [kind, setKind] = useState(""),
+    [status, setStatus] = useState(""),
+    [search, setSearch] = useState(""),
+    [q, setQ] = useState("");
+  // Search after a pause in typing instead of on every keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setQ(search.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+  const params = new URLSearchParams({ limit: "200" });
+  if (kind) params.set("kind", kind);
+  if (status) params.set("status", status);
+  if (q) params.set("q", q);
+  const { data, error, loading, reload } = useData(
+    `/api/admin/email-log?${params}`,
+  );
+  const records = array(data, "records");
+  const total = Number(data?.total) || 0;
+  return (
+    <>
+      <Header
+        title="邮件记录"
+        sub="网站发出的每一封邮件：注册和邮箱验证码、找回密码、密码修改与中转提醒、SMTP 测试和整站备份提醒。"
+      >
+        <Button onClick={reload}>刷新</Button>
+      </Header>
+      <ErrorNotice error={error} />
+      <div className="mb16">
+        <Notice>
+          「已发送」只表示 SMTP
+          服务器已接收这封邮件，不代表已进入收件箱：邮件仍可能被退回或归入垃圾箱。记录不保存邮件正文、验证码、链接和
+          SMTP 凭据
+          {data
+            ? `；保留 ${data.retentionDays} 天、最多约 ${data.maxRecords} 条，更早的记录自动删除。`
+            : "。"}
+        </Notice>
+      </div>
+      <div className="filterbar">
+        <input
+          type="search"
+          aria-label="搜索收件人或主题"
+          placeholder="收件邮箱 / 主题"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <select
+          aria-label="按类型筛选"
+          value={kind}
+          onChange={(e) => setKind(e.target.value)}
+        >
+          <option value="">全部类型</option>
+          {array(data, "kinds").map((k) => (
+            <option key={k.kind} value={k.kind}>
+              {k.label}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="按结果筛选"
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+        >
+          <option value="">全部结果</option>
+          <option value="sent">已发送</option>
+          <option value="failed">发送失败</option>
+        </select>
+      </div>
+      <div className="card flush">
+        <Table
+          loading={loading}
+          error={error}
+          headers={["时间", "类型", "收件人", "主题", "结果"]}
+          rows={records.map((r) => [
+            date(r.createdAt),
+            r.label || r.kind,
+            r.recipient,
+            r.subject || "—",
+            r.status === "sent" ? (
+              <Badge tone="green">已发送</Badge>
+            ) : (
+              <>
+                <Badge tone="red">发送失败</Badge>
+                <small>
+                  {emailFailures[r.failure] || r.failure || "原因未记录"}
+                </small>
+              </>
+            ),
+          ])}
+        />
+      </div>
+      {total > records.length && (
+        <p className="muted mt8">
+          共 {total} 条，显示最近 {records.length}{" "}
+          条；可按类型、结果或收件人缩小范围。
+        </p>
       )}
     </>
   );

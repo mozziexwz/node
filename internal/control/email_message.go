@@ -123,7 +123,20 @@ func maskedEmail(recipient string) string {
 	return string(local[:2]) + "***@" + parts[1]
 }
 
-func (a *App) sendAccountEmail(ctx context.Context, config SMTPConfig, recipient, kind string, data EmailData) error {
+// mailStageError marks a failure before any SMTP traffic, so that it is not
+// mistaken for the server's answer: a credential that no longer decrypts
+// would otherwise read as an SMTP authentication failure.
+type mailStageError struct {
+	category string
+	err      error
+}
+
+func (e *mailStageError) Error() string { return e.err.Error() }
+func (e *mailStageError) Unwrap() error { return e.err }
+
+// sendAccountEmail renders, sends and records one account message. userID is
+// the account the message concerns, empty when there is none yet.
+func (a *App) sendAccountEmail(ctx context.Context, config SMTPConfig, userID, recipient, kind string, data EmailData) error {
 	// The caller cannot override the trusted deployment origin or recipient mask.
 	// Local HTTP deployments intentionally omit links instead of weakening TLS.
 	data.SiteURL = emailSiteURL(a.Config.PublicURL)
@@ -133,11 +146,19 @@ func (a *App) sendAccountEmail(ctx context.Context, config SMTPConfig, recipient
 	}
 	message, err := RenderEmail(kind, data)
 	if err != nil {
-		return err
+		err = &mailStageError{"render_failure", err}
+	} else {
+		err = a.deliverEmail(ctx, config, recipient, message)
 	}
+	a.logEmail(kind, userID, recipient, message.Subject, err)
+	return err
+}
+
+// deliverEmail holds the decrypted SMTP credential only for one send.
+func (a *App) deliverEmail(ctx context.Context, config SMTPConfig, recipient string, message EmailMessage) error {
 	secret, err := a.Open(config.Secret)
 	if err != nil {
-		return err
+		return &mailStageError{"credential_decrypt_failure", err}
 	}
 	defer clear(secret)
 	return a.mailSender(ctx, config, string(secret), recipient, message)
