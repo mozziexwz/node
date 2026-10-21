@@ -147,8 +147,9 @@ func (m *mihomoRunner) Open(ctx context.Context, p TunnelProfile) (Tunnel, error
 	proxy := map[string]any{
 		"name": "verify", "type": "mieru", "server": p.Host, "port": p.Port, "transport": "TCP",
 		"username": p.Username, "password": p.Password,
-		// Standard handshake waits for the node's answer, so a wrong password
-		// or a server that is not mieru fails the SOCKS connect itself.
+		// With the standard handshake mihomo waits for the node's answer and
+		// closes the connection when the node refuses. Its SOCKS listener
+		// still accepts every connect at once (see Verifier.Verify).
 		"multiplexing": "MULTIPLEXING_LOW", "handshake-mode": "HANDSHAKE_STANDARD",
 	}
 	if p.TrafficPattern != "" {

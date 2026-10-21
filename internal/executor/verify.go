@@ -197,6 +197,14 @@ func (v *Verifier) Verify(ctx context.Context, config []byte, opts VerifyOptions
 	defer probe.Close()
 	reader := bufio.NewReaderSize(probe, 4100)
 	if err := probeHello(probe, reader, now().Add(8*time.Second)); err != nil {
+		// mihomo accepts a SOCKS connect before the tunnel is up and closes it
+		// when the tunnel fails, so silence alone does not show where the
+		// fault is. If the comparison site is reachable, the tunnel works and
+		// the target simply has no probe service.
+		_ = probe.Close()
+		if errors.Is(err, errNoAnswer) && !v.handshake(ctx, tunnel, allowedSite(opts)) {
+			return done(VerifyReport{Code: VerifyTunnelFailed})
+		}
 		return done(VerifyReport{Code: VerifyNotMSBOOST})
 	}
 	report := VerifyReport{Code: VerifyOK, Game: "skipped", Filter: "skipped"}
@@ -212,17 +220,21 @@ func (v *Verifier) Verify(ctx context.Context, config []byte, opts VerifyOptions
 	return done(report)
 }
 
+func allowedSite(opts VerifyOptions) string {
+	if opts.FilterAllowed != "" {
+		return opts.FilterAllowed
+	}
+	return defaultVerifyAllowed
+}
+
 func (v *Verifier) filterCheck(ctx context.Context, tunnel Tunnel, opts VerifyOptions) string {
-	blocked, allowed := opts.FilterBlocked, opts.FilterAllowed
+	blocked := opts.FilterBlocked
 	if blocked == "" {
 		blocked = defaultVerifyBlocked
 	}
-	if allowed == "" {
-		allowed = defaultVerifyAllowed
-	}
 	// The allowed site is the control: if it fails too, the network or the
 	// site is at fault and nothing is learned about the node's filter.
-	if !v.handshake(ctx, tunnel, allowed) {
+	if !v.handshake(ctx, tunnel, allowedSite(opts)) {
 		return "inconclusive"
 	}
 	if v.handshake(ctx, tunnel, blocked) {
@@ -248,12 +260,16 @@ func (v *Verifier) handshake(ctx context.Context, tunnel Tunnel, host string) bo
 
 var probeNodeID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
+// errNoAnswer means the probe connection ended or timed out before a single
+// byte came back, which is also what a tunnel that never came up looks like.
+var errNoAnswer = errors.New("probe did not answer")
+
 // probeHello sends a hello and checks the reply field by field, the same way
 // the node installer's self-test does: exactly these fields, the same nonce.
 func probeHello(conn net.Conn, reader *bufio.Reader, deadline time.Time) error {
 	nonce := randomHex(16)
 	if err := probeSend(conn, map[string]any{"version": 2, "operation": "hello", "nonce": nonce}, deadline); err != nil {
-		return err
+		return errNoAnswer
 	}
 	reply, err := probeReply(conn, reader, deadline)
 	if err != nil {
@@ -305,6 +321,9 @@ func probeReply(conn net.Conn, reader *bufio.Reader, deadline time.Time) (map[st
 	_ = conn.SetReadDeadline(deadline)
 	line, err := reader.ReadSlice('\n')
 	if err != nil {
+		if len(line) == 0 {
+			return nil, errNoAnswer
+		}
 		return nil, err
 	}
 	if len(line) > 4097 {

@@ -72,15 +72,15 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 
 ## 中转目标校验
 
-校验证明一条中转确实通往 MSBOOST 节点。执行机从中转入口出发，用使用者自己的节点配置建立一次短时 mieru 隧道，经隧道连接节点只监听回环地址的探测服务 `127.0.0.1:20424` 并完成一次 hello：回复必须恰好是 `version,operation,nonce,success,node_id` 五个字段，`nonce` 与本次随机值相同，`node_id` 为 32 位十六进制。只有 MSBOOST 节点运行这个服务，且只能经隧道访问，所以只通过 mieru 认证不算通过。随后经同一服务请节点向游戏检测目标发起一次 TCP 连接，再经隧道分别与对照站点和本应被节点拒绝的站点做 TLS 握手，检查节点的过滤规则；这两项只记录，不影响结论。整次校验最长 90 秒，产生几 KB 流量，按普通流量计入该线路。
+校验证明一条中转确实通往 MSBOOST 节点。执行机从中转入口出发，用使用者自己的节点配置建立一次短时 mieru 隧道，经隧道连接节点只监听回环地址的探测服务 `127.0.0.1:20424` 并完成一次 hello：回复必须恰好是 `version,operation,nonce,success,node_id` 五个字段，`nonce` 与本次随机值相同，`node_id` 为 32 位十六进制。只有 MSBOOST 节点运行这个服务，且只能经隧道访问，所以只通过 mieru 认证不算通过。mihomo 的本地 SOCKS 入口会先答应连接、再去建隧道，隧道失败时只是断开，所以探测服务一个字节都没回时，执行机再经隧道与对照站点做一次 TLS 握手，用来区分「隧道没通」和「隧道通了但没有探测服务」。随后经同一服务请节点向游戏检测目标发起一次 TCP 连接，再经隧道分别与对照站点和本应被节点拒绝的站点做 TLS 握手，检查节点的过滤规则；这两项只记录，不影响结论。整次校验最长 90 秒，产生几 KB 流量，按普通流量计入该线路。
 
 结果为 `verify:{code,game?,filter?,elapsedMs}`，不含节点地址、账号或配置的任何部分：
 
 | `code` | 含义 | 算作目标问题 |
 |---|---|---|
 | `ok` | 目标是 MSBOOST 节点。`game`：`ok,refused,timeout,unreachable,failed,skipped`；`filter`：`ok`、`missing`（本应拒绝的站点可以访问）、`inconclusive`（对照站点也失败，无法判断）、`skipped` | — |
-| `tunnel_failed` | 15 秒内没能经隧道连上探测服务：配置与节点不匹配，或节点已重新部署 | 是 |
-| `not_msboost` | 隧道已建立，但对端没有 MSBOOST 探测服务或回复不符：不是 MSBOOST 节点，或节点版本较低 | 是 |
+| `tunnel_failed` | 隧道没有建立：探测服务没有任何回复，经隧道也连不上对照站点。配置与节点不匹配、节点已重新部署，或目标不是 mieru | 是 |
+| `not_msboost` | 隧道是通的，但对端没有 MSBOOST 探测服务：探测服务的回复不符，或没有回复、对照站点却能连上。不是 MSBOOST 节点，或节点版本较低 | 是 |
 | `entry_unreachable` | 7 秒内连不上中转入口 | 否，属于中转自身的问题 |
 | `target_down` | 节点没有运行；只由面板判定，执行机不会回报 | 否 |
 | `unavailable` | 执行机本次未能完成校验（下载、沙箱、时钟等） | 否 |
@@ -92,6 +92,7 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 - `relay-verify`：面板为捐赠权益线路发起的内部任务，只有 `clientConfig`（入口改写为该规则的线路入口；规则被校验暂停时为客户节点本身）和 `verify`，不带 SSH，也不占用服务器。期限 10 分钟，不进入用户任务列表，管理员审计可见，结束 7 天后删除记录，结果保留在规则上。调度和处理见 [商务契约](contracts-commerce.md) 的「用户配置」。
 - 隧道客户端是 mihomo v1.19.32，两架构 `.gz` 的 SHA-256 与节点安装器相同并固定在代码中。执行机第一次校验时从 GitHub Release 下载到服务私有的临时目录并核对摘要，之后每次启动前再次核对；它作为单独程序运行，只监听回环地址，关闭进程查找和 IPv6，校验结束即停止并删除工作目录。执行机不链接 mieru 代码。`MSBOOST_MIHOMO_BINARY` 可改用管理员自备的本机文件，按原样使用。
 - 校验用的配置与 SSH 凭据一样只在执行任务的内存信封中，不写入任务记录、数据库或日志。
+- 实机检查：在 Linux 上用 `go test -c -o verify-field.test ./internal/executor` 编译，再以 `MSBOOST_VERIFY_FIELD=<放客户端配置的目录> ./verify-field.test -test.run TestVerifyField -test.v` 运行，会用真实的 mihomo 逐个校验目录里的配置并打印结果；不设这个变量时该测试跳过。
 
 ## 预览与清理
 

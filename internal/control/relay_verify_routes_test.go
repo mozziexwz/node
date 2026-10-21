@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -170,25 +171,47 @@ func TestRuleVerifyMaintenance(t *testing.T) {
 }
 
 func TestRuleVerifyBreaker(t *testing.T) {
-	var w relayVerifyWork
 	now := time.Now().UnixMilli()
-	for i := 0; i < 4; i++ {
-		w.breaker(now, false, 20)
+	ok := func(w *relayVerifyWork, n int) {
+		for i := 0; i < n; i++ {
+			w.breaker(now, "ok-"+strconv.Itoa(i), false, true, 20)
+		}
 	}
-	if tripped, _ := w.breaker(now, true, 20); tripped {
-		t.Fatal("one failure in five is exactly 20% and must not trip")
+	// One rule failing again and again is that rule's problem: on a small
+	// site its retries alone used to trip the breaker and hide it for good.
+	var w relayVerifyWork
+	ok(&w, 4)
+	for i := 0; i < 5; i++ {
+		if tripped, _ := w.breaker(now, "bad", true, true, 20); tripped {
+			t.Fatal("retries of one rule tripped the breaker")
+		}
 	}
-	if tripped, alert := w.breaker(now, true, 20); !tripped || !alert {
-		t.Fatal("two failures in six are above 20% and must trip")
+	// New rules that fail never passed, so they are no sign of a checker fault.
+	for i := 0; i < 3; i++ {
+		if tripped, _ := w.breaker(now, "new-"+strconv.Itoa(i), true, false, 20); tripped {
+			t.Fatal("failing new rules tripped the breaker")
+		}
 	}
-	if tripped, alert := w.breaker(now, true, 20); !tripped || alert {
+	var many relayVerifyWork
+	ok(&many, 7)
+	many.breaker(now, "a", true, true, 20)
+	if tripped, _ := many.breaker(now, "b", true, true, 20); tripped {
+		t.Fatal("two passing rules failing are not yet a pattern")
+	}
+	if tripped, alert := many.breaker(now, "c", true, true, 20); !tripped || !alert {
+		t.Fatal("three of ten passing rules failing at once must trip")
+	}
+	if tripped, alert := many.breaker(now, "d", true, false, 20); !tripped || alert {
 		t.Fatal("tripped again but alerted twice within an hour")
 	}
-	var fresh relayVerifyWork
-	if tripped, _ := fresh.breaker(now, true, 20); tripped {
-		t.Fatal("a single result is not a pattern")
+	var share relayVerifyWork
+	ok(&share, 12)
+	share.breaker(now, "a", true, true, 20)
+	share.breaker(now, "b", true, true, 20)
+	if tripped, _ := share.breaker(now, "c", true, true, 20); tripped {
+		t.Fatal("three of fifteen is exactly 20% and must not trip")
 	}
-	if tripped, _ := w.breaker(now+2*time.Hour.Milliseconds(), true, 20); tripped {
+	if tripped, _ := many.breaker(now+2*time.Hour.Milliseconds(), "e", true, true, 20); tripped {
 		t.Fatal("old outcomes were not forgotten")
 	}
 }

@@ -60,16 +60,17 @@ func (a *App) SetRouteVerifier(fn func(context.Context, string, []byte, executor
 }
 
 type verifyOutcome struct {
-	at       int64
-	blocking bool
+	at int64
+	// regression: a rule that was passing, or not yet checked, now fails.
+	regression bool
 }
 
-// relayVerifyWork is the scheduler's memory: checks in flight, the recent
-// outcomes the circuit breaker looks at, and a wake-up for manual checks.
+// relayVerifyWork is the scheduler's memory: checks in flight, each rule's
+// latest outcome for the circuit breaker, and a wake-up for manual checks.
 type relayVerifyWork struct {
 	mu       sync.Mutex
 	inFlight map[string]bool
-	recent   []verifyOutcome
+	recent   map[string]verifyOutcome
 	alerted  int64
 	kick     chan struct{}
 }
@@ -112,25 +113,32 @@ func (w *relayVerifyWork) busy(key string) bool {
 	return w.inFlight[key]
 }
 
-// breaker records one outcome and reports whether the last hour's failure
-// share is so high that the checking side, not the users, is at fault.
-func (w *relayVerifyWork) breaker(now int64, blocking bool, percent int) (tripped, alert bool) {
+// breaker records one rule's outcome and reports whether so many rules that
+// were passing fail at once that the checking side, not the users, is at
+// fault. Only each rule's latest outcome in the last hour counts, so retries
+// of one rule never add up; it takes at least three rules, and more than the
+// given share of all rules checked in that hour.
+func (w *relayVerifyWork) breaker(now int64, key string, blocking, regression bool, percent int) (tripped, alert bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	kept := w.recent[:0]
-	for _, o := range w.recent {
-		if o.at > now-time.Hour.Milliseconds() {
-			kept = append(kept, o)
+	if w.recent == nil {
+		w.recent = map[string]verifyOutcome{}
+	}
+	for k, o := range w.recent {
+		if o.at <= now-time.Hour.Milliseconds() {
+			delete(w.recent, k)
 		}
 	}
-	w.recent = append(kept, verifyOutcome{at: now, blocking: blocking})
-	total, failed := len(w.recent), 0
+	// A retry of a rule that just regressed is still that regression.
+	prior := w.recent[key]
+	w.recent[key] = verifyOutcome{at: now, regression: blocking && (regression || prior.regression)}
+	regressed := 0
 	for _, o := range w.recent {
-		if o.blocking {
-			failed++
+		if o.regression {
+			regressed++
 		}
 	}
-	tripped = blocking && total >= 5 && failed*100 > percent*total
+	tripped = blocking && regressed >= 3 && regressed*100 > percent*len(w.recent)
 	if tripped && w.alerted <= now-time.Hour.Milliseconds() {
 		w.alerted, alert = now, true
 	}
@@ -426,7 +434,8 @@ func (a *App) verifyRule(ctx context.Context, key string, verify routeVerifier) 
 		report.Code = executor.VerifyTargetDown
 	}
 	now := time.Now().UnixMilli()
-	tripped, alert := a.relayVerify.breaker(now, executor.VerifyBlocks(report.Code), settings.BreakerPercent)
+	passing := rule.Verify.State == "ok" || rule.Verify.State == "unchecked"
+	tripped, alert := a.relayVerify.breaker(now, key, executor.VerifyBlocks(report.Code), passing, settings.BreakerPercent)
 	if tripped {
 		report = executor.VerifyReport{Code: executor.VerifyUnavailable, ElapsedMS: report.ElapsedMS}
 	}

@@ -121,6 +121,14 @@ func testCertificates(t *testing.T, hosts ...string) (*x509.CertPool, map[string
 	return pool, configs
 }
 
+// noProbeTunnel is a working mieru tunnel to a server without the MSBOOST
+// probe: the probe connection closes, the comparison site answers.
+func noProbeTunnel(t *testing.T) (*x509.CertPool, *fakeTunnel) {
+	t.Helper()
+	roots, sites := testCertificates(t, defaultVerifyAllowed)
+	return roots, &fakeTunnel{tls: sites}
+}
+
 func verifyConfig(t *testing.T, pattern string) []byte {
 	t.Helper()
 	extra := ""
@@ -153,7 +161,10 @@ func TestVerifyClassifiesEveryOutcome(t *testing.T) {
 		{name: "filter inconclusive", tunnel: &fakeTunnel{probe: &fakeProbe{}}, code: VerifyOK, game: "ok", filter: "inconclusive"},
 		{name: "entry closed", tunnel: &fakeTunnel{probe: &fakeProbe{}}, reachErr: errors.New("refused"), code: VerifyEntryUnreachable},
 		{name: "tunnel fails", tunnel: &fakeTunnel{dialErr: errors.New("socks connect refused")}, code: VerifyTunnelFailed},
-		{name: "no probe service", tunnel: &fakeTunnel{}, code: VerifyNotMSBOOST},
+		// mihomo accepts every connect; a tunnel that never came up then
+		// closes the probe and the comparison site alike.
+		{name: "tunnel never comes up", tunnel: &fakeTunnel{}, code: VerifyTunnelFailed},
+		{name: "no probe service", tunnel: &fakeTunnel{tls: allowedOnly}, code: VerifyNotMSBOOST},
 		{name: "executor cannot start client", openErr: errors.New("noexec"), code: VerifyUnavailable},
 	}
 	for _, c := range cases {

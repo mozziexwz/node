@@ -49,10 +49,12 @@ func TestEnforcedVerificationUndoesARefusedRelay(t *testing.T) {
 	remote := relayRemote()
 	front := testSSH("9.9.9.9")
 	var checked TunnelProfile
+	roots, noProbe := noProbeTunnel(t)
 	e := verifyingEngine(remote, func(_ context.Context, p TunnelProfile) (Tunnel, error) {
 		checked = p
-		return &fakeTunnel{}, nil // a mieru server without the MSBOOST probe
+		return noProbe, nil
 	})
+	e.Verifier.Roots = roots
 	meta := &RelayMeta{Source: "code", CodeTail: "2F6H", User: "10086123@qq.com"}
 	out := e.Execute(context.Background(), Job{ID: "codejob", Request: Request{Kind: "relay-code", SSH: testSSH("1.1.1.1"), Front: &front, ClientConfig: []byte(sampleConfig), RateMbps: 5, Meta: meta, Verify: &VerifyOptions{Mode: "enforce"}}})
 	// The check goes through the entry the user would actually connect to.
@@ -75,12 +77,14 @@ func TestEnforcedVerificationUndoesARefusedRelay(t *testing.T) {
 }
 
 func TestLoggedVerificationKeepsTheRelayAndNotesTheResult(t *testing.T) {
+	roots, noProbe := noProbeTunnel(t)
 	for _, c := range []struct {
 		tunnel *fakeTunnel
 		code   string
-	}{{&fakeTunnel{probe: &fakeProbe{}}, VerifyOK}, {&fakeTunnel{}, VerifyNotMSBOOST}} {
+	}{{&fakeTunnel{probe: &fakeProbe{}}, VerifyOK}, {noProbe, VerifyNotMSBOOST}, {&fakeTunnel{}, VerifyTunnelFailed}} {
 		remote := relayRemote()
 		e := verifyingEngine(remote, func(context.Context, TunnelProfile) (Tunnel, error) { return c.tunnel, nil })
+		e.Verifier.Roots = roots
 		meta := &RelayMeta{Source: "code", CodeTail: "2F6H", User: "10086123@qq.com"}
 		out := e.Execute(context.Background(), Job{ID: "logjob", Request: Request{Kind: "relay-code", SSH: testSSH("1.1.1.1"), ClientConfig: []byte(sampleConfig), RateMbps: 5, Meta: meta, Verify: &VerifyOptions{Mode: "log"}}})
 		if out.State != "succeeded" || len(out.Config) == 0 || out.Verify == nil || out.Verify.Code != c.code {
