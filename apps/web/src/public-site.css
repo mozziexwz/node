@@ -45,6 +45,13 @@
   max-width: none;
   padding-top: 0;
   border-top: 0;
+  /* The steps share a narrow side card: tighter gaps keep each label on one
+     line while the three cards stay the same width. */
+  gap: 6px;
+}
+.public-steps .hero-steps > div {
+  padding-left: 4px;
+  padding-right: 4px;
 }
 .public-steps .hero-steps strong {
   text-align: center;
@@ -305,7 +312,7 @@
   justify-content: center;
   gap: 12px;
   min-height: 104px;
-  padding: 16px 8px;
+  padding: 16px 4px;
   border: 1px solid var(--line);
   border-radius: 13px;
   box-shadow: var(--shadow);

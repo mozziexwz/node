@@ -449,19 +449,27 @@ func TestVerifyRouteRunsOnlyOnVerifyingExecutors(t *testing.T) {
 }
 
 func TestRuleVerifyEmailsRender(t *testing.T) {
-	for kind, subject := range map[string]string{"relay_verify_failed": "[MSBOOST] 中转线路校验未通过", "relay_verify_paused": "[MSBOOST] 中转线路已暂停"} {
-		m, err := RenderEmail(kind, EmailData{EventAtLabel: "2026-10-21 10:00:00 UTC+8", SiteURL: "https://msboost.de", Year: 2026})
-		if err != nil || m.Subject != subject {
-			t.Fatalf("%s: %v %q", kind, err, m.Subject)
+	for _, test := range []struct{ kind, subject, recover string }{
+		{"relay_verify_failed", "[MSBOOST] 中转线路校验未通过", "重新校验"},
+		{"relay_verify_paused", "[MSBOOST] 中转线路已暂停", "重新校验"},
+		// A withdrawn new rule cannot be rechecked; it has to be configured again.
+		{"relay_verify_refused", "[MSBOOST] 新配置的中转线路未通过校验", "重新配置"},
+	} {
+		m, err := RenderEmail(test.kind, EmailData{EventAtLabel: "2026-10-21 10:00:00 UTC+8", SiteURL: "https://msboost.de", Year: 2026})
+		if err != nil || m.Subject != test.subject {
+			t.Fatalf("%s: %v %q", test.kind, err, m.Subject)
 		}
 		for _, banned := range []string{"转发", "冒险岛", "SSH", "root"} {
 			if strings.Contains(m.TextBody, banned) {
-				t.Fatalf("%s mentions %s", kind, banned)
+				t.Fatalf("%s mentions %s", test.kind, banned)
 			}
 		}
-		if !strings.Contains(m.TextBody, "重新校验") {
-			t.Fatalf("%s does not say how to recover", kind)
+		if !strings.Contains(m.TextBody, test.recover) {
+			t.Fatalf("%s does not say how to recover", test.kind)
 		}
+	}
+	if m, _ := RenderEmail("relay_verify_refused", EmailData{EventAtLabel: "x", Year: 2026}); strings.Contains(m.TextBody, "重新校验") {
+		t.Fatal("the withdrawn-rule mail points to a recheck that no longer exists")
 	}
 }
 
@@ -469,7 +477,7 @@ func TestRuleVerifyMailsOnlyWhenEnforced(t *testing.T) {
 	for _, test := range []struct{ event, mode, want string }{
 		{"relay.verify.failed", "log", ""},
 		{"relay.verify.failed", "enforce", "relay_verify_failed"},
-		{"relay.verify.refused", "enforce", "relay_verify_failed"},
+		{"relay.verify.refused", "enforce", "relay_verify_refused"},
 		{"relay.verify.paused", "enforce", "relay_verify_paused"},
 		{"relay.verify.resumed", "enforce", ""},
 		{"relay.verify.route_problem", "enforce", ""},

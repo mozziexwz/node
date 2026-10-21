@@ -474,8 +474,11 @@ func ruleVerifyMail(event, mode string) string {
 		return ""
 	}
 	switch event {
-	case "relay.verify.failed", "relay.verify.refused":
+	case "relay.verify.failed":
 		return "relay_verify_failed"
+	case "relay.verify.refused":
+		// The new rule is gone: there is nothing left to recheck.
+		return "relay_verify_refused"
 	case "relay.verify.paused":
 		return "relay_verify_paused"
 	}

@@ -85,10 +85,23 @@
     "Intro": "您好！您的捐赠权益中转线路在校验中没能确认目标是 MSBOOST 节点：可能是节点重新部署后配置已经变了，也可能目标不是 MSBOOST 节点。",
     "Instruction": "请登录 MSBOOST，在「中转线路」查看原因。节点重新部署过的话，请用新的配置文件重新配置线路；修好后点「重新校验」。",
     "NoticeTitle": "多久需要处理？",
-    "Notice": "管理员开启强制校验时，连续校验失败超过宽限时间的线路会被暂停；修好后重新校验通过即自动恢复。",
+    "Notice": "线路在宽限时间内仍未通过校验会被暂停，规则和流量记录都会保留；修好后重新校验通过即自动恢复。",
     "UsesCode": false,
     "EventLabel": "校验时间",
     "StatusText": "校验未通过"
+  },
+  "relay_verify_refused": {
+    "Subject": "[MSBOOST] 新配置的中转线路未通过校验",
+    "Preheader": "你新配置的中转线路没有通过 MSBOOST 节点校验，已经撤销。",
+    "Category": "中转线路提醒",
+    "Title": "新配置的中转线路已撤销",
+    "Intro": "您好！您新配置的捐赠权益中转线路几次校验都没能确认目标是 MSBOOST 节点，这条线路已经撤销：可能上传的是旧的配置文件，也可能目标不是 MSBOOST 节点。",
+    "Instruction": "请确认上传的是节点当前的配置文件：节点重新部署过的话，旧配置已经失效。确认无误后，请登录 MSBOOST，在「中转线路」重新配置这条线路。",
+    "NoticeTitle": "节点没有问题？",
+    "Notice": "如果确认节点正常运行、配置也是最新的，请提交工单，管理员会人工核查。",
+    "UsesCode": false,
+    "EventLabel": "校验时间",
+    "StatusText": "已撤销"
   },
   "relay_verify_paused": {
     "Subject": "[MSBOOST] 中转线路已暂停",

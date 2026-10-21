@@ -112,7 +112,7 @@ export function AuthPage({
             <ArrowRight size={14} />
             <div>
               <MonitorDown size={24} />
-              <strong>下载启动器并导入配置</strong>
+              <strong>下载启动器</strong>
             </div>
           </div>
         </div>
