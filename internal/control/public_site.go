@@ -305,7 +305,7 @@ func normalizeHome(in HomeConfig) (HomeConfig, error) {
 		}
 		target := strings.TrimSpace(feature.Target)
 		if target != "" && !homeSections[target] && !validSiteHref(target) {
-			return out, fmt.Errorf("功能卡片「%s」的跳转只能是 #msboost、#relay、#launcher、以 / 开头的站内路径或 https:// 链接", title)
+			return out, fmt.Errorf("功能卡片「%s」的跳转只能是 #msboost、#relay、#launcher、#local、以 / 开头的站内路径或 https:// 链接", title)
 		}
 		out.Features = append(out.Features, HomeFeature{Title: title, Desc: desc, Target: target})
 	}
@@ -352,7 +352,7 @@ func normalizeHome(in HomeConfig) (HomeConfig, error) {
 }
 
 // Homepage sections a feature card may scroll to.
-var homeSections = map[string]bool{"#msboost": true, "#relay": true, "#launcher": true}
+var homeSections = map[string]bool{"#msboost": true, "#relay": true, "#launcher": true, "#local": true}
 
 // homeItems validates diagram boxes (exactly count items) or points (one to
 // count items) of a homepage explanation.
@@ -548,6 +548,7 @@ type publicSnapshot struct {
 	home               HomeConfig
 	seo                SEOConfig
 	launcher           LauncherSettings
+	localApp           LauncherSettings
 	newsEnabled        bool
 	attachmentsEnabled bool
 	articles           []publicArticleSummary
@@ -577,6 +578,7 @@ func (a *App) publicSnapshot() (*publicSnapshot, error) {
 		snap.home = loadHomeConfig(s)
 		snap.seo = loadSEOConfig(s)
 		snap.launcher = loadLauncherSettings(s)
+		snap.localApp = loadLocalAppSettings(s)
 		snap.newsEnabled = boolSetting(s, "publicArticles")
 		snap.attachmentsEnabled = boolSetting(s, "attachments")
 		if !snap.newsEnabled {
@@ -671,7 +673,7 @@ func (a *App) publicHome(w http.ResponseWriter, r *http.Request) {
 	if snap.home.ShowLatest && snap.newsEnabled {
 		latest = snap.articles[:min(snap.home.LatestCount, len(snap.articles))]
 	}
-	WriteJSON(w, 200, map[string]any{"home": snap.home, "site": snap.site(), "newsEnabled": snap.newsEnabled, "articles": latest, "launcher": snap.launcher})
+	WriteJSON(w, 200, map[string]any{"home": snap.home, "site": snap.site(), "newsEnabled": snap.newsEnabled, "articles": latest, "launcher": snap.launcher, "localApp": snap.localApp})
 }
 
 func (a *App) publicArticles(w http.ResponseWriter, r *http.Request) {

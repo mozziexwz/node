@@ -12,6 +12,7 @@ import {
   Gauge,
   Laptop,
   Lock,
+  LockKeyhole,
   Megaphone,
   MonitorDown,
   Paperclip,
@@ -20,6 +21,7 @@ import {
   Server,
   Share2,
   ShieldCheck,
+  UserRoundX,
 } from "lucide-react";
 import { array, downloadFile, RecordData } from "./api";
 import {
@@ -41,6 +43,7 @@ import {
   LauncherSteps,
   LauncherTips,
 } from "./launcher";
+import { LocalAppSteps, LocalAppTips } from "./local-app";
 import { Agreements } from "./agreements";
 import { SiteSwitcher } from "./site-switcher";
 import "./public-site.css";
@@ -181,11 +184,12 @@ export default function PublicSite() {
 }
 
 // Card targets that scroll to a section of this page.
-const homeSections = new Set(["msboost", "relay", "launcher"]);
+const homeSections = new Set(["msboost", "relay", "launcher", "local"]);
 const sectionIcons: Record<string, typeof Server> = {
   "#msboost": Server,
   "#relay": Route,
   "#launcher": MonitorDown,
+  "#local": Laptop,
 };
 const featureIcons = [
   Server,
@@ -199,6 +203,7 @@ const jumpLabels: Record<string, string> = {
   "#msboost": "了解 MSBOOST",
   "#relay": "了解中转服务器",
   "#launcher": "了解 MSBOOST 启动器",
+  "#local": "了解 MSBOOST 本地版",
 };
 
 // Sections declare a scroll margin for the sticky header; the address keeps
@@ -321,9 +326,11 @@ function ExplainPoints({
 function MSBOOSTSection({
   msboost,
   launcher,
+  local,
 }: {
   msboost: RecordData;
   launcher: boolean;
+  local: boolean;
 }) {
   return (
     <section className="home-explain" id="msboost">
@@ -356,6 +363,16 @@ function MSBOOSTSection({
             onClick={(event) => scrollToSection("launcher", event)}
           >
             下载启动器
+            <ArrowDown size={15} aria-hidden="true" />
+          </a>
+        )}
+        {local && (
+          <a
+            className="btn"
+            href="#local"
+            onClick={(event) => scrollToSection("local", event)}
+          >
+            不想填 SSH？用本地版
             <ArrowDown size={15} aria-hidden="true" />
           </a>
         )}
@@ -444,6 +461,53 @@ function LauncherSection({ launcher }: { launcher?: Launcher }) {
   );
 }
 
+// Shown only once the administrator publishes a download: members who would
+// rather not give their SSH to a website can get it without an account.
+function LocalSection({ localApp }: { localApp: Launcher }) {
+  return (
+    <section className="home-explain home-launcher" id="local">
+      <ExplainHead
+        icon={Laptop}
+        eyebrow="MSBOOST 本地版"
+        title="不想在网站填写 SSH？用本地版"
+      />
+      <p className="explain-lead">
+        在你自己的电脑上部署和管理 MSBOOST 节点与中转服务器。SSH 密码
+        <b>只在你的电脑里使用</b>
+        ，不经过本站，也不保存到硬盘。部署出的节点和网站部署的完全一样，配置文件直接给启动器用。
+      </p>
+      <ExplainPoints
+        points={[
+          {
+            title: "SSH 不离开你的电脑",
+            desc: "程序直接连接你的 VPS，只连接你自己的服务器，不连接本站；密码每次操作时输入，用完即清。",
+          },
+          {
+            title: "和网站部署的一样",
+            desc: "同一个安装脚本、同一套目录。网站和本地版都能管理、清理对方装的节点和中转。",
+          },
+          {
+            title: "不需要账户",
+            desc: "部署节点、配置中转服务器、帮朋友中转都在本机完成。中转码、捐赠权益和工单仍需在网站使用。",
+          },
+        ]}
+        icons={[LockKeyhole, Server, UserRoundX]}
+      />
+      <div className="mt16">
+        <LauncherDownload launcher={localApp} product="localApp" heading="h3" />
+      </div>
+      {localApp.notes && (
+        <details className="notes-details">
+          <summary>{localApp.version} 更新内容</summary>
+          <LauncherNotes launcher={localApp} />
+        </details>
+      )}
+      <LocalAppSteps />
+      <LocalAppTips />
+    </section>
+  );
+}
+
 function HomePage({
   data,
   error,
@@ -469,6 +533,7 @@ function HomePage({
   const home = data.home || {},
     articles = array(data, "articles"),
     launcher: Launcher | undefined = data.launcher,
+    localApp: Launcher | undefined = data.localApp,
     features: RecordData[] = home.features || [],
     points: string[] = home.points || [],
     msboost: RecordData = home.msboost || {},
@@ -477,6 +542,7 @@ function HomePage({
     "#msboost": !!home.showExplain && !!msboost.title,
     "#relay": !!home.showExplain && !!relay.title,
     "#launcher": !!home.showLauncher,
+    "#local": !!localApp?.downloadUrl,
   };
   return (
     <>
@@ -636,10 +702,15 @@ function HomePage({
         </section>
       )}
       {shown["#msboost"] && (
-        <MSBOOSTSection msboost={msboost} launcher={shown["#launcher"]} />
+        <MSBOOSTSection
+          msboost={msboost}
+          launcher={shown["#launcher"]}
+          local={shown["#local"]}
+        />
       )}
       {shown["#relay"] && <RelaySection relay={relay} />}
       {shown["#launcher"] && <LauncherSection launcher={launcher} />}
+      {shown["#local"] && localApp && <LocalSection localApp={localApp} />}
       {articles.length > 0 && (
         <section className="public-latest" aria-labelledby="latest-heading">
           <div className="between">

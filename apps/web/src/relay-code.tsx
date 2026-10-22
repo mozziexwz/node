@@ -64,6 +64,7 @@ import {
 } from "./tools";
 import { getLocal } from "./vault";
 import { VerifyBadge } from "./relay-verify";
+import { LocalHint } from "./local-app";
 
 type Mode = "use" | "make" | "manual";
 type CodesTab = "codes" | "servers" | "used";
@@ -302,6 +303,9 @@ export function RelayPage({
               )}
             </div>
             <aside className="stack" style={{ alignContent: "start" }}>
+              {mode !== "use" && (
+                <LocalHint kind="relay" onNavigate={onNavigate} />
+              )}
               {mode === "use" && (
                 <div className="card">
                   <h3>中转码从哪里来？</h3>

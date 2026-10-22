@@ -12,9 +12,10 @@ import (
 	"unicode/utf8"
 )
 
-// LauncherSettings describes the MSBOOST launcher download shown on the public
-// homepage and in the console. Every field is public by design; an empty
-// DownloadURL means the download has not been published yet.
+// LauncherSettings describes a desktop download shown on the public homepage
+// and in the console: the MSBOOST launcher ("launcher") or MSBOOST Local
+// ("localApp"). Every field is public by design; an empty DownloadURL means the
+// download has not been published yet.
 type LauncherSettings struct {
 	Version     string `json:"version"`
 	ReleasedAt  string `json:"releasedAt"`
@@ -96,12 +97,18 @@ func loadLauncherSettings(s *State) LauncherSettings {
 	return loadSiteSetting(s, "launcher", LauncherSettings{}, normalizeLauncher)
 }
 
-// The console page reads the same public snapshot as the homepage, so visitors
+// MSBOOST Local deploys from the member's own computer, so its download uses the
+// same fields and checks as the launcher.
+func loadLocalAppSettings(s *State) LauncherSettings {
+	return loadSiteSetting(s, "localApp", LauncherSettings{}, normalizeLauncher)
+}
+
+// The console pages read the same public snapshot as the homepage, so visitors
 // and signed-in users always see one consistent download.
 func (a *App) publicLauncher(w http.ResponseWriter, r *http.Request) {
 	snap, ok := a.publicRequest(w, r)
 	if !ok {
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"launcher": snap.launcher})
+	WriteJSON(w, 200, map[string]any{"launcher": snap.launcher, "localApp": snap.localApp})
 }

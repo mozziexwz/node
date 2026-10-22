@@ -340,6 +340,7 @@ test(
           },
           "/api/admin/settings": { register: true, limits: {} },
           "/api/health": { status: "ok" },
+          "/api/public/launcher": { launcher: {}, localApp: {} },
         }[url.pathname];
         if (json) return route.fulfill({ json });
         errors.push("Unexpected read " + url.pathname);

@@ -6,10 +6,12 @@ const output=ts.transpileModule(fs.readFileSync(new URL('../src/navigation.ts',i
 const {navigationGroups}=await import('data:text/javascript;base64,'+Buffer.from(output).toString('base64'));
 for(const [role,admin,subscribed] of [['admin',true,false],['member',false,false],['subscriber',false,true]]) {
   test(`navigation ${role}: free tools precede paid business, no duplicates`,()=>{
-    const groups=navigationGroups(admin,subscribed),items=groups.flatMap(g=>g.items);
+    const groups=navigationGroups(admin,subscribed,false),items=groups.flatMap(g=>g.items);
     assert.equal(items[0],'tutorials');
     assert.equal(new Set(items).size,items.length);
-    assert.deepEqual(groups.find(g=>g.title==='免费部署工具').items,['launcher','deploy','relay','codes','dd','tasks']);
+    // Members only see MSBOOST Local once its download is published.
+    assert.deepEqual(groups.find(g=>g.title==='免费部署工具').items,admin?['launcher','local','deploy','relay','codes','dd','tasks']:['launcher','deploy','relay','codes','dd','tasks']);
+    assert.deepEqual(navigationGroups(admin,subscribed,true).find(g=>g.title==='免费部署工具').items,['launcher','local','deploy','relay','codes','dd','tasks']);
     assert.ok(items.indexOf('dd')<items.indexOf('plans'));
     assert.ok(items.includes('account')&&items.includes('tickets'));
     if(admin) assert.ok(items.includes('users')&&items.includes('executors')&&items.includes('rules')&&items.includes('relayAudit')&&groups.find(g=>g.title==='平台管理').items.includes('emailLog'));

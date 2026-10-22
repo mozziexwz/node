@@ -143,6 +143,8 @@ test(
           return route.fulfill({ json: { articles: [] } });
         if (url.pathname === "/api/health")
           return route.fulfill({ json: { status: "ok" } });
+        if (url.pathname === "/api/public/launcher")
+          return route.fulfill({ json: { launcher: {}, localApp: {} } });
         errors.push(`Unexpected read ${url.pathname}`);
         return route.abort();
       });

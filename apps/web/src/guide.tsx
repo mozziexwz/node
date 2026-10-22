@@ -7,6 +7,7 @@ import {
   CircleHelp,
   Clock,
   Gamepad2,
+  Laptop,
   LifeBuoy,
   Lightbulb,
   Monitor,
@@ -24,6 +25,7 @@ import {
 import { array, RecordData } from "./api";
 import { Badge, Button, ErrorNotice, Header, useData } from "./ui";
 import { openArticleKey } from "./navigation";
+import { useLocalApp } from "./local-app";
 
 // The member's start page. Progress comes from their own task records; the
 // website cannot tell whether the launcher was downloaded, so that step stays
@@ -191,7 +193,8 @@ const routes: {
 
 export function Guide({ navigate }: { navigate: (view: string) => void }) {
   const tasks = useData("/api/tasks"),
-    news = useData("/api/articles");
+    news = useData("/api/articles"),
+    localApp = useLocalApp();
   const known = !!tasks.data && !tasks.error,
     progress = guideProgress(known ? array(tasks.data, "tasks") : []),
     [vps, deploy, relay, launcher] = known
@@ -404,6 +407,16 @@ export function Guide({ navigate }: { navigate: (view: string) => void }) {
                       <span>也可以在当前浏览器的「任务记录」里再次下载</span>
                     </li>
                   </ul>
+                  {localApp && (
+                    <div className="lc-inline">
+                      <Laptop size={15} aria-hidden="true" />
+                      <span>
+                        不想在网站填写 SSH？可以用 MSBOOST
+                        本地版在自己电脑上部署。本地版的部署不会显示在这里的进度中，完成后直接进行第
+                        4 步即可。
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="g-tip warn">
                   <b>
@@ -418,6 +431,11 @@ export function Guide({ navigate }: { navigate: (view: string) => void }) {
                   <Server size={15} />
                   部署 MSBOOST
                 </Button>
+                {localApp && (
+                  <Button onClick={() => navigate("local")}>
+                    <Laptop size={15} />用 MSBOOST 本地版
+                  </Button>
+                )}
                 <Button onClick={() => navigate("tasks")}>
                   <Clock size={15} />
                   任务记录

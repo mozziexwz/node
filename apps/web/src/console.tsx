@@ -25,6 +25,7 @@ import {
   Share2,
   FileSearch,
   MonitorDown,
+  Laptop,
   Mail,
 } from "lucide-react";
 import { api, post, RecordData } from "./api";
@@ -60,6 +61,7 @@ import { RouteBuilder } from "./tunnels";
 import { Backups } from "./backups";
 import { freeTools, navigationGroups } from "./navigation";
 import { LauncherPage } from "./launcher";
+import { LocalAppPage } from "./local-app";
 import { Guide } from "./guide";
 import { paymentReturnOrder } from "./payment-return";
 import { SiteSwitcher } from "./site-switcher";
@@ -67,6 +69,7 @@ const labels: Record<string, [string, typeof Server]> = {
   tutorials: ["公告/教程", BookOpen],
   home: ["使用指南", Compass],
   launcher: ["MSBOOST 启动器", MonitorDown],
+  local: ["MSBOOST 本地版", Laptop],
   deploy: ["部署 MSBOOST", Server],
   relay: ["配置中转服务器", Route],
   codes: ["中转码管理", Share2],
@@ -189,18 +192,22 @@ export default function App() {
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [view, setView] = useState(currentView),
-    [drawer, setDrawer] = useState(false);
+    [drawer, setDrawer] = useState(false),
+    [localApp, setLocalApp] = useState(false);
   async function refresh() {
     try {
-      const [st, me] = await Promise.all([
+      const [st, me, downloads] = await Promise.all([
         api("/api/settings"),
         api("/api/me").catch((e) => {
           if (e.status === 401) return null;
           throw e;
         }),
+        // Only decides whether members see the MSBOOST Local menu item.
+        api("/api/public/launcher").catch(() => null),
       ]);
       setSettings(st.settings || st);
       setUser(me?.user || null);
+      setLocalApp(!!downloads?.localApp?.downloadUrl);
       setError("");
     } catch (e) {
       setError((e as Error).message);
@@ -228,7 +235,11 @@ export default function App() {
     scrollTo(0, 0);
   }
   const admin = user?.role === "admin";
-  const nav = navigationGroups(admin, !!user && user.expiresAt > Date.now());
+  const nav = navigationGroups(
+    admin,
+    !!user && user.expiresAt > Date.now(),
+    localApp,
+  );
   if (loading) return <Loading />;
   if (error && !user)
     return (
@@ -289,6 +300,9 @@ export default function App() {
       break;
     case "launcher":
       page = <LauncherPage admin={admin} onNavigate={navigate} />;
+      break;
+    case "local":
+      page = <LocalAppPage admin={admin} onNavigate={navigate} />;
       break;
     case "relay":
       page = (

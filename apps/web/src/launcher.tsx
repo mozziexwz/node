@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Eye,
   FolderArchive,
+  Laptop,
   Monitor,
   MonitorDown,
   Route,
@@ -29,8 +30,9 @@ import {
   useData,
 } from "./ui";
 
-// Public launcher download, shared by the homepage and the console page. An
-// empty downloadUrl means the administrator has not published it yet.
+// Public desktop download, shared by the homepage and the console pages: the
+// launcher or MSBOOST Local. An empty downloadUrl means the administrator has
+// not published it yet.
 export type Launcher = {
   version?: string;
   releasedAt?: string;
@@ -52,6 +54,25 @@ export function launcherHost(href = "") {
 // The settings page opens on the tab named here once, for links that should
 // land on the launcher settings instead of the first tab.
 export const settingsTabKey = "msboost-settings-tab";
+
+// The two downloads differ only in names, icons and where they are explained.
+export type DownloadProduct = "launcher" | "localApp";
+const products = {
+  launcher: {
+    name: "MSBOOST 启动器",
+    short: "启动器",
+    Icon: MonitorDown,
+    package: "免安装 zip，解压即用",
+    section: "launcher",
+  },
+  localApp: {
+    name: "MSBOOST 本地版",
+    short: "本地版",
+    Icon: Laptop,
+    package: "免安装 zip，无需管理员权限",
+    section: "local",
+  },
+};
 
 function CopyHash({ value }: { value: string }) {
   const [done, setDone] = useState(false);
@@ -76,27 +97,30 @@ function CopyHash({ value }: { value: string }) {
 
 export function LauncherDownload({
   launcher,
+  product = "launcher",
   heading = "h2",
   admin = false,
   onSettings,
 }: {
   launcher?: Launcher;
+  product?: DownloadProduct;
   heading?: "h2" | "h3";
   admin?: boolean;
   onSettings?: () => void;
 }) {
+  const { name, short, Icon } = products[product];
   if (!launcher?.downloadUrl)
     return (
       <div className="card">
         <div className="launcher-unpublished">
           <span className="launcher-mark">
-            <MonitorDown size={30} />
+            <Icon size={30} />
           </span>
           <div>
-            <h3>启动器下载地址尚未发布</h3>
+            <h3>{short}下载地址尚未发布</h3>
             <p>
               {admin
-                ? "到「系统设置 → MSBOOST 启动器」填写版本和下载地址后，这里会显示下载按钮。"
+                ? `到「系统设置 → ${name}」填写版本和下载地址后，这里会显示下载按钮。`
                 : "发布后，这里会显示当前版本和下载按钮。"}
             </p>
           </div>
@@ -118,11 +142,11 @@ export function LauncherDownload({
       <div className="launcher-hero">
         <div className="launcher-id">
           <span className="launcher-mark">
-            <MonitorDown size={30} />
+            <Icon size={30} />
           </span>
           <div>
             <div className="launcher-title">
-              <Title>MSBOOST 启动器</Title>
+              <Title>{name}</Title>
               <Badge tone="orange">{launcher.version}</Badge>
               <Badge tone="green">当前版本</Badge>
             </div>
@@ -137,7 +161,7 @@ export function LauncherDownload({
               </span>
               <span>
                 <FolderArchive size={14} />
-                免安装 zip，解压即用
+                {products[product].package}
               </span>
             </div>
           </div>
@@ -355,17 +379,24 @@ function LinkField({
   );
 }
 
-export function LauncherSettings({ onSaved }: { onSaved: () => void }) {
+export function LauncherSettings({
+  product = "launcher",
+  onSaved,
+}: {
+  product?: DownloadProduct;
+  onSaved: () => void;
+}) {
+  const { short, section } = products[product];
   const { data, error, loading, reload } = useData("/api/admin/settings");
   const [values, setValues] = useState<Launcher | null>(null),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(""),
     [failure, setFailure] = useState("");
   useEffect(() => {
-    if (data) setValues({ ...(data.settings || data).launcher });
-  }, [data]);
-  if (loading && !values) return <Notice>正在读取启动器设置…</Notice>;
-  if (!values) return <ErrorNotice error={error || "启动器设置读取失败"} />;
+    if (data) setValues({ ...(data.settings || data)[product] });
+  }, [data, product]);
+  if (loading && !values) return <Notice>正在读取{short}设置…</Notice>;
+  if (!values) return <ErrorNotice error={error || `${short}设置读取失败`} />;
   const set = (key: keyof Launcher, value: string) =>
     setValues({ ...values, [key]: value });
   return (
@@ -382,7 +413,7 @@ export function LauncherSettings({ onSaved }: { onSaved: () => void }) {
           await post(
             "/api/admin/settings",
             {
-              launcher: {
+              [product]: {
                 version: version || "",
                 releasedAt: releasedAt || "",
                 downloadUrl: downloadUrl || "",
@@ -393,7 +424,7 @@ export function LauncherSettings({ onSaved }: { onSaved: () => void }) {
             },
             "PUT",
           );
-          setMessage("启动器设置已保存");
+          setMessage(`${short}设置已保存`);
           reload();
           onSaved();
         } catch (err) {
@@ -404,16 +435,17 @@ export function LauncherSettings({ onSaved }: { onSaved: () => void }) {
       }}
     >
       <Notice>
-        这些信息显示在主页的「下载 MSBOOST 启动器」和控制台「MSBOOST
-        启动器」页面，访客无需登录也能看到。下载地址留空表示未发布；启动器发新版时只需改这里。
+        {product === "launcher"
+          ? "这些信息显示在主页的「下载 MSBOOST 启动器」和控制台「MSBOOST 启动器」页面，访客无需登录也能看到。下载地址留空表示未发布；启动器发新版时只需改这里。"
+          : "这些信息显示在主页的「MSBOOST 本地版」区块、控制台「MSBOOST 本地版」页面，以及部署、中转页面的提示卡，访客无需登录也能看到。下载地址留空表示未发布，以上位置都不显示；本地版发新版时只需改这里。"}
       </Notice>
       <div className="form-grid mt24">
         <Field
           label="当前版本"
           value={values.version || ""}
           maxLength={32}
-          placeholder="v1.0.2"
-          hint="例如 v1.0.2；只能用字母、数字和 . - +"
+          placeholder={product === "launcher" ? "v1.0.2" : "v1.0.0"}
+          hint={`例如 ${product === "launcher" ? "v1.0.2" : "v1.0.0"}；只能用字母、数字和 . - +`}
           onChange={(e) => set("version", e.target.value)}
         />
         <Field
@@ -462,7 +494,12 @@ export function LauncherSettings({ onSaved }: { onSaved: () => void }) {
             ? `最后保存：${date(values.updatedAt)}`
             : "还没有保存过"}
         </span>
-        <a className="btn" href="/home#launcher" target="_blank" rel="noopener">
+        <a
+          className="btn"
+          href={`/home#${section}`}
+          target="_blank"
+          rel="noopener"
+        >
           <Eye size={15} />
           查看主页下载区
         </a>

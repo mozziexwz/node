@@ -77,6 +77,8 @@ test(
               route.request().method() === "GET"
             )
               return route.fulfill({ json: { tasks: [] } });
+            if (url.pathname === "/api/public/launcher")
+              return route.fulfill({ json: { launcher: {}, localApp: {} } });
             writes.push(url.pathname);
             if (url.pathname === "/api/fingerprints") {
               if (mode === "fingerprint-502")

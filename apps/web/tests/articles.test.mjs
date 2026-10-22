@@ -47,6 +47,8 @@ async function articleBrowser(run, { admin = true } = {}) {
       });
     if (url.pathname === "/api/tickets" && route.request().method() === "GET")
       return route.fulfill({ json: { tickets: [], unreadCount: 0 } });
+    if (url.pathname === "/api/public/launcher")
+      return route.fulfill({ json: { launcher: {}, localApp: {} } });
     if (await handler(route, url.pathname)) return;
     unexpected.push(route.request().method() + " " + url.pathname);
     return route.fulfill({
