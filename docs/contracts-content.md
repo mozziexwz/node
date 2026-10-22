@@ -34,8 +34,8 @@ Article 字段：`id,title,category,summary,body,published,public,pinned,sort,cr
 
 公开接口不需要登录、不读取会话，也不经过整站备份闸门；数据来自 15 秒内存快照，文章、设置或备份恢复成功后立即失效。每个来源（IPv6 按 /64 归并）每分钟最多 300 次，超出返回 429。
 
-- `GET /api/public/home` → `{home:HomeConfig,site,newsEnabled,articles:Summary[],launcher:Launcher}`。`articles` 为最新的 `home.latestCount` 篇；`home.showLatest` 为 `false` 或文章区关闭时为空数组。`launcher` 见下文「MSBOOST 启动器下载」。
-- `GET /api/public/launcher` → `{launcher:Launcher}`。控制台「MSBOOST 启动器」页面使用，与主页读取同一快照。
+- `GET /api/public/home` → `{home:HomeConfig,site,newsEnabled,articles:Summary[],launcher:Launcher,localApp:Launcher}`。`articles` 为最新的 `home.latestCount` 篇；`home.showLatest` 为 `false` 或文章区关闭时为空数组。`launcher`、`localApp` 见下文「MSBOOST 启动器下载」「MSBOOST 本地版下载」。
+- `GET /api/public/launcher` → `{launcher:Launcher,localApp:Launcher}`。控制台「MSBOOST 启动器」「MSBOOST 本地版」页面、部署和中转页面的本地版提示卡、使用指南使用，与主页读取同一快照。
 - `GET /api/public/articles` → `{enabled,site,contactEmail,articles:Summary[]}`。按「固定在前、手动排序、新文章在前」排列；文章区关闭时 `enabled:false`、`articles:[]`。
 - `GET /api/public/articles/{id}` → `{article,attachmentsEnabled,site,contactEmail}`；不可见时 404。
 
@@ -55,7 +55,7 @@ HomeConfig：
 | `subtitle` | ≤300 字，可换行 |
 | `points` | 最多 4 项，每项 ≤20 字 |
 | `primaryCta` / `secondaryCta` | `{text≤12,href}`；文字为空时不显示按钮，有文字时必须有链接 |
-| `features` | 最多 6 项 `{title≤20,desc≤60,target?}`。`target` 为 `#msboost`、`#relay`、`#launcher` 时点击卡片滚动到主页对应区块（区块关闭时卡片不可点），也可以是站内路径或 `https://` 链接 |
+| `features` | 最多 6 项 `{title≤20,desc≤60,target?}`。`target` 为 `#msboost`、`#relay`、`#launcher`、`#local` 时点击卡片滚动到主页对应区块（区块关闭或本地版未发布时卡片不可点），也可以是站内路径或 `https://` 链接 |
 | `showExplain` | 是否显示「什么是 MSBOOST？」「什么是中转服务器？」两段说明 |
 | `showLauncher` | 是否显示启动器下载区 |
 | `msboost` | `{eyebrow≤20,title≤30,lead≤300,nodes,points}`：`title` 必填，`lead` 可换行；`nodes` 为示意图的正好 3 格，`points` 为 1–3 条要点 |
@@ -88,6 +88,12 @@ SEOConfig：`siteName`（必填 ≤40）、`homeTitle`、`newsTitle`（必填 �
 | `updatedAt` | 最后保存时间，由服务端写入 |
 
 填写 `downloadUrl` 时必须同时填写 `version` 和 `releasedAt`。读取时再次校验，不合规的存量值回落为未发布。未发布时主页和控制台显示「启动器下载地址尚未发布」，管理员可从控制台直接进入设置页。
+
+## MSBOOST 本地版下载
+
+MSBOOST 本地版是在用户自己电脑上通过 SSH 部署节点和中转的 Windows 程序，SSH 不经过本站。下载信息保存在系统设置的 `localApp` 键，管理员提交 `{localApp:{...}}` 修改；字段、校验、审计和快照失效与启动器完全相同。
+
+只有 `downloadUrl` 非空（已发布）时，网站才显示本地版的入口：主页「什么是 MSBOOST？」的「不想填 SSH？用本地版」按钮和 `#local` 区块、会员菜单「MSBOOST 本地版」、部署 MSBOOST 和配置中转服务器（自备中转、生成中转码）页面的提示卡、使用指南第 2 步的提示和按钮。未发布时这些入口全部隐藏；管理员菜单始终保留该页面，未发布时显示「本地版下载地址尚未发布」并可进入设置页。网站看不到本地版的部署，使用指南进度不受影响。
 
 ## 文章显示规则
 

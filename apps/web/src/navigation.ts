@@ -7,6 +7,7 @@ export const openArticleKey = "msboost-open-article";
 // Homepage links such as /#deploy open these after signing in.
 export const freeTools = [
   "launcher",
+  "local",
   "deploy",
   "relay",
   "codes",
@@ -15,13 +16,18 @@ export const freeTools = [
 ];
 
 // Keep free deployment tools above paid services for every account type.
+// Members see MSBOOST Local only once its download is published.
 export function navigationGroups(
   admin: boolean,
   subscribed: boolean,
+  localApp: boolean,
 ): NavigationGroup[] {
   return [
     { title: "开始使用", items: ["tutorials", "home"] },
-    { title: "免费部署工具", items: [...freeTools] },
+    {
+      title: "免费部署工具",
+      items: freeTools.filter((k) => k !== "local" || admin || localApp),
+    },
     {
       title: admin ? "捐赠权益管理" : "捐赠权益",
       items: admin

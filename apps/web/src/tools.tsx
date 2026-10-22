@@ -28,6 +28,7 @@ import {
   Empty,
 } from "./ui";
 import { SelfTest } from "./relay-verify";
+import { LocalHint } from "./local-app";
 export type SSH = {
   host: string;
   port: number;
@@ -1315,6 +1316,9 @@ export function ToolPage({
             <ToolForm kind={kind} user={user} settings={settings} />
           </div>
           <aside className="stack" style={{ alignContent: "start" }}>
+            {kind === "deploy" && (
+              <LocalHint kind="deploy" onNavigate={onNavigate} />
+            )}
             {kind === "dd" && (
               <div className="card">
                 <h3>密钥登录说明</h3>

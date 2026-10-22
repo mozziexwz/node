@@ -96,6 +96,50 @@ func TestLauncherIsPublicAndOnlyAdminsChangeIt(t *testing.T) {
 	}
 }
 
+func TestLocalAppIsPublishedSeparately(t *testing.T) {
+	a, mux, h, admin, member := publicFixture(t)
+	a.RegisterIdentity(mux)
+	var public struct {
+		Launcher LauncherSettings `json:"launcher"`
+		LocalApp LauncherSettings `json:"localApp"`
+	}
+	if w := publicGet(t, h, "/api/public/launcher"); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &public) != nil || public.LocalApp.DownloadURL != "" {
+		t.Fatalf("unpublished local app: %d %s", w.Code, w.Body.String())
+	}
+	local := map[string]any{"version": "v1.0.0", "releasedAt": "2026-11-05", "downloadUrl": "https://file.msboost.de/#/?code=Local", "sha256": strings.Repeat("1a", 32)}
+	if w := contentCall(t, mux, member, "PUT", "/api/admin/settings", map[string]any{"localApp": local}); w.Code != 403 {
+		t.Fatalf("member changed the local app: %d", w.Code)
+	}
+	if w := contentCall(t, mux, admin, "PUT", "/api/admin/settings", map[string]any{"localApp": "v1"}); w.Code != 400 || !strings.Contains(w.Body.String(), "本地版设置格式无效") {
+		t.Fatalf("malformed local app: %d %s", w.Code, w.Body.String())
+	}
+	bad := map[string]any{"version": "v1.0.0", "releasedAt": "2026-11-05", "downloadUrl": "javascript:alert(1)"}
+	if w := contentCall(t, mux, admin, "PUT", "/api/admin/settings", map[string]any{"localApp": bad}); w.Code != 400 {
+		t.Fatalf("javascript download accepted: %d %s", w.Code, w.Body.String())
+	}
+	w := contentCall(t, mux, admin, "PUT", "/api/admin/settings", map[string]any{"localApp": local})
+	var saved struct {
+		Launcher LauncherSettings `json:"launcher"`
+		LocalApp LauncherSettings `json:"localApp"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &saved) != nil || saved.LocalApp.Version != "v1.0.0" || saved.LocalApp.UpdatedAt == 0 || saved.Launcher.DownloadURL != "" {
+		t.Fatalf("save local app: %d %s", w.Code, w.Body.String())
+	}
+	if w := publicGet(t, h, "/api/public/launcher"); json.Unmarshal(w.Body.Bytes(), &public) != nil || public.LocalApp.DownloadURL != "https://file.msboost.de/#/?code=Local" || public.Launcher.DownloadURL != "" {
+		t.Fatalf("published local app not served: %s", w.Body.String())
+	}
+	if w := publicGet(t, h, "/api/public/home"); !strings.Contains(w.Body.String(), `"localApp":{"version":"v1.0.0"`) {
+		t.Fatalf("homepage misses the local app: %s", w.Body.String())
+	}
+	// Feature cards may scroll to the local app section.
+	home := defaultHomeConfig()
+	home.Features = append([]HomeFeature{}, home.Features...)
+	home.Features[2].Target = "#local"
+	if w := contentCall(t, mux, admin, "PUT", "/api/admin/site", map[string]any{"home": home}); w.Code != 200 {
+		t.Fatalf("#local card target refused: %s", w.Body.String())
+	}
+}
+
 func TestHomeCardTargetsAndExplanations(t *testing.T) {
 	_, mux, h, admin, _ := publicFixture(t)
 	var home struct {

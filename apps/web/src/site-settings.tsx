@@ -238,7 +238,7 @@ export function SiteSettings({ onSaved }: { onSaved: () => void }) {
           label="功能卡片"
           rows={4}
           value={features}
-          hint="每行一张，格式「标题 | 说明 | 点击后跳到」，最多 6 张。第三段可选：#msboost（MSBOOST 说明）、#relay（中转服务器说明）、#launcher（启动器下载），或以 / 开头的站内路径、https:// 链接；不填则卡片不可点击"
+          hint="每行一张，格式「标题 | 说明 | 点击后跳到」，最多 6 张。第三段可选：#msboost（MSBOOST 说明）、#relay（中转服务器说明）、#launcher（启动器下载）、#local（本地版下载，发布后才可点击），或以 / 开头的站内路径、https:// 链接；不填则卡片不可点击"
           onChange={(e) => setFeatures(e.target.value)}
         />
         <Field

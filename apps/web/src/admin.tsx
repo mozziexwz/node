@@ -1374,6 +1374,7 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           ["relayCodes", "中转码"],
           ["relayVerify", "中转校验"],
           ["launcher", "MSBOOST 启动器"],
+          ["localApp", "MSBOOST 本地版"],
         ].map(([k, t]) => (
           <button
             className={tab === k ? "active" : ""}
@@ -1394,6 +1395,8 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           <RelayCodeSettings onSaved={onRefresh} />
         ) : tab === "launcher" ? (
           <LauncherSettings onSaved={onRefresh} />
+        ) : tab === "localApp" ? (
+          <LauncherSettings product="localApp" onSaved={onRefresh} />
         ) : tab === "relayVerify" ? (
           <RelayVerifySettings onSaved={onRefresh} />
         ) : tab === "captcha" ? (
