@@ -214,9 +214,18 @@ test("a shared /home#relay link opens at its section and a published launcher of
   await publicBrowser(
     async ({ page }) => {
       await page.goto("/home#relay");
+      // The section opens right under the header and the table of contents.
       await expect
-        .poll(() => page.evaluate(() => Math.round(document.getElementById("relay")?.getBoundingClientRect().top ?? 9999)))
-        .toBeLessThan(140);
+        .poll(() =>
+          page.evaluate(() => {
+            const section = document.getElementById("relay"),
+              header = document.querySelector(".public-header"),
+              bar = document.querySelector(".hp-secnav");
+            if (!section || !header || !bar) return 9999;
+            return Math.abs(Math.round(section.getBoundingClientRect().top - header.getBoundingClientRect().bottom - bar.offsetHeight));
+          }),
+        )
+        .toBeLessThan(3);
       const section = page.locator("#launcher");
       const download = section.getByRole("link", { name: "下载 v1.0.2" });
       await expect(download).toHaveAttribute("href", published.downloadUrl);

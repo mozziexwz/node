@@ -4,8 +4,11 @@
   top: 0;
   z-index: 20;
   gap: 16px;
-  background: rgba(255, 255, 255, 0.94);
-  backdrop-filter: saturate(1.4) blur(8px);
+  /* White across the whole window, so full-width section bands never show
+     beside it. */
+  background: #fff;
+  box-shadow: 0 0 0 100vmax #fff;
+  clip-path: inset(0 -100vmax);
 }
 .public-brand {
   min-width: 0;
@@ -576,5 +579,319 @@
   }
   .explain-lead {
     font-size: 14px;
+  }
+}
+/* Homepage sections (root .hp): each is numbered and they alternate between
+   white and a warm band; a table of contents follows the reader, a section
+   marks its heading when a link lands on it, and content fades in as it
+   scrolls into view. --hp-head is the header's height, set by the page. */
+.hp {
+  --hp-band: #faf7f3;
+  --hp-nav: 50px;
+}
+.hp .public-tools {
+  border-top: 0;
+  padding: 6px 0 60px;
+}
+.hp .home-explain {
+  padding: 80px 0 74px;
+  border-top: 0;
+  scroll-margin-top: calc(var(--hp-head, 98px) + var(--hp-nav));
+}
+.hp .public-latest {
+  padding: 70px 0 76px;
+  border-top: 0;
+  scroll-margin-top: calc(var(--hp-head, 98px) + var(--hp-nav));
+}
+.hp .home-explain + .public-latest {
+  margin-top: 0;
+}
+.hp .hp-band {
+  background: var(--hp-band);
+  box-shadow: 0 0 0 100vmax var(--hp-band);
+  clip-path: inset(0 -100vmax);
+}
+.hp .explain-head {
+  margin-bottom: 16px;
+}
+.hp .explain-head .eyebrow {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.hp .explain-head h2 {
+  font-size: 30px;
+}
+.hp .explain-head h2,
+.hp .public-latest h2 {
+  display: inline-block;
+  padding-bottom: 4px;
+  background: linear-gradient(var(--orange), var(--orange)) no-repeat left
+    bottom / 0 3px;
+}
+.hp .route-map {
+  margin-top: 28px;
+}
+.hp .explain-points {
+  margin-top: 16px;
+}
+.hp .explain-actions {
+  margin: 30px 0 0;
+}
+.hp .home-launcher .launcher-steps {
+  margin-top: 14px;
+}
+.hp .home-launcher .tip-list {
+  margin: 14px 0 0;
+}
+.hp-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 20px;
+  padding: 0 8px;
+  margin-right: 9px;
+  border-radius: 999px;
+  background: var(--orange);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+}
+.hp-sub {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 34px 0 0;
+  font-size: 14px;
+  color: #5f5a54;
+}
+.hp-sub::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.hp-card-num {
+  position: absolute;
+  top: 12px;
+  right: 15px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  color: #d6ccc2;
+  transition: color 0.16s;
+}
+.hp .tool-card.is-link:hover .hp-card-num {
+  color: var(--orange);
+}
+/* The table of contents takes no room: a sticky, zero-height holder under the
+   header with the bar inside it, shown once the hero has scrolled away. */
+.hp-secnav-wrap {
+  position: sticky;
+  top: var(--hp-head, 98px);
+  z-index: 19;
+  height: 0;
+}
+.hp-secnav {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: var(--hp-nav);
+  background: #fff;
+  box-shadow:
+    0 0 0 100vmax #fff,
+    0 1px 0 100vmax var(--line);
+  clip-path: inset(0 -100vmax -1px);
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+  transition:
+    opacity 0.25s,
+    transform 0.25s;
+}
+.hp-secnav.show {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.hp-secnav-links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.hp-secnav-links::-webkit-scrollbar {
+  display: none;
+}
+.hp-secnav-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 13px;
+  border-radius: 999px;
+  color: var(--sub);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    background 0.2s,
+    color 0.2s;
+}
+.hp-secnav-links a b {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  color: #c4bbb1;
+  transition: color 0.2s;
+}
+.hp-secnav-links a:hover {
+  color: var(--ink);
+  background: var(--soft);
+}
+.hp-secnav-links a.on {
+  background: var(--pale);
+  color: var(--orange-dark);
+}
+.hp-secnav-links a.on b {
+  color: var(--orange);
+}
+.hp-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--orange);
+}
+.hp-top {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--orange-dark);
+  box-shadow: 0 10px 26px rgba(45, 32, 18, 0.12);
+  opacity: 0;
+  transform: translateY(12px);
+  pointer-events: none;
+  transition:
+    opacity 0.2s,
+    transform 0.2s;
+}
+.hp-top.show {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.hp-top:hover {
+  border-color: #efb898;
+}
+.hp [data-reveal] {
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 0.6s ease,
+    transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transition-delay: var(--d, 0ms);
+}
+.hp [data-reveal][data-in] {
+  opacity: 1;
+  transform: none;
+}
+.hp .route-arrow {
+  color: #e7ad8b;
+}
+/* The arrows of a diagram pulse in turn, in the direction traffic flows. */
+.hp .route-row[data-in] .route-arrow svg {
+  animation: hp-flow 1.8s ease-in-out infinite;
+}
+.hp .route-flow > .route-arrow:nth-child(4) svg {
+  animation-delay: 0.3s;
+}
+.hp .route-flow > .route-arrow:nth-child(6) svg {
+  animation-delay: 0.6s;
+}
+.hp [data-landed] .explain-head h2,
+.hp .public-latest[data-landed] h2 {
+  animation: hp-line 1.5s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+}
+.hp [data-landed] .hp-num {
+  animation: hp-ping 1s ease-out 2;
+}
+@keyframes hp-flow {
+  0%,
+  100% {
+    transform: translateX(-3px);
+    opacity: 0.45;
+  }
+  50% {
+    transform: translateX(3px);
+    opacity: 1;
+  }
+}
+@keyframes hp-line {
+  0% {
+    background-size: 0 3px;
+  }
+  35%,
+  75% {
+    background-size: 100% 3px;
+  }
+  100% {
+    background-size: 100% 0;
+  }
+}
+@keyframes hp-ping {
+  from {
+    box-shadow: 0 0 0 0 rgba(231, 101, 39, 0.5);
+  }
+  to {
+    box-shadow: 0 0 0 12px rgba(231, 101, 39, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hp [data-reveal] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .hp * {
+    animation: none !important;
+  }
+}
+@media (max-width: 760px) {
+  .hp {
+    --hp-nav: 46px;
+  }
+  .hp .home-explain {
+    padding: 56px 0 52px;
+  }
+  .hp .public-latest {
+    padding: 52px 0 56px;
+  }
+  .hp .explain-head h2 {
+    font-size: 23px;
+  }
+  .hp-secnav-links a {
+    padding: 0 11px;
+    font-size: 12.5px;
+  }
+  .hp-top {
+    right: 16px;
+    bottom: 16px;
   }
 }

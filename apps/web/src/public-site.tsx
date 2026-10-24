@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
   BookOpen,
   Check as CheckIcon,
   CircleCheck,
@@ -185,7 +186,20 @@ export default function PublicSite() {
 }
 
 // Card targets that scroll to a section of this page.
-const homeSections = new Set(["msboost", "relay", "launcher", "local"]);
+const homeSections = new Set([
+  "msboost",
+  "relay",
+  "launcher",
+  "local",
+  "latest",
+]);
+// The explanation sections in page order, with their table-of-contents labels.
+const sectionLabels: [string, string][] = [
+  ["msboost", "什么是 MSBOOST"],
+  ["relay", "中转服务器"],
+  ["launcher", "启动器"],
+  ["local", "本地版"],
+];
 const sectionIcons: Record<string, typeof Server> = {
   "#msboost": Server,
   "#relay": Route,
@@ -207,17 +221,175 @@ const jumpLabels: Record<string, string> = {
   "#local": "了解 MSBOOST 本地版",
 };
 
-// Sections declare a scroll margin for the sticky header; the address keeps
-// the anchor so a shared link opens at the same place.
+const stillMotion = () =>
+  matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Sections declare a scroll margin for the sticky header and the table of
+// contents; the address keeps the anchor so a shared link opens at the same
+// place. Once the scroll ends, the section briefly marks its heading.
 function scrollToSection(id: string, event?: React.MouseEvent) {
   const section = document.getElementById(id);
   if (!section) return;
   event?.preventDefault();
-  section.scrollIntoView({ behavior: "smooth", block: "start" });
+  section.scrollIntoView({
+    behavior: stillMotion() ? "auto" : "smooth",
+    block: "start",
+  });
   history.replaceState(
     history.state,
     "",
     `${location.pathname}${location.search}#${id}`,
+  );
+  let landed = false;
+  const land = () => {
+    if (landed) return;
+    landed = true;
+    delete section.dataset.landed;
+    void section.offsetWidth;
+    section.dataset.landed = "";
+    setTimeout(() => delete section.dataset.landed, 2200);
+  };
+  addEventListener("scrollend", land, { once: true });
+  setTimeout(land, 900);
+}
+
+// Content fades in as it scrolls into view, groups one item after another.
+// The marks are data attributes, which React leaves alone on re-render.
+// Cards that move on hover are left out: their hover would turn sluggish.
+const revealGroups =
+  ".explain-points,.launcher-steps,.myth,.route-map,.tip-list";
+const revealItems =
+  ".explain-head,.explain-lead,.route-row,.myth-card,.explain-point,.explain-actions,.home-launcher .mt16,.notes-details,.hp-sub,.launcher-step,.tip-list li,.public-latest .between";
+function useReveal(root: React.RefObject<HTMLElement | null>, ready: boolean) {
+  useEffect(() => {
+    const page = root.current;
+    if (!ready || !page || !("IntersectionObserver" in window) || stillMotion())
+      return;
+    page
+      .querySelectorAll(revealGroups)
+      .forEach((group) =>
+        Array.from(group.children).forEach((child, i) =>
+          (child as HTMLElement).style.setProperty("--d", `${i * 90}ms`),
+        ),
+      );
+    const seen = new IntersectionObserver(
+      (entries) =>
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          (entry.target as HTMLElement).dataset.in = "";
+          seen.unobserve(entry.target);
+        }),
+      { rootMargin: "0px 0px -8% 0px", threshold: 0.12 },
+    );
+    page.querySelectorAll<HTMLElement>(revealItems).forEach((item) => {
+      item.dataset.reveal = "";
+      seen.observe(item);
+    });
+    return () => seen.disconnect();
+  }, [root, ready]);
+}
+
+type NavItem = { id: string; label: string; number?: string };
+
+// The page's table of contents: it appears once the hero has scrolled away,
+// marks the section being read and shows how far down the page the reader is.
+function HomeNav({ items }: { items: NavItem[] }) {
+  const bar = useRef<HTMLDivElement>(null),
+    strip = useRef<HTMLElement>(null),
+    progress = useRef<HTMLElement>(null);
+  const [active, setActive] = useState(-1),
+    [shown, setShown] = useState(false),
+    [top, setTop] = useState(false);
+  useEffect(() => {
+    let ticking = false,
+      measured = -1;
+    const root = document.documentElement.style;
+    const update = () => {
+      ticking = false;
+      const header = document.querySelector<HTMLElement>(".public-header"),
+        head = header?.offsetHeight || 0;
+      // Section scroll margins and the bar's position follow the header.
+      if (head !== measured) {
+        measured = head;
+        root.setProperty("--hp-head", `${head}px`);
+      }
+      const hero = document.querySelector(".public-hero");
+      setShown(!!hero && hero.getBoundingClientRect().bottom < head + 8);
+      const line = head + (bar.current?.offsetHeight || 0) + 80;
+      let current = -1;
+      items.forEach((item, i) => {
+        const section = document.getElementById(item.id);
+        if (section && section.getBoundingClientRect().top <= line) current = i;
+      });
+      const max = document.documentElement.scrollHeight - innerHeight;
+      if (max > 0 && scrollY >= max - 4) current = items.length - 1;
+      setActive(current);
+      progress.current?.style.setProperty(
+        "width",
+        `${max > 0 ? Math.min(100, (scrollY / max) * 100) : 0}%`,
+      );
+      setTop(scrollY > 700);
+    };
+    const schedule = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(update);
+    };
+    addEventListener("scroll", schedule, { passive: true });
+    addEventListener("resize", schedule);
+    update();
+    return () => {
+      removeEventListener("scroll", schedule);
+      removeEventListener("resize", schedule);
+      root.removeProperty("--hp-head");
+    };
+  }, [items]);
+  // On a phone the links scroll sideways; keep the current one in view.
+  useEffect(() => {
+    const link = strip.current?.children[active] as HTMLElement | undefined;
+    if (link)
+      strip.current?.scrollTo({
+        left: link.offsetLeft - 16,
+        behavior: stillMotion() ? "auto" : "smooth",
+      });
+  }, [active]);
+  return (
+    <>
+      <div className="hp-secnav-wrap">
+        <div
+          className={`hp-secnav ${shown ? "show" : ""}`}
+          ref={bar}
+          inert={!shown}
+        >
+          <nav className="hp-secnav-links" aria-label="本页目录" ref={strip}>
+            {items.map((item, i) => (
+              <a
+                key={item.id}
+                href={`#${item.id}`}
+                className={i === active ? "on" : ""}
+                aria-current={i === active ? "true" : undefined}
+                onClick={(event) => scrollToSection(item.id, event)}
+              >
+                {item.number && <b>{item.number}</b>}
+                {item.label}
+              </a>
+            ))}
+          </nav>
+          <i className="hp-progress" ref={progress} />
+        </div>
+      </div>
+      <button
+        type="button"
+        className={`hp-top ${top ? "show" : ""}`}
+        aria-label="回到顶部"
+        inert={!top}
+        onClick={() =>
+          scrollTo({ top: 0, behavior: stillMotion() ? "auto" : "smooth" })
+        }
+      >
+        <ArrowUp size={18} aria-hidden="true" />
+      </button>
+    </>
   );
 }
 
@@ -279,14 +451,18 @@ function RouteFlow({
   );
 }
 
+// number is the section's place on the page, also shown on its feature card
+// and in the table of contents.
 function ExplainHead({
   icon: Icon,
   eyebrow,
   title,
+  number,
 }: {
   icon: typeof Server;
   eyebrow?: string;
   title: string;
+  number?: string;
 }) {
   return (
     <div className="explain-head">
@@ -294,12 +470,24 @@ function ExplainHead({
         <Icon size={22} aria-hidden="true" />
       </span>
       <div>
-        {eyebrow && <div className="eyebrow">{eyebrow}</div>}
+        {(eyebrow || number) && (
+          <div className="eyebrow">
+            {number && <span className="hp-num">{number}</span>}
+            {eyebrow}
+          </div>
+        )}
         <h2>{title}</h2>
       </div>
     </div>
   );
 }
+
+// Explanation sections alternate between white and a warm band.
+type Place = { number?: string; band: boolean };
+const sectionClass = (place: Place, extra = "") =>
+  `home-explain ${extra} ${place.band ? "hp-band" : ""}`
+    .replace(/\s+/g, " ")
+    .trim();
 
 function ExplainPoints({
   points,
@@ -328,17 +516,20 @@ function MSBOOSTSection({
   msboost,
   launcher,
   local,
+  place,
 }: {
   msboost: RecordData;
   launcher: boolean;
   local: boolean;
+  place: Place;
 }) {
   return (
-    <section className="home-explain" id="msboost">
+    <section className={sectionClass(place)} id="msboost">
       <ExplainHead
         icon={Server}
         eyebrow={msboost.eyebrow}
         title={msboost.title}
+        number={place.number}
       />
       {msboost.lead && <p className="explain-lead">{rich(msboost.lead)}</p>}
       <div className="route-map">
@@ -382,10 +573,15 @@ function MSBOOSTSection({
   );
 }
 
-function RelaySection({ relay }: { relay: RecordData }) {
+function RelaySection({ relay, place }: { relay: RecordData; place: Place }) {
   return (
-    <section className="home-explain" id="relay">
-      <ExplainHead icon={Route} eyebrow={relay.eyebrow} title={relay.title} />
+    <section className={sectionClass(place)} id="relay">
+      <ExplainHead
+        icon={Route}
+        eyebrow={relay.eyebrow}
+        title={relay.title}
+        number={place.number}
+      />
       {relay.lead && <p className="explain-lead">{rich(relay.lead)}</p>}
       <div className="route-map">
         <RouteFlow
@@ -435,13 +631,20 @@ function RelaySection({ relay }: { relay: RecordData }) {
   );
 }
 
-function LauncherSection({ launcher }: { launcher?: Launcher }) {
+function LauncherSection({
+  launcher,
+  place,
+}: {
+  launcher?: Launcher;
+  place: Place;
+}) {
   return (
-    <section className="home-explain home-launcher" id="launcher">
+    <section className={sectionClass(place, "home-launcher")} id="launcher">
       <ExplainHead
         icon={MonitorDown}
         eyebrow="MSBOOST 启动器"
         title="下载 MSBOOST 启动器"
+        number={place.number}
       />
       <p className="explain-lead">
         导入部署或中转得到的配置文件，一键加速
@@ -456,7 +659,9 @@ function LauncherSection({ launcher }: { launcher?: Launcher }) {
           <LauncherNotes launcher={launcher} />
         </details>
       )}
+      <h3 className="hp-sub">三步开始使用</h3>
       <LauncherSteps />
+      <h3 className="hp-sub">注意事项</h3>
       <LauncherTips />
     </section>
   );
@@ -464,13 +669,20 @@ function LauncherSection({ launcher }: { launcher?: Launcher }) {
 
 // Shown only once the administrator publishes a download: members who would
 // rather not give their SSH to a website can get it without an account.
-function LocalSection({ localApp }: { localApp: Launcher }) {
+function LocalSection({
+  localApp,
+  place,
+}: {
+  localApp: Launcher;
+  place: Place;
+}) {
   return (
-    <section className="home-explain home-launcher" id="local">
+    <section className={sectionClass(place, "home-launcher")} id="local">
       <ExplainHead
         icon={Laptop}
         eyebrow="MSBOOST 本地版"
         title="不想在网站填写 SSH？用本地版"
+        number={place.number}
       />
       <p className="explain-lead">
         在你自己的电脑上部署和管理 MSBOOST 节点与中转服务器。SSH 密码
@@ -503,7 +715,9 @@ function LocalSection({ localApp }: { localApp: Launcher }) {
           <LauncherNotes launcher={localApp} />
         </details>
       )}
+      <h3 className="hp-sub">三步开始使用</h3>
       <LocalAppSteps />
+      <h3 className="hp-sub">注意事项</h3>
       <LocalAppTips />
     </section>
   );
@@ -522,6 +736,7 @@ function HomePage({
 }) {
   useTitle(data?.site?.homeTitle);
   const ready = !!data;
+  const root = useRef<HTMLDivElement>(null);
   // A shared /home#relay link lands on its section once the page is built.
   useEffect(() => {
     const id = location.hash.slice(1);
@@ -530,11 +745,11 @@ function HomePage({
         document.getElementById(id)?.scrollIntoView(),
       );
   }, [ready]);
-  if (!data) return loading ? <Loading /> : <ErrorNotice error={error} />;
-  const home = data.home || {},
+  useReveal(root, ready);
+  const home = data?.home || {},
     articles = array(data, "articles"),
-    launcher: Launcher | undefined = data.launcher,
-    localApp: Launcher | undefined = data.localApp,
+    launcher: Launcher | undefined = data?.launcher,
+    localApp: Launcher | undefined = data?.localApp,
     features: RecordData[] = home.features || [],
     points: string[] = home.points || [],
     msboost: RecordData = home.msboost || {},
@@ -545,8 +760,29 @@ function HomePage({
     "#launcher": !!home.showLauncher,
     "#local": !!localApp?.downloadUrl,
   };
+  // The explanation sections shown, in page order, are numbered 01, 02 … and
+  // alternate between a warm band and white; the latest articles follow.
+  const order = sectionLabels.filter(([id]) => shown["#" + id]);
+  const places: Record<string, Place> = Object.fromEntries(
+    order.map(([id], i) => [
+      id,
+      { number: String(i + 1).padStart(2, "0"), band: i % 2 === 0 },
+    ]),
+  );
+  const latest = articles.length > 0;
+  // The table of contents changes only when the set of sections does.
+  const navKey = order.map(([id]) => id).join() + (latest ? ",latest" : "");
+  const navItems = useMemo<NavItem[]>(
+    () => [
+      ...order.map(([id, label]) => ({ id, label, number: places[id].number })),
+      ...(latest ? [{ id: "latest", label: "公告与教程" }] : []),
+    ],
+    [navKey],
+  );
+  if (!data) return loading ? <Loading /> : <ErrorNotice error={error} />;
   return (
-    <>
+    <div className="hp" ref={root}>
+      {navItems.length > 0 && <HomeNav items={navItems} />}
       {home.notice && (
         <div className="public-notice">
           <Megaphone size={16} aria-hidden="true" />
@@ -649,8 +885,10 @@ function HomePage({
                 Icon =
                   sectionIcons[target] || featureIcons[i % featureIcons.length],
                 clickable = section ? !!shown[target] : !!target,
+                number = places[section]?.number,
                 body = (
                   <>
+                    {number && <span className="hp-card-num">{number}</span>}
                     <span className="tool-icon">
                       <Icon size={22} />
                     </span>
@@ -707,13 +945,22 @@ function HomePage({
           msboost={msboost}
           launcher={shown["#launcher"]}
           local={shown["#local"]}
+          place={places.msboost}
         />
       )}
-      {shown["#relay"] && <RelaySection relay={relay} />}
-      {shown["#launcher"] && <LauncherSection launcher={launcher} />}
-      {shown["#local"] && localApp && <LocalSection localApp={localApp} />}
-      {articles.length > 0 && (
-        <section className="public-latest" aria-labelledby="latest-heading">
+      {shown["#relay"] && <RelaySection relay={relay} place={places.relay} />}
+      {shown["#launcher"] && (
+        <LauncherSection launcher={launcher} place={places.launcher} />
+      )}
+      {shown["#local"] && localApp && (
+        <LocalSection localApp={localApp} place={places.local} />
+      )}
+      {latest && (
+        <section
+          className={`public-latest ${order.length % 2 === 0 ? "hp-band" : ""}`}
+          id="latest"
+          aria-labelledby="latest-heading"
+        >
           <div className="between">
             <h2 id="latest-heading">最新公告与教程</h2>
             <PublicLink href="/news" go={go} className="public-more">
@@ -747,7 +994,7 @@ function HomePage({
           </div>
         </section>
       )}
-    </>
+    </div>
   );
 }
 
