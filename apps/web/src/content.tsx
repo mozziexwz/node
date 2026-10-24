@@ -51,6 +51,7 @@ import type {
   MarkdownEditorProps,
 } from "./markdown-editor";
 import { openArticleKey } from "./navigation";
+import { AdminNewsNotice, NewsNoticeCard } from "./news-notice";
 import "./content-extra.css";
 
 // CodeMirror is only downloaded when an administrator opens the editor. If it
@@ -249,6 +250,10 @@ export function Articles({ admin = false }: { admin?: boolean }) {
         )}
       </Header>
       <ErrorNotice error={error || message} />
+      {admin && data && (
+        <AdminNewsNotice notice={data.notice} onSaved={reload} />
+      )}
+      {!admin && data?.notice && <NewsNoticeCard notice={data.notice} />}
       {admin ? (
         <div className="card flush">
           <Table

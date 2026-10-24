@@ -6,6 +6,7 @@ import {
   CircleCheck,
   CircleHelp,
   Clock,
+  ExternalLink,
   Gamepad2,
   Laptop,
   LifeBuoy,
@@ -26,6 +27,7 @@ import { array, RecordData } from "./api";
 import { Badge, Button, ErrorNotice, Header, useData } from "./ui";
 import { openArticleKey } from "./navigation";
 import { useLocalApp } from "./local-app";
+import { launcherGuide } from "./launcher";
 
 // The member's start page. Progress comes from their own task records; the
 // website cannot tell whether the launcher was downloaded, so that step stays
@@ -577,10 +579,16 @@ export function Guide({ navigate }: { navigate: (view: string) => void }) {
                   <MonitorDown size={15} />
                   下载 MSBOOST 启动器
                 </Button>
-                <Button onClick={() => navigate("tutorials")}>
+                <a
+                  className="btn"
+                  href={launcherGuide}
+                  target="_blank"
+                  rel="noopener"
+                >
                   <BookOpen size={15} />
-                  启动器使用说明
-                </Button>
+                  启动器使用指南
+                  <ExternalLink size={13} aria-hidden="true" />
+                </a>
               </div>
             </Step>
           </div>

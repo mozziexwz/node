@@ -104,12 +104,14 @@ func (a *App) listArticles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := []Article{}
+	var notice NewsNotice
 	err := a.Store.View(func(s *State) error {
 		for _, v := range ListDocs[Article](s, "articles") {
 			if admin || v.Published {
 				out = append(out, v)
 			}
 		}
+		notice = loadNewsNotice(s)
 		return nil
 	})
 	if err != nil {
@@ -117,7 +119,12 @@ func (a *App) listArticles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sortArticles(out)
-	WriteJSON(w, 200, map[string]any{"articles": out})
+	// Administrators edit the notice here, so they also get it while it is off.
+	if admin {
+		WriteJSON(w, 200, map[string]any{"articles": out, "notice": notice})
+		return
+	}
+	WriteJSON(w, 200, map[string]any{"articles": out, "notice": notice.visibleTo(false)})
 }
 func (a *App) saveArticle(w http.ResponseWriter, r *http.Request) {
 	u, err := a.Admin(r)

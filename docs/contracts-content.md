@@ -23,12 +23,25 @@
 
 Article 字段：`id,title,category,summary,body,published,public,pinned,sort,createdAt,updatedAt,attachments`。`title` 1–240 字节，`category` ≤80 字节，`summary` ≤300 字且不含控制字符，`body` ≤512000 字节。正文按 Markdown 保存，只在浏览器经 DOMPurify 净化后渲染，显示规则见下文「文章显示规则」。
 
-- `GET /api/articles`：登录会员读取已发布文章。**未登录一律 401**，公开阅读改用下文的 `/api/public/*`。
-- `GET /api/admin/articles`：管理员读取全部文章（含草稿）。
+- `GET /api/articles`：登录会员读取已发布文章，返回 `{articles,notice}`。**未登录一律 401**，公开阅读改用下文的 `/api/public/*`。`notice` 是下文的页面公告，关闭时为 `null`。
+- `GET /api/admin/articles`：管理员读取全部文章（含草稿），返回 `{articles,notice}`；`notice` 始终返回完整的页面公告（包括已关闭的），供管理员在页面上编辑。
 - `POST /api/admin/articles`、`PUT /api/admin/articles/{id}`：管理员保存。更新时保留服务端的 `sort`、`pinned`、`createdAt` 与附件，避免旧编辑器覆盖新排序。
 - `POST /api/admin/articles/{id}/visibility`：管理员只修改 `{published?,public?}`，至少提供一项，返回 `{articles}`。列表上的「发布 / 取消发布 / 公开 / 取消公开」使用此接口，不会把旧标题或正文写回。
 - `POST /api/admin/articles/{id}/move`、`/pin`、`DELETE /api/admin/articles/{id}`、附件上传与删除：见控制台既有行为，成功后公开内容立即刷新。
 - `GET /api/articles/{article}/attachments/{id}`：管理员可下载任意附件；会员需要「文章附件下载」开启且文章已发布；访客还需要文章满足上文三个公开条件。下载始终是 `application/octet-stream` 附件。
+
+页面公告显示在「公告/教程」最上面，保存在系统设置的 `newsNotice` 键，管理员在该页点「编辑公告」，通过 `PUT /api/admin/settings` 提交 `{newsNotice:{...}}`，写入设置审计，公开快照随即失效。
+
+| 字段 | 规则 |
+|---|---|
+| `enabled` | 是否显示；关闭时保留文字，会员和访客都看不到 |
+| `title` | ≤40 字，不能换行 |
+| `body` | ≤600 字 Markdown，可换行；显示规则同文章正文 |
+| `linkText` / `linkHref` | 可选按钮，≤12 字 / 站内路径或 `https://`，两项要一起填写 |
+| `public` | 同时显示在公开文章页 `/news` |
+| `updatedAt` | 最后保存时间，由服务端写入 |
+
+开启时 `title` 和 `body` 至少填一项。读取时再次校验，不合规的存量值回落为关闭。
 
 ## 公开接口
 
@@ -36,7 +49,7 @@ Article 字段：`id,title,category,summary,body,published,public,pinned,sort,cr
 
 - `GET /api/public/home` → `{home:HomeConfig,site,newsEnabled,articles:Summary[],launcher:Launcher,localApp:Launcher}`。`articles` 为最新的 `home.latestCount` 篇；`home.showLatest` 为 `false` 或文章区关闭时为空数组。`launcher`、`localApp` 见下文「MSBOOST 启动器下载」「MSBOOST 本地版下载」。
 - `GET /api/public/launcher` → `{launcher:Launcher,localApp:Launcher}`。控制台「MSBOOST 启动器」「MSBOOST 本地版」页面、部署和中转页面的本地版提示卡、使用指南使用，与主页读取同一快照。
-- `GET /api/public/articles` → `{enabled,site,contactEmail,articles:Summary[]}`。按「固定在前、手动排序、新文章在前」排列；文章区关闭时 `enabled:false`、`articles:[]`。
+- `GET /api/public/articles` → `{enabled,site,contactEmail,articles:Summary[],notice}`。按「固定在前、手动排序、新文章在前」排列；文章区关闭时 `enabled:false`、`articles:[]`。`notice` 是页面公告，只在开启且勾选 `public` 时返回，否则为 `null`。
 - `GET /api/public/articles/{id}` → `{article,attachmentsEnabled,site,contactEmail}`；不可见时 404。
 
 `site` 为 `{siteName,homeTitle,newsTitle}`。Summary 字段：`id,title,category,summary,pinned,createdAt,updatedAt,attachmentCount`；未填写摘要时由正文去除 Markdown 标记后截取前 120 字。详情 `article` 另含 `body,attachments`。
@@ -94,6 +107,10 @@ SEOConfig：`siteName`（必填 ≤40）、`homeTitle`、`newsTitle`（必填 �
 MSBOOST 本地版是在用户自己电脑上通过 SSH 部署节点和中转的 Windows 程序，SSH 不经过本站。下载信息保存在系统设置的 `localApp` 键，管理员提交 `{localApp:{...}}` 修改；字段、校验、审计和快照失效与启动器完全相同。
 
 只有 `downloadUrl` 非空（已发布）时，网站才显示本地版的入口：主页「什么是 MSBOOST？」的「不想填 SSH？用本地版」按钮和 `#local` 区块、会员菜单「MSBOOST 本地版」、部署 MSBOOST 和配置中转服务器（自备中转、生成中转码）页面的提示卡、使用指南第 2 步的提示和按钮。未发布时这些入口全部隐藏；管理员菜单始终保留该页面，未发布时显示「本地版下载地址尚未发布」并可进入设置页。网站看不到本地版的部署，使用指南进度不受影响。
+
+## 启动器和本地版的使用指南
+
+两份使用指南作为静态页面随网站发布：`/guides/launcher.html`、`/guides/local.html`，访客不用登录也能打开。源文件在两个程序各自仓库的 `docs/guide/`；复制到 `apps/web/public/guides/` 时，两份指南末尾相同的脚本（目录高亮、点击放大截图）改为引用共用的 `guides/guide.js`，因为网站的 Content-Security-Policy 只允许同源脚本文件，测试会拒绝内联脚本和内联事件属性。入口只在下载卡上：启动器、本地版下载按钮旁的「使用指南」（控制台页面和主页区块共用这个组件），另外使用指南第 4 步的「启动器使用指南」直接打开启动器的指南；都在新窗口打开。
 
 ## 文章显示规则
 

@@ -44,6 +44,7 @@ import {
   LauncherTips,
 } from "./launcher";
 import { LocalAppSteps, LocalAppTips } from "./local-app";
+import { NewsNoticeCard } from "./news-notice";
 import { Agreements } from "./agreements";
 import { SiteSwitcher } from "./site-switcher";
 import "./public-site.css";
@@ -796,6 +797,7 @@ function NewsList({
   else
     body = (
       <>
+        {data.notice && <NewsNoticeCard notice={data.notice} onLink={go} />}
         {categories.length > 0 && (
           <div className="news-filters" role="group" aria-label="分类筛选">
             {["", ...categories].map((c) => (

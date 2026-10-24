@@ -549,6 +549,7 @@ type publicSnapshot struct {
 	seo                SEOConfig
 	launcher           LauncherSettings
 	localApp           LauncherSettings
+	newsNotice         NewsNotice
 	newsEnabled        bool
 	attachmentsEnabled bool
 	articles           []publicArticleSummary
@@ -579,6 +580,7 @@ func (a *App) publicSnapshot() (*publicSnapshot, error) {
 		snap.seo = loadSEOConfig(s)
 		snap.launcher = loadLauncherSettings(s)
 		snap.localApp = loadLocalAppSettings(s)
+		snap.newsNotice = loadNewsNotice(s)
 		snap.newsEnabled = boolSetting(s, "publicArticles")
 		snap.attachmentsEnabled = boolSetting(s, "attachments")
 		if !snap.newsEnabled {
@@ -681,7 +683,7 @@ func (a *App) publicArticles(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"enabled": snap.newsEnabled, "site": snap.site(), "contactEmail": snap.home.ContactEmail, "articles": snap.articles})
+	WriteJSON(w, 200, map[string]any{"enabled": snap.newsEnabled, "site": snap.site(), "contactEmail": snap.home.ContactEmail, "articles": snap.articles, "notice": snap.newsNotice.visibleTo(true)})
 }
 
 func (a *App) publicArticle(w http.ResponseWriter, r *http.Request) {

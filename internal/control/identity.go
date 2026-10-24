@@ -709,6 +709,7 @@ func filteredSettings(s *State, admin bool) map[string]any {
 	if admin {
 		out["launcher"] = loadLauncherSettings(s)
 		out["localApp"] = loadLocalAppSettings(s)
+		out["newsNotice"] = loadNewsNotice(s)
 		out["relayCodes"] = relayCodeSettings(s)
 		out["relayVerify"] = relayVerifySettings(s)
 		out["disasterBackupEmailEnabled"] = boolSetting(s, "disasterBackupEmailEnabled")
@@ -816,6 +817,17 @@ func (a *App) adminSettings(w http.ResponseWriter, r *http.Request) {
 						return errors.New("升级节点设置格式无效")
 					}
 					value, err := normalizeNodeUpgrade(value)
+					if err != nil {
+						return err
+					}
+					value.UpdatedAt = time.Now().UnixMilli()
+					s.Settings[key] = value
+				case "newsNotice":
+					var value NewsNotice
+					if json.Unmarshal(raw, &value) != nil {
+						return errors.New("页面公告格式无效")
+					}
+					value, err := normalizeNewsNotice(value)
 					if err != nil {
 						return err
 					}

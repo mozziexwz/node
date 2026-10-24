@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
+  BookOpen,
   Calendar,
   Clock,
   Copy,
@@ -56,6 +57,7 @@ export function launcherHost(href = "") {
 export const settingsTabKey = "msboost-settings-tab";
 
 // The two downloads differ only in names, icons and where they are explained.
+// Each has a usage guide, a static page published with the site (guides/).
 export type DownloadProduct = "launcher" | "localApp";
 const products = {
   launcher: {
@@ -64,6 +66,7 @@ const products = {
     Icon: MonitorDown,
     package: "免安装 zip，解压即用",
     section: "launcher",
+    guide: "/guides/launcher.html",
   },
   localApp: {
     name: "MSBOOST 本地版",
@@ -71,8 +74,10 @@ const products = {
     Icon: Laptop,
     package: "免安装 zip，无需管理员权限",
     section: "local",
+    guide: "/guides/local.html",
   },
 };
+export const launcherGuide = products.launcher.guide;
 
 function CopyHash({ value }: { value: string }) {
   const [done, setDone] = useState(false);
@@ -188,6 +193,15 @@ export function LauncherDownload({
                 备用下载
               </a>
             )}
+            <a
+              className="btn big"
+              href={products[product].guide}
+              target="_blank"
+              rel="noopener"
+            >
+              <BookOpen size={16} />
+              使用指南
+            </a>
           </div>
           {host && <small>将在新窗口打开 {host}</small>}
         </div>

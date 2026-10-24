@@ -1,0 +1,92 @@
+/* The announcement at the top of 公告/教程 and the public news page. */
+.na-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px 16px;
+  align-items: center;
+  margin-bottom: 22px;
+  border-color: #f3d3bd;
+  background: linear-gradient(180deg, #fff8f3, #fff);
+}
+.na-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: start;
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background: var(--pale);
+  color: var(--orange);
+}
+.na-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.na-title h3 {
+  font-size: 16px;
+}
+.na-title small {
+  color: var(--sub);
+  font-size: 12px;
+}
+.na-body .markdown {
+  margin-top: 6px;
+  font-size: 13.5px;
+  line-height: 1.85;
+  color: #4a4540;
+}
+.na-body .markdown > :first-child {
+  margin-top: 0;
+}
+.na-body .markdown > :last-child {
+  margin-bottom: 0;
+}
+.na-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.na-empty {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 22px;
+  border-style: dashed;
+  background: #fcfbf9;
+}
+.na-empty h3 {
+  font-size: 15px;
+}
+.na-empty p {
+  margin-top: 4px;
+  color: var(--sub);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+.na-empty .btn {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.news-page .na-card {
+  margin: 0 0 20px;
+}
+@media (max-width: 760px) {
+  .na-card {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .na-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+  .na-empty {
+    flex-wrap: wrap;
+  }
+  .na-empty .btn {
+    margin-left: 0;
+  }
+}
