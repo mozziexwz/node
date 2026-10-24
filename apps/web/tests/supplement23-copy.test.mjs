@@ -277,7 +277,7 @@ test(
             await expect(page.getByText("安全升级 / 修复", { exact: true })).toHaveCount(0);
             await expect(
               page.getByText(
-                "每次均全新部署受管 MSBOOST 组件，重新生成认证和端口；不会重装操作系统。原配置部署成功后将失效。",
+                "每次均全新部署受管 MSBOOST 组件，重新生成认证和端口；不会重装操作系统。原配置部署成功后将失效。保留原配置升级，请使用「升级节点」。",
                 { exact: true },
               ),
             ).toBeVisible();

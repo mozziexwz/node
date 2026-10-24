@@ -142,6 +142,13 @@ func ValidateRequest(r Request) error {
 		if r.Front != nil || r.DD != nil || len(r.ClientConfig) > 0 {
 			return errors.New("部署参数不匹配")
 		}
+	case "upgrade", "fetch-config":
+		if ip, err := netip.ParseAddr(r.SSH.Host); err != nil || !ip.Is4() {
+			return errors.New("当前 MSBOOST 安装脚本要求公网 IPv4 服务器")
+		}
+		if r.Mode != "" || r.Front != nil || r.DD != nil || len(r.ClientConfig) > 0 || r.Remark != "" {
+			return errors.New("升级节点和取回配置只需要服务器的 SSH")
+		}
 	case "relay", "relay-code":
 		if _, err := ParseClientConfig(r.ClientConfig); err != nil {
 			return err

@@ -8,6 +8,9 @@ import {
   LockKeyhole,
   CircleCheck,
   MonitorDown,
+  Server,
+  CircleArrowUp,
+  FileDown,
 } from "lucide-react";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { api, post, requestID, download, RecordData, array } from "./api";
@@ -29,6 +32,7 @@ import {
 } from "./ui";
 import { SelfTest } from "./relay-verify";
 import { LocalHint } from "./local-app";
+import { NodeUpgradeNotes } from "./node-upgrade";
 export type SSH = {
   host: string;
   port: number;
@@ -184,9 +188,11 @@ export async function prepareSSH(
       previous !== probe.fingerprint ? value.replaceFingerprint : "",
   };
 }
+// Kinds whose configuration is the node's own (direct) one.
+const nodeKinds = ["deploy", "upgrade", "fetch-config"];
 function configName(task: RecordData) {
   const base = String(
-    task.remark || (task.kind === "deploy" ? "直连" : "自备中转"),
+    task.remark || (nodeKinds.includes(task.kind) ? "直连" : "自备中转"),
   )
     .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, "_")
     .replace(/[. ]+$/g, "")
@@ -566,6 +572,8 @@ const states: Record<string, string> = {
 };
 export const taskKinds: Record<string, string> = {
   deploy: "部署 MSBOOST",
+  upgrade: "升级节点",
+  "fetch-config": "取回配置文件",
   relay: "自备中转",
   dd: "DD 系统",
   fingerprint: "验证指纹",
@@ -626,6 +634,7 @@ const phases: Record<string, string> = {
   ownership: "受管所有权检查",
   cleanup: "清理",
   verify: "目标校验",
+  node_check: "节点检查",
 };
 const healthLabels: Record<string, string> = {
   bbr: "BBR 网络优化",
@@ -639,6 +648,7 @@ const healthValues: Record<string, string> = {
   partial: "部分服务器未启用",
   review_required: "优化失败，部分参数需核查",
   running: "运行中",
+  stopped: "未运行",
   passed: "通过",
   reachable: "可达",
   unreachable: "不可达",
@@ -748,10 +758,18 @@ export function TaskDetail({
       {current.health && (
         <Table
           headers={["检查项目", "结果"]}
-          rows={Object.entries(healthLabels).map(([k, label]) => [
-            label,
-            healthValues[current.health[k]] || "未知",
-          ])}
+          rows={Object.entries(healthLabels)
+            // Fetching a configuration runs no self-test and leaves BBR alone.
+            .filter(
+              ([k]) =>
+                current.kind !== "fetch-config" ||
+                k === "service" ||
+                k === "publicTCP",
+            )
+            .map(([k, label]) => [
+              label,
+              healthValues[current.health[k]] || "未知",
+            ])}
         />
       )}
       {current.health && !current.verify && (
@@ -980,8 +998,12 @@ export function ToolForm({
     [error, setError] = useState(""),
     [task, setTask] = useState<RecordData | null>(null);
   const { data: quotas, reload } = useData("/api/tasks");
-  const q = quotas?.limits?.[kind];
+  // Upgrading a node and fetching its configuration are deploy-page modes:
+  // they share its quota, and the SSH filled in carries over between modes.
+  const node = kind === "upgrade" || kind === "fetch-config";
+  const q = quotas?.limits?.[node ? "deploy" : kind];
   const keyLogin = ssh.authMethod === "key";
+  useEffect(() => setError(""), [kind]);
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (busy) return;
@@ -1048,8 +1070,13 @@ export function ToolForm({
   }
   return (
     <>
-      <div className="card">
-        <QuotaBar q={q} />
+      {kind === "upgrade" && (
+        <NodeUpgradeNotes upgrade={settings.nodeUpgrade} />
+      )}
+      <div
+        className={`card ${kind === "upgrade" && settings.nodeUpgrade?.notes ? "mt24" : ""}`}
+      >
+        <QuotaBar q={q} note={node ? "与全新部署共用次数" : undefined} />
         <form onSubmit={submit}>
           {kind === "relay" && (
             <>
@@ -1067,16 +1094,26 @@ export function ToolForm({
             value={ssh}
             onChange={setSSH}
           />
-          {kind === "deploy" && <ErrorNotice error={error} />}
+          {(kind === "deploy" || node) && <ErrorNotice error={error} />}
           {kind === "deploy" && (
+            <Notice tone="orange">
+              每次均全新部署受管 MSBOOST
+              组件，重新生成认证和端口；不会重装操作系统。原配置部署成功后将失效。保留原配置升级，请使用「升级节点」。
+            </Notice>
+          )}
+          {(kind === "deploy" || kind === "upgrade") && (
+            <Notice tone="orange">
+              本功能仅限游戏用途，禁止用于翻墙、公共代理、违法活动或其他与游戏无关的用途。(MSBOOST
+              将屏蔽部分网站)
+            </Notice>
+          )}
+          {kind === "fetch-config" && (
             <>
               <Notice tone="orange">
-                每次均全新部署受管 MSBOOST
-                组件，重新生成认证和端口；不会重装操作系统。原配置部署成功后将失效。
+                读取节点上现有的配置，部署时网页断开没拿到配置、换了浏览器或清除了网站数据，都可以用它重新拿到同一份配置。
               </Notice>
               <Notice tone="orange">
-                本功能仅限游戏用途，禁止用于翻墙、公共代理、违法活动或其他与游戏无关的用途。(MSBOOST
-                将屏蔽部分网站)
+                配置文件含有节点的连接密码，取回后请妥善保管，不要发给别人。
               </Notice>
             </>
           )}
@@ -1247,8 +1284,8 @@ export function ToolForm({
               />
             </>
           )}
-          {kind !== "deploy" && <ErrorNotice error={error} />}
-          {(kind === "deploy" || kind === "relay") && (
+          {kind !== "deploy" && !node && <ErrorNotice error={error} />}
+          {["deploy", "upgrade", "relay"].includes(kind) && (
             <Notice tone="orange">
               仅支持 Debian 11、12、13，不支持其他发行版或版本。
             </Notice>
@@ -1257,11 +1294,12 @@ export function ToolForm({
             <Button type="submit" primary disabled={busy}>
               {busy
                 ? "正在提交…"
-                : kind === "deploy"
-                  ? "开始部署"
-                  : kind === "relay"
-                    ? "开始配置"
-                    : "开始DD"}
+                : ({
+                    deploy: "开始部署",
+                    upgrade: "开始升级",
+                    "fetch-config": "取回配置",
+                    relay: "开始配置",
+                  }[kind] ?? "开始DD")}
               <ArrowRight size={15} />
             </Button>
           </div>
@@ -1284,6 +1322,23 @@ export function ToolForm({
     </>
   );
 }
+// The deploy page's three ways of working on a node; the first is the form
+// the page always had.
+const deployModes: [string, string, string, typeof Server][] = [
+  ["deploy", "全新部署", "安装节点并生成新配置", Server],
+  [
+    "upgrade",
+    "升级节点",
+    "保留配置升级，用户名、密码和端口不变",
+    CircleArrowUp,
+  ],
+  [
+    "fetch-config",
+    "取回配置文件",
+    "从节点读回当前配置，不改动服务器",
+    FileDown,
+  ],
+];
 export function ToolPage({
   kind,
   user,
@@ -1296,6 +1351,13 @@ export function ToolPage({
   onNavigate: (p: string) => void;
 }) {
   const title = { deploy: "部署 MSBOOST", dd: "DD 系统" }[kind] || "";
+  const [mode, setMode] = useState(kind);
+  const where =
+    mode === "fetch-config"
+      ? "取回的配置和部署得到的一样，会存进当前浏览器的任务记录，请下载备份。"
+      : kind === "deploy"
+        ? "操作完成后下载配置，也可以在当前浏览器的任务记录里再次下载。换了浏览器或清除了网站数据，可以用「取回配置文件」从服务器重新读取。"
+        : "“已执行 DD 操作”不表示操作系统已安装完成，请等待 15 分钟以上再部署。";
   return (
     <>
       <Header
@@ -1311,44 +1373,86 @@ export function ToolPage({
       ) : settings[kind] === false ? (
         <Notice>该功能当前由管理员关闭，已有任务仍可查看。</Notice>
       ) : (
-        <div className="tool-layout">
-          <div>
-            <ToolForm kind={kind} user={user} settings={settings} />
-          </div>
-          <aside className="stack" style={{ alignContent: "start" }}>
-            {kind === "deploy" && (
-              <LocalHint kind="deploy" onNavigate={onNavigate} />
-            )}
-            {kind === "dd" && (
+        <>
+          {kind === "deploy" && (
+            <div className="mode-cards" role="tablist" aria-label="部署方式">
+              {deployModes.map(([key, name, note, Icon]) => (
+                <button
+                  type="button"
+                  role="tab"
+                  key={key}
+                  aria-selected={mode === key}
+                  className={"mode-card " + (mode === key ? "active" : "")}
+                  onClick={() => setMode(key)}
+                >
+                  <span className="mode-icon">
+                    <Icon size={18} />
+                  </span>
+                  <span>
+                    <strong>{name}</strong>
+                    <small>{note}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="tool-layout">
+            <div>
+              <ToolForm kind={mode} user={user} settings={settings} />
+            </div>
+            <aside className="stack" style={{ alignContent: "start" }}>
+              {kind === "deploy" && (
+                <LocalHint kind="deploy" onNavigate={onNavigate} />
+              )}
+              {kind === "dd" && (
+                <div className="card">
+                  <h3>密钥登录说明</h3>
+                  <p className="muted mt8">
+                    私钥只用于本次连接，不进入任务记录，也不保存在浏览器。选择「继续使用当前密钥」时，写入新系统的是由私钥推导出的公钥，私钥本身不会写入新系统。
+                  </p>
+                </div>
+              )}
               <div className="card">
-                <h3>密钥登录说明</h3>
-                <p className="muted mt8">
-                  私钥只用于本次连接，不进入任务记录，也不保存在浏览器。选择「继续使用当前密钥」时，写入新系统的是由私钥推导出的公钥，私钥本身不会写入新系统。
-                </p>
+                <h3>{kind === "dd" ? "DD 提交后" : "配置文件在哪里？"}</h3>
+                <p className="muted mt8">{where}</p>
+                <Button className="mt16" onClick={() => onNavigate("tasks")}>
+                  查看任务记录
+                </Button>
               </div>
-            )}
-            <div className="card">
-              <h3>{kind === "dd" ? "DD 提交后" : "配置文件在哪里？"}</h3>
-              <p className="muted mt8">
-                {kind === "dd"
-                  ? "“已执行 DD 操作”不表示操作系统已安装完成，请等待 15 分钟以上再部署。"
-                  : "操作完成后下载配置，也可以在当前浏览器的任务记录里再次下载。"}
-              </p>
-              <Button className="mt16" onClick={() => onNavigate("tasks")}>
-                查看任务记录
-              </Button>
-            </div>
-            <div className="card">
-              <h3>操作须知</h3>
-              <p className="muted mt8">
-                仅操作自己有权管理的服务器。密码、密钥和配置请妥善保管。
-              </p>
-              <Button className="mt16" onClick={() => onNavigate("tutorials")}>
-                公告/教程
-              </Button>
-            </div>
-          </aside>
-        </div>
+              {kind === "deploy" && (
+                <div className="card">
+                  <h3>三种操作怎么选？</h3>
+                  <div className="aside-list">
+                    <div>
+                      <span>第一次部署，或想换端口和密码</span>
+                      <b>全新部署</b>
+                    </div>
+                    <div>
+                      <span>节点要更新，原配置想继续用</span>
+                      <b>升级节点</b>
+                    </div>
+                    <div>
+                      <span>配置丢了，或部署时网页断开</span>
+                      <b>取回配置文件</b>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="card">
+                <h3>操作须知</h3>
+                <p className="muted mt8">
+                  仅操作自己有权管理的服务器。密码、密钥和配置请妥善保管。
+                </p>
+                <Button
+                  className="mt16"
+                  onClick={() => onNavigate("tutorials")}
+                >
+                  公告/教程
+                </Button>
+              </div>
+            </aside>
+          </div>
+        </>
       )}
     </>
   );
@@ -1613,7 +1717,9 @@ export function TasksPage({
       )}
       <ErrorNotice error={error || message} />
       <Notice tone="orange">
-        免费配置请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复；捐赠权益线路文件请到线路页使用“中转配置下载”。
+        免费配置请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复，节点配置可以到「部署
+        MSBOOST →
+        取回配置文件」从服务器重新读取；捐赠权益线路文件请到线路页使用“中转配置下载”。
       </Notice>
       <div className="card flush mt24">
         {!loading && !error && !tasks.length ? (

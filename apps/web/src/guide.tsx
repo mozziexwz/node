@@ -44,7 +44,8 @@ const day = (time: number) =>
 export function guideProgress(tasks: RecordData[]) {
   const succeeded = (kinds: string[]) =>
     tasks.filter((t) => kinds.includes(t.kind) && t.state === "succeeded");
-  const deployed = succeeded(["deploy"]),
+  // Upgrading or fetching succeeds only on a server that has a node.
+  const deployed = succeeded(["deploy", "upgrade", "fetch-config"]),
     relays = succeeded(["relay", "relay-code"]),
     deploying = tasks.some(
       (t) => t.kind === "deploy" && ["queued", "running"].includes(t.state),
@@ -120,7 +121,7 @@ const faqs: [string, string][] = [
   ],
   [
     "配置文件丢了怎么办？",
-    "在当前浏览器的「任务记录」里再次下载。换了电脑或浏览器找不到时，可以重新部署，但会生成新配置，旧配置随之失效。",
+    "在当前浏览器的「任务记录」里再次下载。换了电脑或浏览器找不到时，用「部署 MSBOOST → 取回配置文件」从服务器重新读取，原配置继续能用。",
   ],
   [
     "Steam 版可以用吗？",

@@ -55,7 +55,7 @@ func TestEmbeddedTaskShellSyntax(t *testing.T) {
 	if bash == "" {
 		t.Fatal("Bash required for installer shell syntax checks")
 	}
-	for name, script := range map[string]string{"diagnostics": "set -Eeuo pipefail\n" + diagnosticPrelude, "relay": "set -Eeuo pipefail\n" + diagnosticPrelude + relayInstallScript, "cleanup": "set -Eeuo pipefail\n" + diagnosticPrelude + "python3 - <<'MSBOOST_CLEANUP_PY'\n" + cleanupPython + "\nMSBOOST_CLEANUP_PY\n"} {
+	for name, script := range map[string]string{"diagnostics": "set -Eeuo pipefail\n" + diagnosticPrelude, "node-config": nodeConfigScript, "relay": "set -Eeuo pipefail\n" + diagnosticPrelude + relayInstallScript, "cleanup": "set -Eeuo pipefail\n" + diagnosticPrelude + "python3 - <<'MSBOOST_CLEANUP_PY'\n" + cleanupPython + "\nMSBOOST_CLEANUP_PY\n"} {
 		cmd := exec.Command(bash, "-n")
 		cmd.Stdin = strings.NewReader(script)
 		if out, err := cmd.CombinedOutput(); err != nil {

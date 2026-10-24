@@ -16,13 +16,15 @@
 
 ## 用户任务
 
-`GET /api/tasks` 返回 `{tasks:Task[],limits:{deploy,relay,dd,fingerprint,cleanup,cleanup-preview,relay-manage}}`。限额字段为 `minutes,count,remaining,nextAt`；`nextAt` 为 Unix 毫秒，未受限时为零。`relay` 限额同时计入手动配置中转、使用中转码（`relay-code`）和生成中转码时的服务器检查（`relay-check`）；`relay-manage` 是中转服务器读取和操作的单独限额。指纹任务、`relay-inventory` 和 `relay-manage` 不进入用户普通任务列表。
+`GET /api/tasks` 返回 `{tasks:Task[],limits:{deploy,relay,dd,fingerprint,cleanup,cleanup-preview,relay-manage}}`。限额字段为 `minutes,count,remaining,nextAt`；`nextAt` 为 Unix 毫秒，未受限时为零。`deploy` 限额同时计入升级节点（`upgrade`）和取回配置文件（`fetch-config`），这两种任务也跟随「部署 MSBOOST」功能开关，管理员同样不受次数限制。`relay` 限额同时计入手动配置中转、使用中转码（`relay-code`）和生成中转码时的服务器检查（`relay-check`）；`relay-manage` 是中转服务器读取和操作的单独限额。指纹任务、`relay-inventory` 和 `relay-manage` 不进入用户普通任务列表。
 
 `POST /api/tasks` 要求 8–128 字符的 `Idempotency-Key`；HTTP 202 表示新任务，200 表示同一参数的幂等结果。重复键不能提交不同参数，幂等重投不重新执行动作。
 
 | kind | 额外参数 |
 |---|---|
 | `deploy` | `ssh`；仅接受 `mode:"fresh"`。每次重新生成受管节点认证与端口，不重装操作系统；失败时安装器仍以私有快照回滚。部署前只读核验目标为 Debian 11 或以上版本。 |
+| `upgrade` | 只有 `ssh`（公网 IPv4），不接受 `mode`、备注或其他参数。先只读取回节点现有配置（没有 `/etc/msboost/install.env` 或 `/root/直连.json` 时以 `not_installed` 失败，服务器不做任何改动；配置入口不是这台服务器时为 `config_host_mismatch`），再核验 Debian 11 或以上版本，然后不带 `MSBOOST_FORCE_FRESH` 重跑固定版本安装脚本，安装脚本沿用已记录的用户名、密码、端口和低熵档位。升级后的配置必须与升级前入口、端口和凭据一致，否则以 `config_changed` 失败。成功时交付同一份配置。 |
+| `fetch-config` | 只有 `ssh`（公网 IPv4）。只读取节点上的 `/root/直连.json`，按部署的标准核验格式和入口，不改动服务器，不跑本地自测也不调整 BBR；`health` 只有 `service`（两个节点服务都在运行为 `running`，否则 `stopped`）和 `publicTCP`。失败编码同 `upgrade` 的前两种。 |
 | `relay` | `ssh`；`clientConfig` 为 JSON 对象，只允许一个 profile、server 和 TCP 端口，其余字段（如 `trafficPattern`）原样保留；可选 `front:SSH` 增加第二台前置机，不能替代中转；`remark` 可选、最多 60 字符且不得含换行；`rateMbps` 可选，上下行各限速，省略为管理员设置的默认值（5），须在管理员设置的范围（1–10）内。网站另行写入使用者记录（`source:"manual"`、配置人邮箱），浏览器不能提交 `meta`。中转及前置 VPS 均先只读核验为 Debian 11 或以上版本。 |
 | `dd` | `ssh`；`dd:{confirmErase:true,portMode:"keep"\|"new",newPort?,passwordMode:"keep"\|"new",newPassword?,loginMode?}`，仅固定 Debian 12 重装流程。密钥登录时必须给 `loginMode`：`key` 把当前私钥推导出的公钥写入新系统（`passwordMode:"keep"`，不设 root 密码，私钥本身不写入），`password` 改为新 root 密码（`passwordMode:"new"` 与 `newPassword`）；重装脚本不能同时设置密码和公钥。密码登录时不接受 `loginMode:"key"`。 |
 | `cleanup-preview` / `cleanup` | 见下节；不接受前置机、客户端配置或 DD 参数 |
@@ -32,7 +34,7 @@
 `GET /api/admin/tasks` 仅管理员可读，返回 `{tasks:[{...Task,userName}]}`，按 `createdAt` 从新到旧排列。`userName` 显示操作人的当前登录邮箱；关联账号已删除或缺失时为“已删除用户”，账号邮箱为空时为“未设置邮箱”。原 `userId` 保留，便于核对同名或已删除用户；显示名称仅在读取审计列表时计算，不写回历史任务，也不加入普通用户任务 API。
 
 - `q`：可选关键词，去除首尾空白后，不区分大小写地匹配 `userName,userId,id,host,kind,state,remark` 中任一字段的子串；为空时不限制。
-- `kind`：去除首尾空白后，精确匹配 `deploy,relay,dd,fingerprint,front,cleanup-preview,cleanup,relay-check,relay-code,relay-inventory,relay-manage,relay-verify`；省略或为空时显示全部，未知类型返回 HTTP 400。
+- `kind`：去除首尾空白后，精确匹配 `deploy,upgrade,fetch-config,relay,dd,fingerprint,front,cleanup-preview,cleanup,relay-check,relay-code,relay-inventory,relay-manage,relay-verify`；省略或为空时显示全部，未知类型返回 HTTP 400。
 - 同时提供 `q` 和 `kind` 时取交集，不增加分页或总数字段；无匹配项返回 `{tasks:[]}`。先核验管理员权限，再校验参数和读取任务；普通用户或未登录请求返回 HTTP 403。
 - 搜索仅检查上述公开审计字段，不读取密码、执行信封或客户端配置。`configAvailable` 仍仅对任务所有者且临时配置未过期时为真；管理员不能凭审计结果下载其他用户的配置。
 
@@ -40,7 +42,7 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 
 状态为 `queued,running,succeeded,failed,executed,unknown,interrupted`。客户端轮询至终态。`executed` 仅用于 DD：准备成功、获得重启提交标志并确认预期断线；不声称新系统已经安装完成。提交证据不完整为 `unknown`，需从 VPS 控制台核实。控制面重启或响应超时不会重放已交付动作；非 DD 中断为 `interrupted`，对应 DD 为 `unknown`。
 
-`GET /api/tasks/{id}/config` 返回原始客户端 JSON，仅所有者可读，服务器内存副本保留 10 分钟，重启即丢失。浏览器可存入加密 IndexedDB，不承诺跨浏览器或清除网站数据后的恢复。部署默认下载名为 `直连.json`，自备中转为 `自备中转.json`。自备备注用于配置 `profileName` / `activeProfile` 和下载名基础，文件名清理路径及控制字符；浏览器同时处理 Windows 保留名。自备中转监听端口从可用范围随机选择，不按区间起点顺序递增；仍须真实绑定成功才交付配置。备注不改变节点认证。
+`GET /api/tasks/{id}/config` 返回原始客户端 JSON，仅所有者可读，服务器内存副本保留 10 分钟，重启即丢失。浏览器可存入加密 IndexedDB，不承诺跨浏览器或清除网站数据后的恢复；节点配置可以用 `fetch-config` 从服务器重新读取。部署、升级和取回的默认下载名为 `直连.json`，自备中转为 `自备中转.json`。自备备注用于配置 `profileName` / `activeProfile` 和下载名基础，文件名清理路径及控制字符；浏览器同时处理 Windows 保留名。自备中转监听端口从可用范围随机选择，不按区间起点顺序递增；仍须真实绑定成功才交付配置。备注不改变节点认证。
 
 `health` 分离 `service,localSelfTest,publicTCP,game`；`game` 保留协议兼容，当前没有游戏探测，UI 不显示未检测的 Game 行。页面显示“服务运行 / 本地自测 / 公网 TCP 可达性”，并说明游戏需自行验证。`target_tcp_reachable` 仅表示目标 TCP 可达。`hops` 字段为 `fromHost,fromPort,toHost,toPort`。
 
@@ -167,7 +169,7 @@ GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/
 
 执行机以 `msboost-agent --capability executor` 运行，配置 `MSBOOST_SERVER_URL`、`MSBOOST_EXECUTOR_TOKEN` 和两架构的 `GOST_*_URL` / `GOST_*_SHA256`。控制面要求 HTTPS，仅 loopback 开发允许 HTTP。GOST 使用固定官方 `go-gost/gost` Release，不使用 `latest`。中转目标校验要求执行机本身能从 GitHub Release 下载固定版本的 mihomo，或设置 `MSBOOST_MIHOMO_BINARY`；下载失败时校验记为 `unavailable`，不算使用者的问题。远端免费中转要求 root SSH、systemd 247+ / `LoadCredential`；安装可在 Debian/Ubuntu 补齐 Python 3、curl、tar，其他系统需预先准备。清理预览不安装依赖。
 
-执行机在每次轮询和心跳中声明能力：`X-MSBOOST-Executor-Capabilities: free_relay_socks_guard`（中转防护）、`X-MSBOOST-Scoped-Cleanup: 1`（按任务清理）、`X-MSBOOST-SSH-Key: 1`（密钥登录）、`X-MSBOOST-Relay-Code: 1`（中转带宽、使用者记录、`relay-check`、`relay-code`、`relay-inventory`、`relay-manage`）和 `X-MSBOOST-Relay-Verify: 1`（中转目标校验：`relay`/`relay-code` 的 `verify`、`relay-inventory` 的 `reportVerified` 和 `relay-verify`）。新能力使用独立请求头，旧面板对第一个请求头做精确比较，不受影响。控制面只把任务派给声明了全部所需能力的执行机；创建时没有这样的在线执行机则拒绝并说明需要升级。手动配置中转现在也需要 `X-MSBOOST-Relay-Code`，以保证带宽和使用者记录生效。
+执行机在每次轮询和心跳中声明能力：`X-MSBOOST-Executor-Capabilities: free_relay_socks_guard`（中转防护）、`X-MSBOOST-Scoped-Cleanup: 1`（按任务清理）、`X-MSBOOST-SSH-Key: 1`（密钥登录）、`X-MSBOOST-Relay-Code: 1`（中转带宽、使用者记录、`relay-check`、`relay-code`、`relay-inventory`、`relay-manage`）、`X-MSBOOST-Relay-Verify: 1`（中转目标校验：`relay`/`relay-code` 的 `verify`、`relay-inventory` 的 `reportVerified` 和 `relay-verify`）和 `X-MSBOOST-Node-Upgrade: 1`（`upgrade`、`fetch-config`）。新能力使用独立请求头，旧面板对第一个请求头做精确比较，不受影响。控制面只把任务派给声明了全部所需能力的执行机；创建时没有这样的在线执行机则拒绝并说明需要升级。手动配置中转现在也需要 `X-MSBOOST-Relay-Code`，以保证带宽和使用者记录生效。
 
 网站升级不会自动更新独立 Agent。v0.2.2 新诊断与清理需要新版执行机，参见 [Agent 安装与升级](agent-installation.md)。
 

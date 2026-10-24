@@ -129,6 +129,10 @@ func (e *Engine) Execute(ctx context.Context, job Job) Result {
 	switch job.Request.Kind {
 	case "deploy":
 		return e.deploy(ctx, job, r)
+	case "upgrade":
+		return e.upgrade(ctx, job, r)
+	case "fetch-config":
+		return e.fetchConfig(ctx, job, r)
 	case "dd":
 		return e.dd(ctx, job, r)
 	case "relay", "relay-code":
@@ -159,7 +163,7 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	// installer still snapshots managed files so a failed replacement can roll
 	// back without deleting an existing working node.
 	script += "MSBOOST_FORCE_FRESH=1 bash \"$work/installer.sh\" \"$node_user\" \"$node_pass\" >\"$work/private.log\" 2>&1\n"
-	script += "msboost_phase=service\nsystemctl is-active --quiet msboost.service\nsystemctl is-active --quiet msboost-tcp-probe.service\nmsboost_phase=config\nprintf 'MSBOOST_CONFIG='\nbase64 -w0 /root/直连.json\nprintf '\\n'\n"
+	script += nodeConfigTail
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	r.Health = &Health{BBR: marker(out, "MSBOOST_BBR")}
 	if err != nil {

@@ -30,12 +30,17 @@ const RelayCodeCapability = "relay_code_v1"
 const SSHKeyHeader = "X-MSBOOST-SSH-Key"
 const RelayCodeHeader = "X-MSBOOST-Relay-Code"
 
+// NodeUpgradeCapability covers the "upgrade" and "fetch-config" tasks.
+const NodeUpgradeCapability = "node_upgrade_v1"
+const NodeUpgradeHeader = "X-MSBOOST-Node-Upgrade"
+
 func setCapabilityHeaders(h http.Header) {
 	h.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
 	h.Set("X-MSBOOST-Scoped-Cleanup", "1")
 	h.Set(SSHKeyHeader, "1")
 	h.Set(RelayCodeHeader, "1")
 	h.Set(RelayVerifyHeader, "1")
+	h.Set(NodeUpgradeHeader, "1")
 	h.Set("X-MSBOOST-Agent-Version", buildinfo.Version)
 }
 

@@ -102,14 +102,9 @@ const compare: [string, React.ReactNode, React.ReactNode][] = [
     <small>经本站执行机登录，只用于当次任务，不保存</small>,
     <small>只在你的电脑内存里，不经过本站</small>,
   ],
-  ["需要账户", "需要", "不需要"],
   ["部署 MSBOOST 节点", yes, yes],
-  ["升级节点（保留配置）", <span className="no">—</span>, yes],
-  [
-    "取回配置文件",
-    <small>在当前浏览器的任务记录里下载</small>,
-    <small>随时从服务器重新读取</small>,
-  ],
+  ["升级节点（保留配置）", yes, yes],
+  ["取回配置文件", yes, yes],
   ["配置中转服务器（可加前置机）", yes, yes],
   [
     "帮朋友中转",
@@ -175,7 +170,7 @@ export function LocalHint({
         <li>
           <Check size={14} aria-hidden="true" />
           {kind === "deploy"
-            ? "还能保留配置升级节点、随时取回配置"
+            ? "配置直接存进启动器，不用下载再导入"
             : "帮朋友中转时，双方都不用交出 SSH"}
         </li>
       </ul>

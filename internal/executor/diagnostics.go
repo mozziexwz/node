@@ -44,6 +44,9 @@ var diagnostics = map[string]Diagnostic{
 	"verify_tunnel_failed":     {"verify_tunnel_failed", "verify", "配置文件与节点不匹配，或目标不是 mieru", "请重新上传节点的配置文件；节点重新部署过的话，旧配置已经失效。"},
 	"verify_not_msboost":       {"verify_not_msboost", "verify", "不是 MSBOOST 节点，或节点版本较低，请重新部署MSBOOST节点。", "重新部署会生成新的配置文件，部署完成后用新配置重新创建中转。"},
 	"verify_entry_unreachable": {"verify_entry_unreachable", "verify", "新建的中转入口暂时连不上", "请稍后重试；一直失败时，请检查中转服务器的防火墙和服务商安全组是否放行了中转端口。"},
+	"not_installed":            {"not_installed", "node_check", "这台服务器上没有找到 MSBOOST 节点，没有做任何改动", "先用「全新部署」安装 MSBOOST；如果确实部署过，请检查服务器 IP 是否填错。"},
+	"config_host_mismatch":     {"config_host_mismatch", "node_check", "节点配置里的入口地址不是这台服务器", "这台节点可能用其他 IP 部署过（多 IP 或 NAT 机器），请核对服务器地址。"},
+	"config_changed":           {"config_changed", "config", "升级后节点配置发生了变化", "用「取回配置文件」拿到新配置，再在启动器里换掉旧配置。"},
 }
 
 func PublicDiagnostic(code, phase string) Diagnostic {
@@ -58,7 +61,7 @@ func PublicDiagnostic(code, phase string) Diagnostic {
 }
 func ValidPhase(phase string) bool {
 	switch phase {
-	case "queued", "executing", "complete", "fingerprint", "validate", "install", "config", "prepare", "submitted", "submission_unknown", "preflight", "target", "relay", "front", "integrity", "extract", "binary", "bbr", "dependencies", "download", "service", "self_test", "execution", "ssh_connect", "ssh_host_key", "ssh_auth", "ssh_handshake", "ssh_session", "executor", "ownership", "cleanup", "verify":
+	case "queued", "executing", "complete", "fingerprint", "validate", "install", "config", "prepare", "submitted", "submission_unknown", "preflight", "target", "relay", "front", "integrity", "extract", "binary", "bbr", "dependencies", "download", "service", "self_test", "execution", "ssh_connect", "ssh_host_key", "ssh_auth", "ssh_handshake", "ssh_session", "executor", "ownership", "cleanup", "verify", "node_check":
 		return true
 	}
 	return false

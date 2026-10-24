@@ -372,17 +372,29 @@ type TaskLimit struct {
 	NextAt    int64 `json:"nextAt"`
 }
 
-// limitKinds lists the task kinds that share one limit. Every relay setup,
+// limitKinds lists the task kinds that share one limit. Upgrading a node and
+// fetching its configuration use the deploy quota. Every relay setup,
 // including the server check that precedes a relay code, uses the relay
 // quota; reading and managing a relay server has its own separate quota.
 func limitKinds(kind string) []string {
 	switch kind {
+	case "deploy":
+		return []string{"deploy", "upgrade", "fetch-config"}
 	case "relay":
 		return []string{"relay", "relay-code", "relay-check"}
 	case "relay-manage":
 		return []string{"relay-inventory", "relay-manage"}
 	}
 	return []string{kind}
+}
+
+// toolKind is the tool a task belongs to: its feature switch and its quota.
+// Upgrading and fetching a node's configuration are part of the deploy page.
+func toolKind(kind string) string {
+	if kind == "upgrade" || kind == "fetch-config" {
+		return "deploy"
+	}
+	return kind
 }
 
 func toolLimit(s *State, kind, user string, now int64) TaskLimit {
@@ -473,6 +485,9 @@ func executorCapabilitiesFromRequest(r *http.Request) []string {
 	if r.Header.Get(executor.RelayVerifyHeader) == "1" {
 		out = append(out, executor.RelayVerifyCapability)
 	}
+	if r.Header.Get(executor.NodeUpgradeHeader) == "1" {
+		out = append(out, executor.NodeUpgradeCapability)
+	}
 	return out
 }
 
@@ -497,6 +512,9 @@ func requiredCapabilities(r executor.Request) []string {
 	}
 	if r.Verify != nil || r.Kind == "relay-verify" {
 		out = append(out, executor.RelayVerifyCapability)
+	}
+	if r.Kind == "upgrade" || r.Kind == "fetch-config" {
+		out = append(out, executor.NodeUpgradeCapability)
 	}
 	return out
 }
@@ -544,6 +562,8 @@ func (t *TaskService) executorUnavailable(s *State, request executor.Request) er
 		return errors.New("请先升级在线执行机后使用按任务清理；旧执行机不会接收此操作")
 	case slices.Contains(need, executor.RelayVerifyCapability) && !declared[executor.RelayVerifyCapability]:
 		return errors.New("在线执行机需要升级后才能校验中转目标，请联系管理员升级执行机")
+	case slices.Contains(need, executor.NodeUpgradeCapability) && !declared[executor.NodeUpgradeCapability]:
+		return errors.New("在线执行机需要升级后才能升级节点或取回配置文件，请联系管理员升级执行机")
 	default:
 		return errors.New("当前在线执行机版本过旧，不支持此中转功能，请联系管理员升级执行机")
 	}
@@ -583,7 +603,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 	}
 	// Relay-code work uses SSH the user never sees; it has its own endpoints.
 	switch request.Kind {
-	case "deploy", "relay", "dd", "cleanup", "cleanup-preview":
+	case "deploy", "upgrade", "fetch-config", "relay", "dd", "cleanup", "cleanup-preview":
 	default:
 		Fail(w, 400, "不支持的任务类型")
 		return
@@ -607,7 +627,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 	}
 	var asset executor.Asset
 	path := ""
-	if request.Kind == "deploy" {
+	if request.Kind == "deploy" || request.Kind == "upgrade" {
 		path = t.app.Config.NodeScript
 	}
 	if request.Kind == "dd" {
@@ -626,7 +646,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if (request.Kind == "deploy" || request.Kind == "dd") && len(asset.Data) == 0 {
+	if path != "" && len(asset.Data) == 0 {
 		Fail(w, 503, "固定版本安装脚本尚未配置")
 		return
 	}
@@ -651,7 +671,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return errors.New("账号不存在")
 		}
-		if err := taskGate(s, fresh, request.Kind); err != nil {
+		if err := taskGate(s, fresh, toolKind(request.Kind)); err != nil {
 			return err
 		}
 		if prev, ok := LoadDoc[taskIdempotency](s, "task_idempotency", idemID); ok {
@@ -725,7 +745,7 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 		if !t.hasExecutorFor(s, envelope.Job.Request) {
 			return t.executorUnavailable(s, envelope.Job.Request)
 		}
-		if !(fresh.Role == "admin" && request.Kind == "deploy") && toolLimit(s, request.Kind, u.ID, now.UnixMilli()).Remaining == 0 {
+		if tool := toolKind(request.Kind); !(fresh.Role == "admin" && tool == "deploy") && toolLimit(s, tool, u.ID, now.UnixMilli()).Remaining == 0 {
 			return errors.New("本工具已达到次数限制，请等待下一次可用时间")
 		}
 		if err := trustSSH(s, u.ID, request.SSH); err != nil {
@@ -1256,7 +1276,7 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "DD 只能报告已提交、失败或提交不明确，不能声称系统安装完成")
 		return
 	}
-	configKind := envelope.Job.Request.Kind == "deploy" || envelope.Job.Request.Kind == "relay" || envelope.Job.Request.Kind == "relay-code"
+	configKind := slices.Contains([]string{"deploy", "upgrade", "fetch-config", "relay", "relay-code"}, envelope.Job.Request.Kind)
 	if configKind && out.State == "succeeded" && len(out.Config) == 0 {
 		Fail(w, 400, "成功结果缺少客户端配置")
 		return
@@ -1338,6 +1358,14 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 			job.Phase = out.Phase
 		}
 		job.Message = taskPublicMessage(out.State)
+		if out.State == "succeeded" {
+			switch job.Kind {
+			case "upgrade":
+				job.Message = "节点已升级，用户名、密码和端口没有变化，原来的配置文件可以继续使用"
+			case "fetch-config":
+				job.Message = "已从节点取回配置，服务器没有改动"
+			}
+		}
 		if out.State == "failed" {
 			d := executor.PublicDiagnostic(out.ErrorCode, out.Phase)
 			job.ErrorCode, job.Phase, job.Message, job.NextStep = d.Code, d.Phase, d.Message, d.NextStep
@@ -1454,7 +1482,7 @@ func cleanTaskHealth(in *executor.Health) *executor.Health {
 	}
 	clean := func(s string) string {
 		switch s {
-		case "running", "passed", "reachable", "unreachable", "not_tested", "target_tcp_reachable":
+		case "running", "stopped", "passed", "reachable", "unreachable", "not_tested", "target_tcp_reachable":
 			return s
 		default:
 			return "unknown"

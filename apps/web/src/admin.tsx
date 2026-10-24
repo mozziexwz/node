@@ -11,6 +11,7 @@ import { RelayStatusDetail } from "./relay-status-view";
 import { SiteSettings } from "./site-settings";
 import { RelayCodeSettings } from "./relay-code";
 import { LauncherSettings, settingsTabKey } from "./launcher";
+import { NodeUpgradeSettings } from "./node-upgrade";
 import {
   AdminRuleVerify,
   RelayVerifySettings,
@@ -1375,6 +1376,7 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           ["relayVerify", "中转校验"],
           ["launcher", "MSBOOST 启动器"],
           ["localApp", "MSBOOST 本地版"],
+          ["nodeUpgrade", "升级节点"],
         ].map(([k, t]) => (
           <button
             className={tab === k ? "active" : ""}
@@ -1397,6 +1399,8 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           <LauncherSettings onSaved={onRefresh} />
         ) : tab === "localApp" ? (
           <LauncherSettings product="localApp" onSaved={onRefresh} />
+        ) : tab === "nodeUpgrade" ? (
+          <NodeUpgradeSettings onSaved={onRefresh} />
         ) : tab === "relayVerify" ? (
           <RelayVerifySettings onSaved={onRefresh} />
         ) : tab === "captcha" ? (

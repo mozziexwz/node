@@ -65,11 +65,8 @@ func normalizeLauncher(in LauncherSettings) (LauncherSettings, error) {
 	if out.Version != "" && !launcherVersionPattern.MatchString(out.Version) {
 		return out, errors.New("当前版本只能用字母、数字和 . - +，最多 32 个字符")
 	}
-	out.ReleasedAt = strings.TrimSpace(in.ReleasedAt)
-	if out.ReleasedAt != "" {
-		if _, err := time.Parse("2006-01-02", out.ReleasedAt); err != nil {
-			return out, errors.New("更新日期格式应为 YYYY-MM-DD")
-		}
+	if out.ReleasedAt, err = releaseDate(in.ReleasedAt); err != nil {
+		return out, err
 	}
 	if out.DownloadURL != "" && (out.Version == "" || out.ReleasedAt == "") {
 		return out, errors.New("填写了下载地址时，请同时填写当前版本和更新日期")
@@ -81,16 +78,34 @@ func normalizeLauncher(in LauncherSettings) (LauncherSettings, error) {
 	if out.SHA256 != "" && !launcherSHA256Pattern.MatchString(out.SHA256) {
 		return out, errors.New("SHA-256 应为 64 位十六进制")
 	}
-	notes := strings.TrimSpace(strings.ReplaceAll(in.Notes, "\r\n", "\n"))
-	if utf8.RuneCountInString(notes) > 5000 {
-		return out, errors.New("更新内容不能超过 5000 字")
+	if out.Notes, err = releaseNotes(in.Notes); err != nil {
+		return out, err
 	}
-	if strings.IndexFunc(notes, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) >= 0 {
-		return out, errors.New("更新内容不能包含控制字符")
-	}
-	out.Notes = notes
 	out.UpdatedAt = in.UpdatedAt
 	return out, nil
+}
+
+// releaseDate accepts an empty date or YYYY-MM-DD.
+func releaseDate(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		if _, err := time.Parse("2006-01-02", value); err != nil {
+			return "", errors.New("更新日期格式应为 YYYY-MM-DD")
+		}
+	}
+	return value, nil
+}
+
+// releaseNotes trims Markdown update notes and refuses control characters.
+func releaseNotes(value string) (string, error) {
+	notes := strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
+	if utf8.RuneCountInString(notes) > 5000 {
+		return "", errors.New("更新内容不能超过 5000 字")
+	}
+	if strings.IndexFunc(notes, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) >= 0 {
+		return "", errors.New("更新内容不能包含控制字符")
+	}
+	return notes, nil
 }
 
 func loadLauncherSettings(s *State) LauncherSettings {

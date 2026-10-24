@@ -277,6 +277,8 @@ test(
         [
           "",
           "deploy",
+          "upgrade",
+          "fetch-config",
           "relay",
           "dd",
           "fingerprint",
