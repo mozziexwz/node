@@ -3,7 +3,21 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # Docs-only changes skip CI; path filters never apply to tag pushes.
+    paths:
+      - '**'
+      - '!docs/**'
+      - '!**/*.md'
+      # Read by relay_recovery_contract_test.go and the release/bootstrap checks.
+      - 'docs/relay-recovery.md'
+      - 'docs/release-notes.md'
   pull_request:
+    paths:
+      - '**'
+      - '!docs/**'
+      - '!**/*.md'
+      - 'docs/relay-recovery.md'
+      - 'docs/release-notes.md'
   workflow_dispatch:
 permissions:
   contents: read
@@ -49,18 +63,6 @@ jobs:
         run: |
           docker build -f deploy/uninstall_agent_test.Dockerfile -t msboost-uninstall-fixture .
           docker run --rm --network none msboost-uninstall-fixture
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - name: Verify whole-site disaster backup and clean-host restore with real Docker
-        env:
-          MSBOOST_CI_DISASTER: '1'
-        run: sudo env GITHUB_ACTIONS=true MSBOOST_CI_DISASTER=1 PATH="$PATH" bash deploy/disaster_integration_test.sh
-      - run: go test -race -count=1 ./...
-        env:
-          MSBOOST_TEST_POSTGRES_URL: postgres://msboost_ci:isolated-ci-only@127.0.0.1:5432/postgres?sslmode=disable
       - name: Verify isolated Linux cleanup and real PostgreSQL disaster import
         env:
           MSBOOST_TEST_POSTGRES_URL: postgres://msboost_ci:isolated-ci-only@127.0.0.1:5432/postgres?sslmode=disable
@@ -84,19 +86,80 @@ jobs:
           printf '%s\n' '8220d1f013b6f27510247b2360c9e0ca9f018feebd82515f07635318b34ff9777ccc8fd0b6e6f2486ce3a33fe389fbb7db12d05baa474f4587509fb4f5ebf1c9  .runtime/caddy/archive.tar.gz' | sha512sum --check --strict
           tar -xzf .runtime/caddy/archive.tar.gz -C .runtime/caddy caddy
           CADDY_TEST_BINARY="$PWD/.runtime/caddy/caddy" go test -race ./deploy -count=1 -v
-      - run: npm ci && npm run build
-        working-directory: apps/web
-      - name: Verify real HTTP workflows against isolated server
-        shell: bash
+      - name: Check installers without executing them
         run: |
-          mkdir -p .runtime
-          go build -o .runtime/msboost-server ./cmd/server
-          node scripts/test-http.mjs
-      - name: Install isolated test browser
-        working-directory: apps/web
-        run: npx playwright install --with-deps chromium
-      - name: Verify browser workflows and supplementary UI
-        run: node scripts/test-http.mjs --browser
+          for script in install.sh agent.sh deploy/*.sh installers/node/msboost.sh installers/reinstall/reinstall.sh; do bash -n "$script"; done
+          bash deploy/manage.sh --help
+          bash install.sh --help
+          bash agent.sh --help
+          bash deploy/manage_test.sh
+          bash deploy/host_caddy_test.sh
+          bash deploy/caddy_package_test.sh
+          bash deploy/caddy_restore_retry_test.sh
+          bash deploy/bootstrap_test.sh
+          bash deploy/backup_activity_recovery_test.sh
+          bash deploy/relay_recovery_test.sh
+          bash deploy/agent_migration_test.sh
+          bash deploy/uninstall_agent_test.sh
+          # Restore retry deliberately requires a root-owned private marker.
+          # Exercise real ownership in the disposable container, not by mocking
+          # stat or weakening that production check on the unprivileged runner.
+          docker run --rm --network none msboost-uninstall-fixture bash /src/deploy/disaster_test.sh
+          bash deploy/disaster_online_test.sh
+          bash deploy/disaster_joint_validation_test.sh
+          bash deploy/relay_dynamic_user_validation_test.sh
+          bash deploy/agent_bootstrap_test.sh
+          python3 -m unittest discover -s internal/executor -p free_relay_guard_test.py -v
+          python3 -B -m unittest discover -s installers/node -p 'test_*.py' -v
+          go test -race -tags msboost_joint_test ./internal/control -run '^TestDisasterJointSFTPObservation$' -count=1
+      - run: go build ./cmd/server && go build ./cmd/agent && go build ./cmd/restore
+  go-race:
+    name: Go race tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: msboost_ci
+          POSTGRES_PASSWORD: isolated-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U msboost_ci -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - run: go test -race -count=1 ./...
+        env:
+          MSBOOST_TEST_POSTGRES_URL: postgres://msboost_ci:isolated-ci-only@127.0.0.1:5432/postgres?sslmode=disable
+  gost-recovery:
+    name: Real GOST forwarding and recovery
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: msboost_ci
+          POSTGRES_PASSWORD: isolated-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U msboost_ci -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
       - name: Verify pinned GOST two-hop forwarding
         shell: bash
         run: |
@@ -134,33 +197,41 @@ jobs:
           # disposable PostgreSQL service is reachable only outside the above
           # loopback-only namespace. Each test creates its own guarded database.
           sudo env MSBOOST_TEST_POSTGRES_URL="$MSBOOST_TEST_POSTGRES_URL" "$PWD/.runtime/control-outage.test" -test.run '^Test(AdminPasswordPostgresIntegration|RelayRecoveryPostgresConcurrentPrepare)$' -test.count=1 -test.v -test.timeout=3m
-      - name: Check installers without executing them
+  disaster-docker:
+    name: Whole-site disaster backup with real Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify whole-site disaster backup and clean-host restore with real Docker
+        env:
+          MSBOOST_CI_DISASTER: '1'
+        run: sudo env GITHUB_ACTIONS=true MSBOOST_CI_DISASTER=1 PATH="$PATH" bash deploy/disaster_integration_test.sh
+  web:
+    name: Web HTTP and browser workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: apps/web
+      - name: Verify real HTTP workflows against isolated server
+        shell: bash
         run: |
-          for script in install.sh agent.sh deploy/*.sh installers/node/msboost.sh installers/reinstall/reinstall.sh; do bash -n "$script"; done
-          bash deploy/manage.sh --help
-          bash install.sh --help
-          bash agent.sh --help
-          bash deploy/manage_test.sh
-          bash deploy/host_caddy_test.sh
-          bash deploy/caddy_package_test.sh
-          bash deploy/caddy_restore_retry_test.sh
-          bash deploy/bootstrap_test.sh
-          bash deploy/backup_activity_recovery_test.sh
-          bash deploy/relay_recovery_test.sh
-          bash deploy/agent_migration_test.sh
-          bash deploy/uninstall_agent_test.sh
-          # Restore retry deliberately requires a root-owned private marker.
-          # Exercise real ownership in the disposable container, not by mocking
-          # stat or weakening that production check on the unprivileged runner.
-          docker run --rm --network none msboost-uninstall-fixture bash /src/deploy/disaster_test.sh
-          bash deploy/disaster_online_test.sh
-          bash deploy/disaster_joint_validation_test.sh
-          bash deploy/relay_dynamic_user_validation_test.sh
-          bash deploy/agent_bootstrap_test.sh
-          python3 -m unittest discover -s internal/executor -p free_relay_guard_test.py -v
-          python3 -B -m unittest discover -s installers/node -p 'test_*.py' -v
-          go test -race -tags msboost_joint_test ./internal/control -run '^TestDisasterJointSFTPObservation$' -count=1
-      - run: go build ./cmd/server && go build ./cmd/agent && go build ./cmd/restore
+          mkdir -p .runtime
+          go build -o .runtime/msboost-server ./cmd/server
+          node scripts/test-http.mjs
+      - name: Install isolated test browser
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: Verify browser workflows and supplementary UI
+        run: node scripts/test-http.mjs --browser
   tcp-probe-python:
     name: TCP probe Python ${{ matrix.python }}
     # Ubuntu 26.04 runners have no Python 3.9 build; 3.9 matches Debian 11 nodes.
@@ -217,7 +288,7 @@ jobs:
   image:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: [verify, relay-endurance, tcp-probe-python]
+    needs: [verify, go-race, gost-recovery, disaster-docker, web, relay-endurance, tcp-probe-python]
     env:
       MSBOOST_ENV_FILE: /tmp/msboost-ci.env
     permissions:
