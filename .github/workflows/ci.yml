@@ -163,7 +163,8 @@ jobs:
       - run: go build ./cmd/server && go build ./cmd/agent && go build ./cmd/restore
   tcp-probe-python:
     name: TCP probe Python ${{ matrix.python }}
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 runners have no Python 3.9 build; 3.9 matches Debian 11 nodes.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
