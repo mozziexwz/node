@@ -44,9 +44,6 @@ type mihomoRunner struct {
 
 var defaultMihomo = &mihomoRunner{fixed: os.Getenv("MSBOOST_MIHOMO_BINARY")}
 
-// NewMihomoOpener runs a given mihomo binary, for integration tests.
-func NewMihomoOpener(binary string) TunnelOpener { return (&mihomoRunner{fixed: binary}).Open }
-
 func (m *mihomoRunner) program(ctx context.Context) (string, error) {
 	if m.fixed != "" {
 		return m.fixed, nil

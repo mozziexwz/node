@@ -459,15 +459,6 @@ func (t *TaskService) hasExecutor(s *State) bool {
 	return false
 }
 
-func executorHasFreeRelayGuard(record ExecutorRecord) bool {
-	for _, capability := range record.Capabilities {
-		if capability == executor.FreeRelayGuardCapability {
-			return true
-		}
-	}
-	return false
-}
-
 func executorCapabilitiesFromRequest(r *http.Request) []string {
 	out := []string{}
 	if r.Header.Get("X-MSBOOST-Executor-Capabilities") == executor.FreeRelayGuardCapability {

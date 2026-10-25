@@ -80,14 +80,6 @@ func relaySegmentStopped(seg RelaySegment, now int64) bool {
 	// Historical lease timestamps are evidence only, never proof of stop.
 	return false
 }
-func relayRuleStopped(rule UserRule, now int64) bool {
-	for _, seg := range rule.Segments {
-		if !relaySegmentStopped(seg, now) {
-			return false
-		}
-	}
-	return true
-}
 func relayRuleRevoked(rule UserRule, now int64) bool {
 	if rule.FrontStatus == "check_customer_vps" {
 		return false

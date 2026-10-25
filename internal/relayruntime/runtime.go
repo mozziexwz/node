@@ -416,57 +416,6 @@ func (s *runtimeState) startPreparedLocked(ctx context.Context, rule Rule, prepa
 	}()
 	return nil
 }
-func (s *runtimeState) apply(ctx context.Context, response SyncResponse) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	desired := map[string]Rule{}
-	for _, rule := range response.Rules {
-		if len(rule.ID) < 16 || len(rule.ID) > 100 {
-			return errors.New("invalid rule identity")
-		}
-		remaining := rule.LeaseUntil - response.ServerTime
-		if remaining <= 0 {
-			continue
-		}
-		if remaining > 60000 {
-			return errors.New("invalid lease")
-		}
-		desired[rule.ID] = rule
-	}
-	for id, p := range s.processes {
-		rule, wanted := desired[id]
-		if !wanted || rule.Version != p.rule.Version {
-			s.stopLocked(id)
-		}
-		if !wanted {
-			select {
-			case <-p.done:
-				delete(s.processes, id)
-			default:
-			}
-		}
-	}
-	for id, rule := range desired {
-		p := s.processes[id]
-		if p != nil && (p.rule.Version != rule.Version || p.ack.State == "stopped" || p.ack.State == "stopping" || p.ack.State == "failed") {
-			select {
-			case <-p.done:
-				delete(s.processes, id)
-				p = nil
-			default:
-				continue
-			}
-		}
-		if p == nil {
-			if err := s.startLocked(ctx, rule); err != nil {
-				continue
-			}
-			p = s.processes[id]
-		}
-		p.expires = time.Now().Add(time.Duration(rule.LeaseUntil-response.ServerTime) * time.Millisecond)
-	}
-	return nil
-}
 
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.OfflinePolicy == "" {
