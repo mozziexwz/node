@@ -479,6 +479,9 @@ func executorCapabilitiesFromRequest(r *http.Request) []string {
 	if r.Header.Get(executor.NodeUpgradeHeader) == "1" {
 		out = append(out, executor.NodeUpgradeCapability)
 	}
+	if r.Header.Get(executor.NodeUDPHeader) == "1" {
+		out = append(out, executor.NodeUDPCapability)
+	}
 	return out
 }
 
@@ -507,7 +510,20 @@ func requiredCapabilities(r executor.Request) []string {
 	if r.Kind == "upgrade" || r.Kind == "fetch-config" {
 		out = append(out, executor.NodeUpgradeCapability)
 	}
+	// Older executors refuse a configuration with a UDP binding. Deploys stay
+	// open to them: without MSBOOST_UDP=1 the installer writes TCP only.
+	if configHasUDP(r.ClientConfig) {
+		out = append(out, executor.NodeUDPCapability)
+	}
 	return out
+}
+
+func configHasUDP(config []byte) bool {
+	if len(config) == 0 {
+		return false
+	}
+	info, err := executor.ParseClientConfig(config)
+	return err == nil && info.UDP
 }
 
 func capabilitiesSatisfy(have, need []string) bool {
@@ -555,6 +571,8 @@ func (t *TaskService) executorUnavailable(s *State, request executor.Request) er
 		return errors.New("在线执行机需要升级后才能校验中转目标，请联系管理员升级执行机")
 	case slices.Contains(need, executor.NodeUpgradeCapability) && !declared[executor.NodeUpgradeCapability]:
 		return errors.New("在线执行机需要升级后才能升级节点或取回配置文件，请联系管理员升级执行机")
+	case slices.Contains(need, executor.NodeUDPCapability) && !declared[executor.NodeUDPCapability]:
+		return errors.New("在线执行机需要升级后才能使用带 UDP 的节点配置，请联系管理员升级执行机")
 	default:
 		return errors.New("当前在线执行机版本过旧，不支持此中转功能，请联系管理员升级执行机")
 	}
@@ -562,7 +580,7 @@ func (t *TaskService) executorUnavailable(s *State, request executor.Request) er
 func taskPublicMessage(state string) string {
 	switch state {
 	case "succeeded":
-		return "任务已完成，请查看服务、本地测试与公网 TCP 的独立状态"
+		return "任务已完成，请查看服务、本地测试与公网 TCP、UDP 的独立状态"
 	case "executed":
 		return "已执行 DD 操作，请等待15分钟以上，再执行部署 MSBOOST。此状态仅表示操作已提交，不表示系统安装完成。"
 	case "unknown":
@@ -1484,7 +1502,17 @@ func cleanTaskHealth(in *executor.Health) *executor.Health {
 	case "enabled", "unavailable", "partial", "review_required":
 		bbr = in.BBR
 	}
-	return &executor.Health{Service: clean(in.Service), LocalSelfTest: clean(in.LocalSelfTest), PublicTCP: clean(in.PublicTCP), Game: clean(in.Game), BBR: bbr}
+	// Executors from before UDP send no PublicUDP; it stays empty and the page
+	// shows no UDP row for those results.
+	udp := ""
+	switch in.PublicUDP {
+	case "":
+	case "reachable", "unreachable", executor.UDPOff, executor.UDPNotTested:
+		udp = in.PublicUDP
+	default:
+		udp = "unknown"
+	}
+	return &executor.Health{Service: clean(in.Service), LocalSelfTest: clean(in.LocalSelfTest), PublicTCP: clean(in.PublicTCP), PublicUDP: udp, Game: clean(in.Game), BBR: bbr}
 }
 
 func (t *TaskService) listExecutors(w http.ResponseWriter, r *http.Request) {

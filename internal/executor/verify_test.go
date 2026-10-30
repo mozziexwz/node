@@ -138,6 +138,44 @@ func verifyConfig(t *testing.T, pattern string) []byte {
 	return []byte(`{"profiles":[{"profileName":"x","user":{"name":"u","password":"p"},"servers":[{"ipAddress":"8.8.8.8","domainName":"","portBindings":[{"port":31234,"protocol":"TCP"}]}]` + extra + `}],"activeProfile":"x"}`)
 }
 
+// The public UDP check opens the configuration's own tunnel over UDP and needs
+// a hello from the node's probe; anything less is unreachable.
+func TestProbeUDPOutcomes(t *testing.T) {
+	tcp := `{"port":31234,"protocol":"TCP"}`
+	udpConfig := []byte(strings.Replace(string(verifyConfig(t, `{"nonce":{"applyToAllUDPPacket":true}}`)), tcp, tcp+`,{"port":31234,"protocol":"UDP"}`, 1))
+	var got TunnelProfile
+	opener := func(tunnel Tunnel, err error) TunnelOpener {
+		return func(_ context.Context, p TunnelProfile) (Tunnel, error) {
+			got = p
+			return tunnel, err
+		}
+	}
+	if code := (&Verifier{Open: opener(nil, errors.New("unused"))}).ProbeUDP(context.Background(), verifyConfig(t, "")); code != UDPOff || got.Host != "" {
+		t.Fatalf("TCP-only configuration: %s %+v", code, got)
+	}
+	for _, c := range []struct {
+		name   string
+		tunnel Tunnel
+		err    error
+		want   string
+	}{
+		{"hello", &fakeTunnel{probe: &fakeProbe{}}, nil, "reachable"},
+		{"silent", &fakeTunnel{}, nil, "unreachable"},
+		{"dial", &fakeTunnel{dialErr: errors.New("refused")}, nil, "unreachable"},
+		{"no client", nil, errors.New("noexec /tmp"), UDPNotTested},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got = TunnelProfile{}
+			if code := (&Verifier{Open: opener(c.tunnel, c.err)}).ProbeUDP(context.Background(), udpConfig); code != c.want {
+				t.Fatalf("got %s, want %s", code, c.want)
+			}
+			if got.Transport != "UDP" || got.Host != "8.8.8.8" || got.Port != 31234 || got.TrafficPattern != "IgIQAQ==" {
+				t.Fatalf("tunnel profile %+v", got)
+			}
+		})
+	}
+}
+
 func reachable(context.Context, string) (net.Conn, error) {
 	client, server := net.Pipe()
 	server.Close()

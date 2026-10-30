@@ -71,9 +71,9 @@ func (e *Engine) fetchConfig(ctx context.Context, job Job, r Result) Result {
 	}
 	r.State = "succeeded"
 	r.Phase = "complete"
-	r.Message = "已从节点取回配置；公网 TCP 单独检查，游戏连通性尚未验证"
+	r.Message = "已从节点取回配置；公网 TCP 和 UDP 单独检查，游戏连通性尚未验证"
 	r.Config = node.data
-	r.Health = &Health{Service: service, LocalSelfTest: "not_tested", PublicTCP: e.TCPProbe(ctx, node.info.TargetHost, node.info.TargetPort), Game: "not_tested"}
+	r.Health = &Health{Service: service, LocalSelfTest: "not_tested", PublicTCP: e.TCPProbe(ctx, node.info.TargetHost, node.info.TargetPort), PublicUDP: e.UDPProbe(ctx, node.data), Game: "not_tested"}
 	return r
 }
 
@@ -95,7 +95,8 @@ func (e *Engine) upgrade(ctx context.Context, job Job, r Result) Result {
 		return checked
 	}
 	script := prepareAsset(job.Script) + bbrTuneScript + encodedAssignment("MSBOOST_SERVER_IP", job.Request.SSH.Host) + "export MSBOOST_SERVER_IP\nmsboost_phase=install\n[ -f /etc/msboost/install.env ]\n"
-	script += "bash \"$work/installer.sh\" >\"$work/private.log\" 2>&1\n" + nodeConfigTail
+	// An upgrade adds UDP to a TCP-only node when its port is free for it.
+	script += "MSBOOST_UDP=1 bash \"$work/installer.sh\" >\"$work/private.log\" 2>&1\n" + nodeConfigTail
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	r.Health = &Health{BBR: marker(out, "MSBOOST_BBR")}
 	if err != nil {
@@ -114,8 +115,13 @@ func (e *Engine) upgrade(ctx context.Context, job Job, r Result) Result {
 	}
 	r.State = "succeeded"
 	r.Phase = "complete"
-	r.Message = "节点已升级，配置没有变化；公网 TCP 单独检查，游戏连通性尚未验证"
+	// The member's existing file keeps working either way; a node that now
+	// serves UDP only offers it through the new file.
+	r.Message = "节点已升级，入口和认证没变，原配置继续可用；公网 TCP 和 UDP 单独检查，游戏连通性尚未验证"
+	if info.UDP && !old.UDP {
+		r.Message = "节点已升级并开启了 UDP，入口和认证没变；要用 UDP 需重新导入新配置。公网 TCP 和 UDP 单独检查，游戏连通性尚未验证"
+	}
 	r.Config = data
-	r.Health = &Health{Service: "running", LocalSelfTest: "passed", PublicTCP: e.TCPProbe(ctx, info.TargetHost, info.TargetPort), Game: "not_tested", BBR: marker(out, "MSBOOST_BBR")}
+	r.Health = &Health{Service: "running", LocalSelfTest: "passed", PublicTCP: e.TCPProbe(ctx, info.TargetHost, info.TargetPort), PublicUDP: e.UDPProbe(ctx, data), Game: "not_tested", BBR: marker(out, "MSBOOST_BBR")}
 	return r
 }

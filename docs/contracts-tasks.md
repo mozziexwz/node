@@ -22,10 +22,10 @@
 
 | kind | 额外参数 |
 |---|---|
-| `deploy` | `ssh`；仅接受 `mode:"fresh"`。每次重新生成受管节点认证与端口，不重装操作系统；失败时安装器仍以私有快照回滚。部署前只读核验目标为 Debian 11 或以上版本。 |
-| `upgrade` | 只有 `ssh`（公网 IPv4），不接受 `mode`、备注或其他参数。先只读取回节点现有配置（没有 `/etc/msboost/install.env` 或 `/root/直连.json` 时以 `not_installed` 失败，服务器不做任何改动；配置入口不是这台服务器时为 `config_host_mismatch`），再核验 Debian 11 或以上版本，然后不带 `MSBOOST_FORCE_FRESH` 重跑固定版本安装脚本，安装脚本沿用已记录的用户名、密码、端口和低熵档位。升级后的配置必须与升级前入口、端口和凭据一致，否则以 `config_changed` 失败。成功时交付同一份配置。 |
-| `fetch-config` | 只有 `ssh`（公网 IPv4）。只读取节点上的 `/root/直连.json`，按部署的标准核验格式和入口，不改动服务器，不跑本地自测也不调整 BBR；`health` 只有 `service`（两个节点服务都在运行为 `running`，否则 `stopped`）和 `publicTCP`。失败编码同 `upgrade` 的前两种。 |
-| `relay` | `ssh`；`clientConfig` 为 JSON 对象，只允许一个 profile、server 和 TCP 端口，其余字段（如 `trafficPattern`）原样保留；可选 `front:SSH` 增加第二台前置机，不能替代中转；`remark` 可选、最多 60 字符且不得含换行；`rateMbps` 可选，上下行各限速，省略为管理员设置的默认值（5），须在管理员设置的范围（1–10）内。网站另行写入使用者记录（`source:"manual"`、配置人邮箱），浏览器不能提交 `meta`。中转及前置 VPS 均先只读核验为 Debian 11 或以上版本。 |
+| `deploy` | `ssh`；仅接受 `mode:"fresh"`。每次重新生成受管节点认证与端口，不重装操作系统；执行机以 `MSBOOST_UDP=1` 运行安装脚本，节点在同一端口同时开 TCP 和 UDP（UDP 端口被其他程序占用时只开 TCP），配置在 TCP 绑定之后再列同端口的 UDP 绑定；失败时安装器仍以私有快照回滚。部署前只读核验目标为 Debian 11 或以上版本。 |
+| `upgrade` | 只有 `ssh`（公网 IPv4），不接受 `mode`、备注或其他参数。先只读取回节点现有配置（没有 `/etc/msboost/install.env` 或 `/root/直连.json` 时以 `not_installed` 失败，服务器不做任何改动；配置入口不是这台服务器时为 `config_host_mismatch`），再核验 Debian 11 或以上版本，然后不带 `MSBOOST_FORCE_FRESH`、带 `MSBOOST_UDP=1` 重跑固定版本安装脚本，安装脚本沿用已记录的用户名、密码、端口和低熵档位，原来只开 TCP 的节点同时开 UDP。升级后的配置必须与升级前入口、端口和凭据一致，否则以 `config_changed` 失败。成功时交付同一份配置。 |
+| `fetch-config` | 只有 `ssh`（公网 IPv4）。只读取节点上的 `/root/直连.json`，按部署的标准核验格式和入口，不改动服务器，不跑本地自测也不调整 BBR；`health` 只有 `service`（两个节点服务都在运行为 `running`，否则 `stopped`）、`publicTCP` 和 `publicUDP`。失败编码同 `upgrade` 的前两种。 |
+| `relay` | `ssh`；`clientConfig` 为 JSON 对象，只允许一个 profile、server 和 TCP 端口（之后可再有一个同端口的 UDP 绑定；生成的中转配置只保留 TCP，带 UDP 绑定的配置只派给声明 `node_udp_v1` 的执行机），其余字段（如 `trafficPattern`）原样保留；可选 `front:SSH` 增加第二台前置机，不能替代中转；`remark` 可选、最多 60 字符且不得含换行；`rateMbps` 可选，上下行各限速，省略为管理员设置的默认值（5），须在管理员设置的范围（1–10）内。网站另行写入使用者记录（`source:"manual"`、配置人邮箱），浏览器不能提交 `meta`。中转及前置 VPS 均先只读核验为 Debian 11 或以上版本。 |
 | `dd` | `ssh`；`dd:{confirmErase:true,portMode:"keep"\|"new",newPort?,passwordMode:"keep"\|"new",newPassword?,loginMode?}`，仅固定 Debian 12 重装流程。密钥登录时必须给 `loginMode`：`key` 把当前私钥推导出的公钥写入新系统（`passwordMode:"keep"`，不设 root 密码，私钥本身不写入），`password` 改为新 root 密码（`passwordMode:"new"` 与 `newPassword`）；重装脚本不能同时设置密码和公钥。密码登录时不接受 `loginMode:"key"`。 |
 | `cleanup-preview` / `cleanup` | 见下节；不接受前置机、客户端配置或 DD 参数 |
 
@@ -44,7 +44,7 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 
 `GET /api/tasks/{id}/config` 返回原始客户端 JSON，仅所有者可读，服务器内存副本保留 10 分钟，重启即丢失。浏览器可存入加密 IndexedDB，不承诺跨浏览器或清除网站数据后的恢复；节点配置可以用 `fetch-config` 从服务器重新读取。部署、升级和取回的默认下载名为 `直连.json`，自备中转为 `自备中转.json`。自备备注用于配置 `profileName` / `activeProfile` 和下载名基础，文件名清理路径及控制字符；浏览器同时处理 Windows 保留名。自备中转监听端口从可用范围随机选择，不按区间起点顺序递增；仍须真实绑定成功才交付配置。备注不改变节点认证。
 
-`health` 分离 `service,localSelfTest,publicTCP,game`；`game` 保留协议兼容，当前没有游戏探测，UI 不显示未检测的 Game 行。页面显示“服务运行 / 本地自测 / 公网 TCP 可达性”，并说明游戏需自行验证。`target_tcp_reachable` 仅表示目标 TCP 可达。`hops` 字段为 `fromHost,fromPort,toHost,toPort`。
+`health` 分离 `service,localSelfTest,publicTCP,publicUDP,game`；`publicUDP` 由执行机经 UDP 打开用户自己的 mieru 隧道、向节点 `127.0.0.1:20424` 发 hello 得出：`reachable`、`unreachable`、`off`（配置没有 UDP 绑定）或 `not_tested`（执行机无法运行检查），旧执行机的结果没有这一项；`game` 保留协议兼容，当前没有游戏探测，UI 不显示未检测的 Game 行。页面显示“服务运行 / 本地自测 / 公网 TCP 可达性 / 公网 UDP 可达性”（结果没有 `publicUDP` 时不显示最后一行），并说明游戏需自行验证。`target_tcp_reachable` 仅表示目标 TCP 可达。`hops` 字段为 `fromHost,fromPort,toHost,toPort`。
 
 维护模式对所有角色（含管理员）阻止新部署、中转、DD、清理及权益前置执行任务；已接受任务不自动取消。历史元数据、所有者临时配置和无密码的只读指纹探测仍可使用。指纹探测要求已认证的 active 账户、正常配额、公网地址及在线执行机，不套用免费工具邮箱要求；实际创建免费任务仍在读取 SSH 凭据前执行邮箱门禁，权益前置仍检查维护状态和权益。
 

@@ -141,8 +141,12 @@ func (m *mihomoRunner) Open(ctx context.Context, p TunnelProfile) (Tunnel, error
 		os.RemoveAll(home)
 		return nil, err
 	}
+	transport := "TCP"
+	if p.Transport == "UDP" {
+		transport = "UDP"
+	}
 	proxy := map[string]any{
-		"name": "verify", "type": "mieru", "server": p.Host, "port": p.Port, "transport": "TCP",
+		"name": "verify", "type": "mieru", "server": p.Host, "port": p.Port, "transport": transport,
 		"username": p.Username, "password": p.Password,
 		// With the standard handshake mihomo waits for the node's answer and
 		// closes the connection when the node refuses. Its SOCKS listener

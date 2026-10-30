@@ -118,6 +118,21 @@ type TunnelProfile struct {
 	Password string
 	// TrafficPattern is mieru's base64 protobuf form, or empty.
 	TrafficPattern string
+	// Transport is "UDP" for mieru over UDP; empty means TCP.
+	Transport string
+}
+
+// tunnelProfile takes the tunnel settings from a parsed configuration.
+func tunnelProfile(info ConfigInfo) TunnelProfile {
+	profile := TunnelProfile{Host: info.TargetHost, Port: info.TargetPort, Username: info.Username, Password: info.Password}
+	if p, ok := info.Document["profiles"].([]any)[0].(map[string]any)["trafficPattern"]; ok && p != nil {
+		// A pattern this executor cannot encode is left out: receivers accept
+		// any pattern, so the check still proves where the tunnel leads.
+		if encoded, err := EncodeTrafficPattern(p); err == nil {
+			profile.TrafficPattern = encoded
+		}
+	}
+	return profile
 }
 
 // Tunnel opens connections at the far end of one mieru tunnel.
@@ -156,14 +171,7 @@ func (v *Verifier) Verify(ctx context.Context, config []byte, opts VerifyOptions
 	if err != nil {
 		return done(VerifyReport{Code: VerifyUnavailable})
 	}
-	profile := TunnelProfile{Host: info.TargetHost, Port: info.TargetPort, Username: info.Username, Password: info.Password}
-	if p, ok := info.Document["profiles"].([]any)[0].(map[string]any)["trafficPattern"]; ok && p != nil {
-		// A pattern this executor cannot encode is left out: receivers accept
-		// any pattern, so the check still proves where the tunnel leads.
-		if encoded, err := EncodeTrafficPattern(p); err == nil {
-			profile.TrafficPattern = encoded
-		}
-	}
+	profile := tunnelProfile(info)
 	entry := net.JoinHostPort(profile.Host, strconv.Itoa(profile.Port))
 	reach := v.Reach
 	if reach == nil {
@@ -218,6 +226,52 @@ func (v *Verifier) Verify(ctx context.Context, config []byte, opts VerifyOptions
 	_ = probe.Close()
 	report.Filter = v.filterCheck(ctx, tunnel, opts)
 	return done(report)
+}
+
+// Public UDP results, next to the TCP check's reachable and unreachable.
+const (
+	// UDPOff: the configuration has no UDP binding.
+	UDPOff = "off"
+	// UDPNotTested: the check itself could not run (mihomo, clock, sandbox).
+	UDPNotTested = "not_tested"
+)
+
+// ProbeUDP opens the configuration's own tunnel over UDP to the node and
+// completes a hello with its loopback probe. UDP has no handshake to test, and
+// a cloud security group that admits TCP only shows up here and nowhere else.
+func (v *Verifier) ProbeUDP(ctx context.Context, config []byte) string {
+	info, err := ParseClientConfig(config)
+	if err != nil || !info.UDP {
+		return UDPOff
+	}
+	now := v.Now
+	if now == nil {
+		now = time.Now
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	profile := tunnelProfile(info)
+	profile.Transport = "UDP"
+	open := v.Open
+	if open == nil {
+		open = defaultMihomo.Open
+	}
+	tunnel, err := open(ctx, profile)
+	if err != nil {
+		return UDPNotTested
+	}
+	defer tunnel.Close()
+	dialCtx, cancelDial := context.WithTimeout(ctx, 15*time.Second)
+	probe, err := tunnel.DialContext(dialCtx, probeAddress)
+	cancelDial()
+	if err != nil {
+		return "unreachable"
+	}
+	defer probe.Close()
+	if err := probeHello(probe, bufio.NewReaderSize(probe, 4100), now().Add(8*time.Second)); err != nil {
+		return "unreachable"
+	}
+	return "reachable"
 }
 
 func allowedSite(opts VerifyOptions) string {

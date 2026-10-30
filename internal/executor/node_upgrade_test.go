@@ -28,7 +28,7 @@ func TestFetchConfigOnlyReadsTheNode(t *testing.T) {
 	if out.State != "succeeded" || string(out.Config) != sampleConfig || len(remote.scripts) != 1 {
 		t.Fatalf("configuration not fetched: %+v", out)
 	}
-	if out.Health == nil || out.Health.Service != "running" || out.Health.PublicTCP != "reachable" || out.Health.LocalSelfTest != "not_tested" || out.Health.BBR != "" {
+	if out.Health == nil || out.Health.Service != "running" || out.Health.PublicTCP != "reachable" || out.Health.PublicUDP != UDPOff || out.Health.LocalSelfTest != "not_tested" || out.Health.BBR != "" {
 		t.Fatalf("fetch reported checks it did not run: %+v", out.Health)
 	}
 	for _, write := range []string{"installer.sh", "systemctl restart", "systemctl start", "systemctl stop", "rm ", "mv ", "cp ", "tee "} {
@@ -83,7 +83,7 @@ func TestUpgradeKeepsTheRecordedCredentials(t *testing.T) {
 			t.Fatalf("upgrade replaces the node's credentials: %s", fresh)
 		}
 	}
-	if !strings.Contains(install, "bash \"$work/installer.sh\" >\"$work/private.log\" 2>&1\n") || !strings.Contains(install, "[ -f /etc/msboost/install.env ]") || !strings.Contains(install, encodedAssignment("MSBOOST_SERVER_IP", "8.8.8.8")) || !strings.HasSuffix(install, nodeConfigTail) {
+	if !strings.Contains(install, "MSBOOST_UDP=1 bash \"$work/installer.sh\" >\"$work/private.log\" 2>&1\n") || !strings.Contains(install, "[ -f /etc/msboost/install.env ]") || !strings.Contains(install, encodedAssignment("MSBOOST_SERVER_IP", "8.8.8.8")) || !strings.HasSuffix(install, nodeConfigTail) {
 		t.Fatal("upgrade did not rerun the installer for the recorded node")
 	}
 }
@@ -105,6 +105,28 @@ func TestUpgradeNeverInstallsOnAServerWithoutANode(t *testing.T) {
 	out = (&Engine{Remote: untouched}).Execute(context.Background(), Job{Request: Request{Kind: "upgrade", SSH: testSSH("8.8.8.8")}, Script: tampered})
 	if out.State != "failed" || out.Phase != "integrity" {
 		t.Fatalf("tampered installer: %+v", out)
+	}
+}
+
+// Rerunning the new installer on a TCP-only node adds a UDP binding. The old
+// file keeps working; the result says the new one is needed for UDP.
+func TestUpgradeThatAddsUDPSaysSo(t *testing.T) {
+	tcp := `{"port":23456,"protocol":"TCP"}`
+	dual := strings.Replace(sampleConfig, tcp, tcp+`,{"port":23456,"protocol":"UDP"}`, 1)
+	remote := &fakeRemote{run: func(_ SSH, script string) ([]byte, error) {
+		switch {
+		case script == nodeConfigScript:
+			return nodeOutput(sampleConfig), nil
+		case script == debianPreflightScript:
+			return []byte("MSBOOST_READY=1\n"), nil
+		}
+		return []byte("MSBOOST_CONFIG=" + base64.StdEncoding.EncodeToString([]byte(dual)) + "\n"), nil
+	}}
+	var probed []byte
+	udp := func(_ context.Context, config []byte) string { probed = config; return "reachable" }
+	out := (&Engine{Remote: remote, TCPProbe: tcpReachable, UDPProbe: udp}).Execute(context.Background(), Job{Request: Request{Kind: "upgrade", SSH: testSSH("8.8.8.8")}, Script: testAsset()})
+	if out.State != "succeeded" || string(out.Config) != dual || out.Health.PublicUDP != "reachable" || string(probed) != dual || !strings.Contains(out.Message, "开启了 UDP") {
+		t.Fatalf("upgrade that adds UDP: %+v %+v", out, out.Health)
 	}
 }
 

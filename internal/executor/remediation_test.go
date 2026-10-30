@@ -308,7 +308,7 @@ func TestCleanupPythonMSBOOSTOwnershipAndRetainedData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"owned", "no-firewall", "unknown", "symlink", "unowned", "changed-cache", "also-unit", "propagated-stop"} {
+	for _, scenario := range []string{"owned", "owned-udp", "no-firewall", "unknown", "symlink", "unowned", "changed-cache", "also-unit", "propagated-stop"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			write := func(path, data string) {
@@ -320,11 +320,14 @@ func TestCleanupPythonMSBOOSTOwnershipAndRetainedData(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			owned := "1"
-			if scenario == "no-firewall" {
+			owned, udpOwned := "1", "0"
+			switch scenario {
+			case "no-firewall":
 				owned = "0"
+			case "owned-udp":
+				udpOwned = "1"
 			}
-			write("etc/msboost/install.env", "MANAGED_BY=msboost-installer-v1\nUSER_NAME=node\nUSER_PASS=private-password\nPORT=30001\nFIREWALL_PORT=30001\nFIREWALL_UFW_OWNED="+owned+"\nFIREWALLD_RUNTIME_OWNED=0\nFIREWALLD_PERMANENT_OWNED=0\n")
+			write("etc/msboost/install.env", "MANAGED_BY=msboost-installer-v1\nUSER_NAME=node\nUSER_PASS=private-password\nPORT=30001\nUDP="+udpOwned+"\nFIREWALL_PORT=30001\nFIREWALL_UFW_OWNED="+owned+"\nFIREWALLD_RUNTIME_OWNED=0\nFIREWALLD_PERMANENT_OWNED=0\nFIREWALL_UFW_UDP_OWNED="+udpOwned+"\nFIREWALLD_RUNTIME_UDP_OWNED=0\nFIREWALLD_PERMANENT_UDP_OWNED=0\n")
 			write("etc/msboost/config.yaml", "private configuration")
 			write("etc/msboost/ruleset/msboost-direct.yaml", "owned rules")
 			write("var/lib/msboost/ruleset/msboost-filter.mrs", "owned data")
@@ -406,8 +409,17 @@ subprocess.run=fake_run
 				}
 				write("etc/systemd/system/msboost.service", unit)
 			}
+			udpItem := false
+			for _, item := range report.Items {
+				if item.Kind == "firewall" && item.Path == "ufw::30001/udp" && validCleanupItem("msboost", item) {
+					udpItem = true
+				}
+			}
+			if udpItem != (scenario == "owned-udp") {
+				t.Fatalf("UDP firewall preview %+v", report.Items)
+			}
 			out, err = run("cleanup", report.Digest)
-			if scenario == "owned" || scenario == "no-firewall" {
+			if scenario == "owned" || scenario == "owned-udp" || scenario == "no-firewall" {
 				if err != nil {
 					t.Fatalf("cleanup %s %v", out, err)
 				}
@@ -420,8 +432,11 @@ subprocess.run=fake_run
 				if strings.Contains(string(calls), "userdel") || strings.Contains(string(calls), "groupdel") || strings.Contains(string(calls), "flush") {
 					t.Fatal("broad cleanup command")
 				}
-				if strings.Contains(string(calls), "ufw") != (scenario == "owned") {
+				if strings.Contains(string(calls), "ufw") != (scenario != "no-firewall") {
 					t.Fatal("firewall ownership not respected")
+				}
+				if strings.Contains(string(calls), `"30001/udp"`) != (scenario == "owned-udp") || (scenario != "no-firewall") != strings.Contains(string(calls), `"30001/tcp"`) {
+					t.Fatalf("firewall rules removed by protocol: %s", calls)
 				}
 			} else {
 				if err == nil {
