@@ -16,18 +16,18 @@ UI 样式和产品需求来自用户提供的 `msboost-v4.1-ui` 文件夹及后�
 
 测速维护源码 `installers/node/tcp_probe.py` 的 SHA256 为 `981fd3f6b7434849ea6b2fb751527c119e4ada90abef48f594f70b56e9ba1683`。
 
-MSBOOST 脚本运行时使用 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，默认版本 `v1.19.32`（内置 [enfein/mieru](https://github.com/enfein/mieru) v3.38.0），可受 `MSBOOST_ENGINE_VERSION` 环境变量影响；上游 [该版本 LICENSE](https://github.com/MetaCubeX/mihomo/blob/v1.19.32/LICENSE) 为 GPLv3。相应下载、使用与分发应保留上游要求的许可及来源信息。脚本写死默认版本各 Linux 文件的 SHA256，下载后先与写死值核对，再与 GitHub 发布摘要核对；用 `MSBOOST_ENGINE_VERSION` 指定其他版本时只核对 GitHub 发布摘要：
+MSBOOST 脚本运行时使用 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)，默认版本 `v1.19.33`（内置 [enfein/mieru](https://github.com/enfein/mieru) v3.38.1），可受 `MSBOOST_ENGINE_VERSION` 环境变量影响；上游 [该版本 LICENSE](https://github.com/MetaCubeX/mihomo/blob/v1.19.33/LICENSE) 为 GPLv3。相应下载、使用与分发应保留上游要求的许可及来源信息。脚本写死默认版本各 Linux 文件的 SHA256，下载后先与写死值核对，再与 GitHub 发布摘要核对；用 `MSBOOST_ENGINE_VERSION` 指定其他版本时只核对 GitHub 发布摘要：
 
 | 文件 | SHA256 |
 |---|---|
-| `mihomo-linux-amd64-compatible-v1.19.32.gz` | `ba3ce607747a07f948fc35780e108a4a7c7f552a38b9bd4d115f313ebcb89c20` |
-| `mihomo-linux-amd64-v1-v1.19.32.gz` | `306f81e723e60ce6b828899a6fe83e1d00e9ecefb2dc8d4d849312a5bc00efdc` |
-| `mihomo-linux-amd64-v1.19.32.gz` | `8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10` |
-| `mihomo-linux-arm64-v1.19.32.gz` | `9dd862e28b46ff7d775f169cceebc28deccaa0a9e804237d421cd2571e0caba0` |
+| `mihomo-linux-amd64-compatible-v1.19.33.gz` | `386508bfb1c72c43b6a0eda73708ecdce82546581b0ebcb16366c53757c622b6` |
+| `mihomo-linux-amd64-v1-v1.19.33.gz` | `8ec92e7b2fdc6b853ba00156bab7e4e965c8b0d843b8c4ac8ab98795f02ad524` |
+| `mihomo-linux-amd64-v1.19.33.gz` | `132f6f3edf9a65e62f04853aed3358472e0b2b7666daa8419edfa2ddf5bb6323` |
+| `mihomo-linux-arm64-v1.19.33.gz` | `ba408b317080ee265c46cb923a50018c1b82cbd708551cdd46a1e3e307396187` |
 
 脚本还读取 `meta-rules-dat` 的 [gfw.mrs](https://github.com/MetaCubeX/meta-rules-dat/blob/meta/geo/geosite/gfw.mrs)；该 URL 的资源会随上游分支变化，不能把脚本自身哈希误认为所有运行时资源均已冻结。
 
-执行机的中转目标校验（`internal/executor/verify_mihomo.go`）也用同一版本的 mihomo 作为隧道客户端：第一次校验时下载 `mihomo-linux-amd64-compatible-v1.19.32.gz` 或 `mihomo-linux-arm64-v1.19.32.gz`，与上表写死的 SHA256 核对后解压到执行机服务的私有临时目录，作为单独程序启动；它不链接进执行机，也不随本项目的程序或镜像分发。`MSBOOST_MIHOMO_BINARY` 可改用管理员自备的文件，其来源与许可由管理员负责。执行机为传递 mieru 流量模式而做的 protobuf 编码（`EncodeTrafficPattern`）依据 mieru 公开的 `TrafficPattern` 字段编号自行编写，没有复制上游代码。
+执行机的中转目标校验（`internal/executor/verify_mihomo.go`）也用同一版本的 mihomo 作为隧道客户端：第一次校验时下载 `mihomo-linux-amd64-compatible-v1.19.33.gz` 或 `mihomo-linux-arm64-v1.19.33.gz`，与上表写死的 SHA256 核对后解压到执行机服务的私有临时目录，作为单独程序启动；它不链接进执行机，也不随本项目的程序或镜像分发。`MSBOOST_MIHOMO_BINARY` 可改用管理员自备的文件，其来源与许可由管理员负责。执行机为传递 mieru 流量模式而做的 protobuf 编码（`EncodeTrafficPattern`）依据 mieru 公开的 `TrafficPattern` 字段编号自行编写，没有复制上游代码。
 
 ## 2. bin456789/reinstall
 

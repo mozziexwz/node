@@ -25,7 +25,7 @@ readonly PROBE_CONFIG="${APP_DIR}/tcp-probe.json"
 readonly PROBE_PORT=20424
 readonly STATE_FILE="${APP_DIR}/install.env"
 readonly CLIENT_CONFIG="/root/直连.json"
-readonly PINNED_ENGINE_VERSION="v1.19.32"
+readonly PINNED_ENGINE_VERSION="v1.19.33"
 readonly VERSION="${MSBOOST_ENGINE_VERSION:-${PINNED_ENGINE_VERSION}}"
 readonly RULE_URL="https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/gfw.mrs"
 readonly TIMEZONE="Asia/Shanghai"
@@ -670,10 +670,10 @@ download_file() {
 pinned_engine_assets() {
   [[ "${VERSION}" == "${PINNED_ENGINE_VERSION}" ]] || return 0
   cat <<'MSBOOST_PINNED_ENGINE'
-mihomo-linux-amd64-compatible-v1.19.32.gz ba3ce607747a07f948fc35780e108a4a7c7f552a38b9bd4d115f313ebcb89c20
-mihomo-linux-amd64-v1-v1.19.32.gz 306f81e723e60ce6b828899a6fe83e1d00e9ecefb2dc8d4d849312a5bc00efdc
-mihomo-linux-amd64-v1.19.32.gz 8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10
-mihomo-linux-arm64-v1.19.32.gz 9dd862e28b46ff7d775f169cceebc28deccaa0a9e804237d421cd2571e0caba0
+mihomo-linux-amd64-compatible-v1.19.33.gz 386508bfb1c72c43b6a0eda73708ecdce82546581b0ebcb16366c53757c622b6
+mihomo-linux-amd64-v1-v1.19.33.gz 8ec92e7b2fdc6b853ba00156bab7e4e965c8b0d843b8c4ac8ab98795f02ad524
+mihomo-linux-amd64-v1.19.33.gz 132f6f3edf9a65e62f04853aed3358472e0b2b7666daa8419edfa2ddf5bb6323
+mihomo-linux-arm64-v1.19.33.gz ba408b317080ee265c46cb923a50018c1b82cbd708551cdd46a1e3e307396187
 MSBOOST_PINNED_ENGINE
 }
 

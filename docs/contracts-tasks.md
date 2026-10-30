@@ -92,7 +92,7 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 - `relay-code`：按 `code` 设置。`log` 只把结果记入使用记录（`verify,verifiedAt`）。`enforce` 时 `tunnel_failed`、`not_msboost` 和 `entry_unreachable` 会让执行机删除刚建立的中转和前置机上的配置，任务失败（`phase:"verify"`，`errorCode` 为 `verify_tunnel_failed`、`verify_not_msboost` 或 `verify_entry_unreachable`，`failedRole:"target"`），本次不计次；`unavailable` 不阻止建立。强制校验只派给声明了校验能力的执行机，没有时拒绝使用并提示升级执行机。
 - 中转服务器 `meta.json` 写入 `verified`。网站读取服务器列表时给 `relay-inventory` 附带 `reportVerified:true`，执行机返回每条中转的 `verified`，拥有者的列表据此显示。
 - `relay-verify`：面板为捐赠权益线路发起的内部任务，只有 `clientConfig`（入口改写为该规则的线路入口；规则被校验暂停时为客户节点本身）和 `verify`，不带 SSH，也不占用服务器。期限 10 分钟，不进入用户任务列表，管理员审计可见，结束 7 天后删除记录，结果保留在规则上。调度和处理见 [商务契约](contracts-commerce.md) 的「用户配置」。
-- 隧道客户端是 mihomo v1.19.32，两架构 `.gz` 的 SHA-256 与节点安装器相同并固定在代码中。执行机第一次校验时从 GitHub Release 下载到服务私有的临时目录并核对摘要，之后每次启动前再次核对；它作为单独程序运行，只监听回环地址，关闭进程查找和 IPv6，校验结束即停止并删除工作目录。执行机不链接 mieru 代码。`MSBOOST_MIHOMO_BINARY` 可改用管理员自备的本机文件，按原样使用。
+- 隧道客户端是 mihomo v1.19.33，两架构 `.gz` 的 SHA-256 与节点安装器相同并固定在代码中。执行机第一次校验时从 GitHub Release 下载到服务私有的临时目录并核对摘要，之后每次启动前再次核对；它作为单独程序运行，只监听回环地址，关闭进程查找和 IPv6，校验结束即停止并删除工作目录。执行机不链接 mieru 代码。`MSBOOST_MIHOMO_BINARY` 可改用管理员自备的本机文件，按原样使用。
 - 校验用的配置与 SSH 凭据一样只在执行任务的内存信封中，不写入任务记录、数据库或日志。
 - 实机检查：在 Linux 上用 `go test -c -o verify-field.test ./internal/executor` 编译，再以 `MSBOOST_VERIFY_FIELD=<放客户端配置的目录> ./verify-field.test -test.run TestVerifyField -test.v` 运行，会用真实的 mihomo 逐个校验目录里的配置并打印结果；不设这个变量时该测试跳过。
 

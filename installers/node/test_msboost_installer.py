@@ -327,10 +327,10 @@ echo ROLLBACK_VERIFIED
 '''
 
 PINNED_ENGINE = {
-    "mihomo-linux-amd64-compatible-v1.19.32.gz": "ba3ce607747a07f948fc35780e108a4a7c7f552a38b9bd4d115f313ebcb89c20",
-    "mihomo-linux-amd64-v1-v1.19.32.gz": "306f81e723e60ce6b828899a6fe83e1d00e9ecefb2dc8d4d849312a5bc00efdc",
-    "mihomo-linux-amd64-v1.19.32.gz": "8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10",
-    "mihomo-linux-arm64-v1.19.32.gz": "9dd862e28b46ff7d775f169cceebc28deccaa0a9e804237d421cd2571e0caba0",
+    "mihomo-linux-amd64-compatible-v1.19.33.gz": "386508bfb1c72c43b6a0eda73708ecdce82546581b0ebcb16366c53757c622b6",
+    "mihomo-linux-amd64-v1-v1.19.33.gz": "8ec92e7b2fdc6b853ba00156bab7e4e965c8b0d843b8c4ac8ab98795f02ad524",
+    "mihomo-linux-amd64-v1.19.33.gz": "132f6f3edf9a65e62f04853aed3358472e0b2b7666daa8419edfa2ddf5bb6323",
+    "mihomo-linux-arm64-v1.19.33.gz": "ba408b317080ee265c46cb923a50018c1b82cbd708551cdd46a1e3e307396187",
 }
 # LOW_ENTROPY_MODE_* enum values from mieru pkg/appctl/proto/base.proto.
 LOW_ENTROPY_ENUM = {"32": 1, "40": 2, "48": 3, "56": 4}
@@ -387,13 +387,13 @@ def guard_block():
 
 class EngineAndTrafficPatternTests(unittest.TestCase):
     def test_pinned_engine_version_files_and_hashes(self):
-        self.assertIn('readonly PINNED_ENGINE_VERSION="v1.19.32"\n', SCRIPT)
+        self.assertIn('readonly PINNED_ENGINE_VERSION="v1.19.33"\n', SCRIPT)
         self.assertIn('readonly VERSION="${MSBOOST_ENGINE_VERSION:-${PINNED_ENGINE_VERSION}}"\n', SCRIPT)
         rows = [line.split() for line in heredoc("MSBOOST_PINNED_ENGINE").splitlines()]
         self.assertEqual({name: digest for name, digest in rows}, PINNED_ENGINE)
         for name, digest in rows:
             self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
-            self.assertTrue(name.endswith("-v1.19.32.gz"), name)
+            self.assertTrue(name.endswith("-v1.19.33.gz"), name)
         # Every name the selector can choose for the pinned version is reviewed.
         selector = function("download_engine")
         for name in PINNED_ENGINE:
@@ -405,19 +405,19 @@ class EngineAndTrafficPatternTests(unittest.TestCase):
 
     def test_pinned_selection_ignores_unreviewed_assets(self):
         code = engine_selector()
-        assets = [{"name": "mihomo-linux-arm64-v8-v1.19.32.gz", "browser_download_url": "https://example.invalid/v8", "digest": "sha256:" + "0" * 64},
-                  {"name": "mihomo-linux-arm64-v1.19.32.gz", "browser_download_url": "https://example.invalid/arm64", "digest": "sha256:" + "1" * 64},
-                  {"name": "mihomo-linux-amd64-v1.19.32.gz", "browser_download_url": "https://example.invalid/amd64", "digest": "sha256:" + "2" * 64}]
+        assets = [{"name": "mihomo-linux-arm64-v8-v1.19.33.gz", "browser_download_url": "https://example.invalid/v8", "digest": "sha256:" + "0" * 64},
+                  {"name": "mihomo-linux-arm64-v1.19.33.gz", "browser_download_url": "https://example.invalid/arm64", "digest": "sha256:" + "1" * 64},
+                  {"name": "mihomo-linux-amd64-v1.19.33.gz", "browser_download_url": "https://example.invalid/amd64", "digest": "sha256:" + "2" * 64}]
         with tempfile.TemporaryDirectory() as directory:
             release = Path(directory) / "release.json"
             release.write_text(json.dumps({"assets": assets}), encoding="utf-8")
             pinned = " ".join(PINNED_ENGINE)
-            out = subprocess.run([sys.executable, "-c", code, str(release), "arm64", "v1.19.32", pinned], capture_output=True, text=True)
-            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-arm64-v1.19.32.gz")
-            out = subprocess.run([sys.executable, "-c", code, str(release), "arm64", "v1.19.32", ""], capture_output=True, text=True)
-            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-arm64-v8-v1.19.32.gz")
-            out = subprocess.run([sys.executable, "-c", code, str(release), "amd64", "v1.19.32", pinned], capture_output=True, text=True)
-            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-amd64-v1.19.32.gz")
+            out = subprocess.run([sys.executable, "-c", code, str(release), "arm64", "v1.19.33", pinned], capture_output=True, text=True)
+            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-arm64-v1.19.33.gz")
+            out = subprocess.run([sys.executable, "-c", code, str(release), "arm64", "v1.19.33", ""], capture_output=True, text=True)
+            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-arm64-v8-v1.19.33.gz")
+            out = subprocess.run([sys.executable, "-c", code, str(release), "amd64", "v1.19.33", pinned], capture_output=True, text=True)
+            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-amd64-v1.19.33.gz")
 
     def test_low_entropy_patterns_are_mieru_protobuf(self):
         if not bash(): self.skipTest("Bash unavailable")
@@ -536,14 +536,14 @@ class EngineAndTrafficPatternTests(unittest.TestCase):
             root = Path(os.path.relpath(directory, Path.cwd())).as_posix()
             Path(directory, "msboost.service").write_bytes(unit("msboost.service"))
             Path(directory, "msboost-tcp-probe.service").write_bytes(unit("msboost-tcp-probe.service"))
-            body = ("MANAGED_MARKER=msboost-installer-v1\nUSER_NAME=u\nUSER_PASS=p\nPORT=1\nVERSION=v1.19.32\nLOW_ENTROPY=48\n"
+            body = ("MANAGED_MARKER=msboost-installer-v1\nUSER_NAME=u\nUSER_PASS=p\nPORT=1\nVERSION=v1.19.33\nLOW_ENTROPY=48\n"
                     "NEW_FW_UFW_OWNED=0\nNEW_FW_FIREWALLD_RUNTIME_OWNED=0\nNEW_FW_FIREWALLD_PERMANENT_OWNED=0\nFW_FIREWALLD_ZONE=\n"
                     "STAGE_DIR='" + root + "'\n" + heredoc_function("write_install_state") + "write_install_state '" + root + "/install.env'\n")
             result = run_bash(body)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             lines = Path(directory, "install.env").read_text(encoding="utf-8").splitlines()
             self.assertIn("LOW_ENTROPY=48", lines)
-            self.assertIn("ENGINE_VERSION=v1.19.32", lines)
+            self.assertIn("ENGINE_VERSION=v1.19.33", lines)
         fixture = VirtualLinux()
         data, uid, gid, mode, nlink = fixture.files["/etc/msboost/install.env"]
         fixture.put("/etc/msboost/install.env", data + b"LOW_ENTROPY=48\n", uid, gid, mode, nlink)

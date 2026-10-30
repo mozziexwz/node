@@ -23,14 +23,14 @@ import (
 
 func base64Std(data []byte) string { return base64.StdEncoding.EncodeToString(data) }
 
-// mihomo is the same release the node installer pins (v1.19.32), checked
+// mihomo is the same release the node installer pins (v1.19.33), checked
 // against the reviewed archive digests before it is ever run. It is GPL-3.0
 // software, downloaded and run as its own process.
 type mihomoRelease struct{ URL, SHA256 string }
 
 var mihomoReleases = map[string]mihomoRelease{
-	"amd64": {"https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-linux-amd64-compatible-v1.19.32.gz", "ba3ce607747a07f948fc35780e108a4a7c7f552a38b9bd4d115f313ebcb89c20"},
-	"arm64": {"https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-linux-arm64-v1.19.32.gz", "9dd862e28b46ff7d775f169cceebc28deccaa0a9e804237d421cd2571e0caba0"},
+	"amd64": {"https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-amd64-compatible-v1.19.33.gz", "386508bfb1c72c43b6a0eda73708ecdce82546581b0ebcb16366c53757c622b6"},
+	"arm64": {"https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-arm64-v1.19.33.gz", "ba408b317080ee265c46cb923a50018c1b82cbd708551cdd46a1e3e307396187"},
 }
 
 type mihomoRunner struct {
