@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # msboost unattended installer for common IPv4 systemd VPS distributions.
-# Usage: sudo bash msboost.sh [username] [password] [tcp_port]
+# Usage: sudo bash msboost.sh [username] [password] [port]
 # Standalone use reuses omitted values. The managed fresh workflow sets
 # MSBOOST_FORCE_FRESH=1 so prior credentials and port cannot be inherited.
 # MSBOOST_LOW_ENTROPY=off|56|48|40|32 selects the Mieru low-entropy level.
 # New credentials default to 48; a rerun keeps the recorded level, or off.
+# MSBOOST_UDP=1 also serves UDP on the same port, unless another process holds
+# it; the website's executors pass it. Without it a rerun keeps the recorded
+# choice and a new installation is TCP-only, which older executors can read.
+# The client configuration lists UDP only when the node serves it.
 
 set -Eeuo pipefail
 umask 077
@@ -69,6 +73,23 @@ OLD_FW_UFW_REMOVED=0
 OLD_FW_FIREWALLD_RUNTIME_REMOVED=0
 OLD_FW_FIREWALLD_PERMANENT_REMOVED=0
 OLD_FW_FIREWALLD_PERMANENT_REMOVED_OFFLINE=0
+# The same records for the UDP rule of the same port.
+FW_UFW_UDP_ADDED=0
+FW_FIREWALLD_RUNTIME_UDP_ADDED=0
+FW_FIREWALLD_PERMANENT_UDP_ADDED=0
+OLD_FW_UFW_UDP_OWNED=0
+OLD_FW_FIREWALLD_RUNTIME_UDP_OWNED=0
+OLD_FW_FIREWALLD_PERMANENT_UDP_OWNED=0
+NEW_FW_UFW_UDP_OWNED=0
+NEW_FW_FIREWALLD_RUNTIME_UDP_OWNED=0
+NEW_FW_FIREWALLD_PERMANENT_UDP_OWNED=0
+OLD_FW_UFW_UDP_REMOVED=0
+OLD_FW_FIREWALLD_RUNTIME_UDP_REMOVED=0
+OLD_FW_FIREWALLD_PERMANENT_UDP_REMOVED=0
+OLD_FW_FIREWALLD_PERMANENT_UDP_REMOVED_OFFLINE=0
+UDP_ENABLED=0
+INGRESS=""
+SELFTEST_UDP_PORT=""
 TIME_STATUS="not checked"
 FIREWALL_STATUS="not checked"
 ROLLBACK_FAILED=0
@@ -130,6 +151,34 @@ rollback_firewall() {
   if (( OLD_FW_FIREWALLD_PERMANENT_REMOVED_OFFLINE )); then
     firewall-offline-cmd --zone="${OLD_FW_FIREWALLD_ZONE}" --add-port="${OLD_FW_PORT}/tcp" >/dev/null 2>&1 || \
       rollback_problem "could not restore the prior offline firewalld rule for TCP/${OLD_FW_PORT}."
+  fi
+  if (( FW_UFW_UDP_ADDED )); then
+    ufw --force delete allow "${PORT}/udp" >/dev/null 2>&1 || \
+      rollback_problem "could not remove the newly added UFW rule for UDP/${PORT}."
+  fi
+  if (( FW_FIREWALLD_RUNTIME_UDP_ADDED )); then
+    firewall-cmd --quiet --zone="${FW_FIREWALLD_ZONE}" --remove-port="${PORT}/udp" >/dev/null 2>&1 || \
+      rollback_problem "could not remove the new runtime firewalld rule for UDP/${PORT}."
+  fi
+  if (( FW_FIREWALLD_PERMANENT_UDP_ADDED )); then
+    firewall-cmd --quiet --permanent --zone="${FW_FIREWALLD_ZONE}" --remove-port="${PORT}/udp" >/dev/null 2>&1 || \
+      rollback_problem "could not remove the new permanent firewalld rule for UDP/${PORT}."
+  fi
+  if (( OLD_FW_UFW_UDP_REMOVED )); then
+    ufw allow "${OLD_FW_PORT}/udp" >/dev/null 2>&1 || \
+      rollback_problem "could not restore the prior UFW rule for UDP/${OLD_FW_PORT}."
+  fi
+  if (( OLD_FW_FIREWALLD_RUNTIME_UDP_REMOVED )); then
+    firewall-cmd --quiet --zone="${OLD_FW_FIREWALLD_ZONE}" --add-port="${OLD_FW_PORT}/udp" >/dev/null 2>&1 || \
+      rollback_problem "could not restore the prior runtime firewalld rule for UDP/${OLD_FW_PORT}."
+  fi
+  if (( OLD_FW_FIREWALLD_PERMANENT_UDP_REMOVED )); then
+    firewall-cmd --quiet --permanent --zone="${OLD_FW_FIREWALLD_ZONE}" --add-port="${OLD_FW_PORT}/udp" >/dev/null 2>&1 || \
+      rollback_problem "could not restore the prior permanent firewalld rule for UDP/${OLD_FW_PORT}."
+  fi
+  if (( OLD_FW_FIREWALLD_PERMANENT_UDP_REMOVED_OFFLINE )); then
+    firewall-offline-cmd --zone="${OLD_FW_FIREWALLD_ZONE}" --add-port="${OLD_FW_PORT}/udp" >/dev/null 2>&1 || \
+      rollback_problem "could not restore the prior offline firewalld rule for UDP/${OLD_FW_PORT}."
   fi
 }
 
@@ -251,7 +300,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 [[ ${EUID} -eq 0 ]] || fail "Please run this installer as root."
-(( $# <= 3 )) || fail "Usage: sudo bash msboost.sh [username] [password] [tcp_port]"
+(( $# <= 3 )) || fail "Usage: sudo bash msboost.sh [username] [password] [port]"
 [[ "${APP_DIR}" == "/etc/msboost" ]] || fail "Internal path safety check failed."
 [[ "${STATE_DIR}" == "/var/lib/msboost" ]] || fail "Internal state-path safety check failed."
 [[ "${STAGE_ROOT}" == "/usr/local/libexec/msboost-installer" ]] || fail "Internal staging-path safety check failed."
@@ -265,15 +314,18 @@ valid_low_entropy() {
   esac
 }
 
-# Mieru TrafficPattern protobuf, base64: field 6 (lowEntropy) holding field 1
-# (mode). LOW_ENTROPY_MODE_32/40/48/56 are enum values 1/2/3/4 in base.proto.
-low_entropy_pattern() {
+# Mieru TrafficPattern protobuf, base64. Every level starts with field 4
+# (nonce) holding field 2 (applyToAllUDPPacket) = true, so each UDP packet
+# carries the nonce pattern instead of a per-host implicit choice. A level then
+# adds field 6 (lowEntropy) holding field 1 (mode); LOW_ENTROPY_MODE_32/40/48/56
+# are enum values 1/2/3/4 in base.proto. Unset fields stay implicit.
+traffic_pattern() {
   case "$1" in
-    56) printf '%s' 'MgIIBA==' ;;
-    48) printf '%s' 'MgIIAw==' ;;
-    40) printf '%s' 'MgIIAg==' ;;
-    32) printf '%s' 'MgIIAQ==' ;;
-    off) ;;
+    56) printf '%s' 'IgIQATICCAQ=' ;;
+    48) printf '%s' 'IgIQATICCAM=' ;;
+    40) printf '%s' 'IgIQATICCAI=' ;;
+    32) printf '%s' 'IgIQATICCAE=' ;;
+    off) printf '%s' 'IgIQAQ==' ;;
     *) return 1 ;;
   esac
 }
@@ -281,6 +333,9 @@ low_entropy_pattern() {
 # Reject an explicit value before anything on the host is changed.
 if [[ -n "${MSBOOST_LOW_ENTROPY+set}" ]] && ! valid_low_entropy "${MSBOOST_LOW_ENTROPY}"; then
   fail "MSBOOST_LOW_ENTROPY must be off, 56, 48, 40, or 32."
+fi
+if [[ -n "${MSBOOST_UDP+set}" && "${MSBOOST_UDP}" != 0 && "${MSBOOST_UDP}" != 1 ]]; then
+  fail "MSBOOST_UDP must be 0 or 1."
 fi
 
 if command -v flock >/dev/null 2>&1; then
@@ -347,7 +402,7 @@ resolve_low_entropy() {
       LOW_ENTROPY=48
     fi
   fi
-  TRAFFIC_PATTERN="$(low_entropy_pattern "${LOW_ENTROPY}")"
+  TRAFFIC_PATTERN="$(traffic_pattern "${LOW_ENTROPY}")"
 }
 
 preflight_checks() {
@@ -544,11 +599,16 @@ fi
 OLD_FW_UFW_OWNED="$(state_flag FIREWALL_UFW_OWNED)"
 OLD_FW_FIREWALLD_RUNTIME_OWNED="$(state_flag FIREWALLD_RUNTIME_OWNED)"
 OLD_FW_FIREWALLD_PERMANENT_OWNED="$(state_flag FIREWALLD_PERMANENT_OWNED)"
+OLD_FW_UFW_UDP_OWNED="$(state_flag FIREWALL_UFW_UDP_OWNED)"
+OLD_FW_FIREWALLD_RUNTIME_UDP_OWNED="$(state_flag FIREWALLD_RUNTIME_UDP_OWNED)"
+OLD_FW_FIREWALLD_PERMANENT_UDP_OWNED="$(state_flag FIREWALLD_PERMANENT_UDP_OWNED)"
 OLD_FW_FIREWALLD_ZONE="$(state_value FIREWALLD_ZONE)"
 if [[ -n "${OLD_FW_FIREWALLD_ZONE}" && ! "${OLD_FW_FIREWALLD_ZONE}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
   OLD_FW_FIREWALLD_ZONE=""
   OLD_FW_FIREWALLD_RUNTIME_OWNED=0
   OLD_FW_FIREWALLD_PERMANENT_OWNED=0
+  OLD_FW_FIREWALLD_RUNTIME_UDP_OWNED=0
+  OLD_FW_FIREWALLD_PERMANENT_UDP_OWNED=0
 fi
 
 random_hex() {
@@ -581,10 +641,11 @@ fi
 [[ "${USER_NAME}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || fail "Username may contain only A-Z, a-z, 0-9, dot, underscore, and hyphen."
 [[ "${USER_PASS}" =~ ^[A-Za-z0-9_.-]{12,64}$ ]] || fail "Password must be 12-64 characters using A-Z, a-z, 0-9, dot, underscore, or hyphen."
 
+# Listening TCP sockets by default; "udp" checks bound UDP sockets instead.
 port_in_use() {
-  local wanted=$1 sockets
-  if ! sockets="$(ss -H -ltn 2>/dev/null)"; then
-    fail "Could not inspect listening TCP ports with ss."
+  local wanted=$1 protocol=${2:-tcp} sockets
+  if ! sockets="$(ss -H -ln "--${protocol}" 2>/dev/null)"; then
+    fail "Could not inspect ${protocol^^} ports with ss."
   fi
   printf '%s\n' "${sockets}" | awk -v port="${wanted}" '
     {
@@ -605,7 +666,7 @@ random_free_port() {
     if [[ "${MSBOOST_FORCE_FRESH:-0}" == 1 && -n "${OLD_CONFIG_PORT}" && "${candidate}" == "${OLD_CONFIG_PORT}" ]]; then
       continue
     fi
-    if ! port_in_use "${candidate}"; then
+    if ! port_in_use "${candidate}" && ! port_in_use "${candidate}" udp; then
       printf '%s' "${candidate}"
       return 0
     fi
@@ -618,16 +679,52 @@ if [[ -n "${PORT}" ]]; then
   PORT=$((10#${PORT}))
   (( PORT >= 1 && PORT <= 65535 )) || fail "Port must be in 1-65535."
 else
-  PORT="$(random_free_port)" || fail "Could not choose an unused TCP port."
+  PORT="$(random_free_port)" || fail "Could not choose a port unused by TCP and UDP."
 fi
 
 (( PORT != PROBE_PORT )) || fail "TCP/${PROBE_PORT} is reserved for the loopback TCP probe."
+
+# UDP shares the port. A rerun may find the running msboost service bound to
+# it, which the restart below releases; any other owner keeps the node TCP-only.
+udp_held_by_service() {
+  local sockets main_pid
+  sockets="$(ss -H -lunp "sport = :${PORT}" 2>/dev/null)" || return 1
+  main_pid="$(systemctl show "${SERVICE}" -p MainPID --value 2>/dev/null)" || return 1
+  [[ "${main_pid}" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$(grep -o 'pid=[0-9]*' <<< "${sockets}" | sort -u | tr '\n' ' ')" == "pid=${main_pid} " ]]
+}
+
+# An explicit MSBOOST_UDP wins; a rerun keeps the recorded choice, like the
+# low-entropy level; a forced fresh installation without it stays TCP-only.
+resolve_udp() {
+  local wanted=0
+  if [[ -n "${MSBOOST_UDP+set}" ]]; then
+    wanted="${MSBOOST_UDP}"
+  elif [[ "${MSBOOST_FORCE_FRESH:-0}" != 1 && "$(state_value UDP)" == 1 ]]; then
+    wanted=1
+  fi
+  UDP_ENABLED=0
+  if (( wanted )); then
+    UDP_ENABLED=1
+    if port_in_use "${PORT}" udp && ! udp_held_by_service; then
+      UDP_ENABLED=0
+      warn "UDP/${PORT} is used by another process; this node will serve TCP only."
+    fi
+  fi
+  if (( UDP_ENABLED )); then
+    INGRESS="TCP/${PORT} and UDP/${PORT}"
+  else
+    INGRESS="TCP/${PORT}"
+  fi
+}
+
+resolve_udp
 
 if (( PORT < 1024 )); then
   SYSTEMD_VERSION="$(systemctl --version | awk 'NR == 1 { print $2; exit }')"
   [[ "${SYSTEMD_VERSION}" =~ ^[0-9]+$ ]] || fail "Could not determine the systemd version required for a privileged port."
   (( SYSTEMD_VERSION >= 229 )) || fail \
-    "TCP ports below 1024 require systemd 229 or newer for this non-root service."
+    "Ports below 1024 require systemd 229 or newer for this non-root service."
 fi
 
 configure_time
@@ -897,10 +994,12 @@ payload:
   - DOMAIN,discord-attachments-uploads-prd.storage.googleapis.com
 EOF
 
+# A mieru listener serves one transport, so UDP gets a second listener on the
+# same port with the same user and traffic pattern.
 write_server_config() {
-  local destination=$1 direct_rules=$2 filter_rules=$3 pattern_line=""
-  if [[ -n "${TRAFFIC_PATTERN}" ]]; then
-    pattern_line=$'\n    traffic-pattern: "'"${TRAFFIC_PATTERN}"'"'
+  local destination=$1 direct_rules=$2 filter_rules=$3 udp_listener=""
+  if (( UDP_ENABLED )); then
+    udp_listener=$'\n  - name: msboost-in-udp\n    type: mieru\n    listen: 0.0.0.0\n    port: '"${PORT}"$'\n    transport: UDP\n    traffic-pattern: "'"${TRAFFIC_PATTERN}"$'"\n    users:\n      "'"${USER_NAME}"'": "'"${USER_PASS}"'"'
   fi
   cat > "${destination}" <<EOF
 mode: rule
@@ -912,9 +1011,10 @@ listeners:
     type: mieru
     listen: 0.0.0.0
     port: ${PORT}
-    transport: TCP${pattern_line}
+    transport: TCP
+    traffic-pattern: "${TRAFFIC_PATTERN}"
     users:
-      "${USER_NAME}": "${USER_PASS}"
+      "${USER_NAME}": "${USER_PASS}"${udp_listener}
 
 rule-providers:
   msboost-direct:
@@ -955,10 +1055,14 @@ USER_PASS=${USER_PASS}
 PORT=${PORT}
 ENGINE_VERSION=${VERSION}
 LOW_ENTROPY=${LOW_ENTROPY}
+UDP=${UDP_ENABLED}
 FIREWALL_PORT=${PORT}
 FIREWALL_UFW_OWNED=${NEW_FW_UFW_OWNED}
 FIREWALLD_RUNTIME_OWNED=${NEW_FW_FIREWALLD_RUNTIME_OWNED}
 FIREWALLD_PERMANENT_OWNED=${NEW_FW_FIREWALLD_PERMANENT_OWNED}
+FIREWALL_UFW_UDP_OWNED=${NEW_FW_UFW_UDP_OWNED}
+FIREWALLD_RUNTIME_UDP_OWNED=${NEW_FW_FIREWALLD_RUNTIME_UDP_OWNED}
+FIREWALLD_PERMANENT_UDP_OWNED=${NEW_FW_FIREWALLD_PERMANENT_UDP_OWNED}
 FIREWALLD_ZONE=${FW_FIREWALLD_ZONE}
 MAIN_UNIT_SHA256=$(sha256sum "${STAGE_DIR}/msboost.service" | awk '{print $1}')
 TCP_PROBE_UNIT_SHA256=$(sha256sum "${STAGE_DIR}/msboost-tcp-probe.service" | awk '{print $1}')
@@ -1455,13 +1559,17 @@ detect_public_ip() {
 
 PUBLIC_IP="$(detect_public_ip)"
 
-# Mieru client format. With low entropy off the file is byte-for-byte the same
-# as before the switch existed; otherwise only lowEntropy.mode is set and the
-# remaining traffic pattern stays implicit, matching the listener.
+# Mieru client format. The TCP binding comes first; a UDP binding on the same
+# port follows only when the node serves UDP, and the launcher keeps just the
+# one the user picks. The traffic pattern sets nonce.applyToAllUDPPacket, plus
+# lowEntropy.mode when that is on; the rest stays implicit, as on the listener.
 write_client_config() {
-  local destination=$1 pattern=""
+  local destination=$1 udp_binding="" low_entropy=""
+  if (( UDP_ENABLED )); then
+    udp_binding=$',\n            {\n              "port": '"${PORT}"$',\n              "protocol": "UDP"\n            }'
+  fi
   if [[ "${LOW_ENTROPY}" != off ]]; then
-    pattern=$',\n      "trafficPattern": {\n        "lowEntropy": {\n          "mode": "LOW_ENTROPY_MODE_'"${LOW_ENTROPY}"$'"\n        }\n      }'
+    low_entropy=$'\n        "lowEntropy": {\n          "mode": "LOW_ENTROPY_MODE_'"${LOW_ENTROPY}"$'"\n        },'
   fi
   cat > "${destination}" <<EOF
 {
@@ -1480,11 +1588,16 @@ write_client_config() {
             {
               "port": ${PORT},
               "protocol": "TCP"
-            }
+            }${udp_binding}
           ]
         }
       ],
-      "mtu": 1400${pattern}
+      "mtu": 1400,
+      "trafficPattern": {${low_entropy}
+        "nonce": {
+          "applyToAllUDPPacket": true
+        }
+      }
     }
   ],
   "activeProfile": "msboost",
@@ -1814,6 +1927,14 @@ for _ in $(seq 1 20); do
 done
 port_in_use "${PORT}" && fail "TCP port ${PORT} is already occupied by another process."
 
+if (( UDP_ENABLED )); then
+  for _ in $(seq 1 20); do
+    ! port_in_use "${PORT}" udp && break
+    sleep 0.25
+  done
+  port_in_use "${PORT}" udp && fail "UDP port ${PORT} is already occupied by another process."
+fi
+
 for _ in $(seq 1 20); do
   ! port_in_use "${PROBE_PORT}" && break
   sleep 0.25
@@ -1846,13 +1967,17 @@ systemctl daemon-reload
 systemctl enable "${SERVICE}" "${PROBE_SERVICE}" >/dev/null
 systemctl restart "${SERVICE}"
 
+services_healthy() {
+  systemctl is-active --quiet "${SERVICE}" && systemctl is-active --quiet "${PROBE_SERVICE}" &&
+    port_in_use "${PORT}" && port_in_use "${PROBE_PORT}" &&
+    { (( ! UDP_ENABLED )) || port_in_use "${PORT}" udp; }
+}
+
 for _ in $(seq 1 30); do
-  if systemctl is-active --quiet "${SERVICE}" && systemctl is-active --quiet "${PROBE_SERVICE}" && port_in_use "${PORT}" && port_in_use "${PROBE_PORT}"; then
-    break
-  fi
+  services_healthy && break
   sleep 1
 done
-if ! systemctl is-active --quiet "${SERVICE}" || ! systemctl is-active --quiet "${PROBE_SERVICE}" || ! port_in_use "${PORT}" || ! port_in_use "${PROBE_PORT}"; then
+if ! services_healthy; then
   journalctl -u "${SERVICE}" -u "${PROBE_SERVICE}" -n 100 --no-pager >&2 || true
   fail "msboost did not become healthy."
 fi
@@ -1961,15 +2086,25 @@ probe_hello 0
 
 note "Running a local end-to-end proxy self-test"
 SELFTEST_PORT="$(random_free_port)" || fail "Could not choose a local self-test port."
+if (( UDP_ENABLED )); then
+  for _ in $(seq 1 10); do
+    SELFTEST_UDP_PORT="$(random_free_port)" || fail "Could not choose a local self-test port."
+    [[ "${SELFTEST_UDP_PORT}" != "${SELFTEST_PORT}" ]] && break
+  done
+  [[ "${SELFTEST_UDP_PORT}" != "${SELFTEST_PORT}" ]] || fail "Could not choose a second local self-test port."
+fi
 install -d -m 0700 "${STAGE_DIR}/selftest" "${STAGE_DIR}/selftest-state"
 
-# The outbound carries the same traffic pattern as the customer configuration,
-# so the self-test exercises the low-entropy path. The outbound also rejects an
-# undecodable pattern instead of silently using the implicit one.
+# The outbounds carry the same traffic pattern as the customer configuration,
+# so the self-test exercises the low-entropy path. They also reject an
+# undecodable pattern instead of silently using the implicit one. With UDP, a
+# second SOCKS listener reaches the node through a UDP outbound.
 write_selftest_config() {
-  local destination=$1 pattern_line=""
-  if [[ -n "${TRAFFIC_PATTERN}" ]]; then
-    pattern_line=$'\n    traffic-pattern: "'"${TRAFFIC_PATTERN}"'"'
+  local destination=$1 udp_listener="" udp_proxy="" udp_rule=""
+  if (( UDP_ENABLED )); then
+    udp_listener=$'\n  - name: msboost-test-udp-in\n    type: socks\n    listen: 127.0.0.1\n    port: '"${SELFTEST_UDP_PORT}"
+    udp_proxy=$'\n  - name: msboost-loopback-udp\n    type: mieru\n    server: 127.0.0.1\n    port: '"${PORT}"$'\n    transport: UDP\n    username: "'"${USER_NAME}"$'"\n    password: "'"${USER_PASS}"$'"\n    multiplexing: MULTIPLEXING_LOW\n    handshake-mode: HANDSHAKE_STANDARD\n    traffic-pattern: "'"${TRAFFIC_PATTERN}"'"'
+    udp_rule=$'\n  - IN-NAME,msboost-test-udp-in,msboost-loopback-udp'
   fi
   cat > "${destination}" <<EOF
 mode: rule
@@ -1978,7 +2113,7 @@ listeners:
   - name: msboost-test-in
     type: socks
     listen: 127.0.0.1
-    port: ${SELFTEST_PORT}
+    port: ${SELFTEST_PORT}${udp_listener}
 proxies:
   - name: msboost-loopback
     type: mieru
@@ -1988,8 +2123,9 @@ proxies:
     username: "${USER_NAME}"
     password: "${USER_PASS}"
     multiplexing: MULTIPLEXING_LOW
-    handshake-mode: HANDSHAKE_STANDARD${pattern_line}
-rules:
+    handshake-mode: HANDSHAKE_STANDARD
+    traffic-pattern: "${TRAFFIC_PATTERN}"${udp_proxy}
+rules:${udp_rule}
   - MATCH,msboost-loopback
 EOF
 }
@@ -2017,16 +2153,35 @@ if ! probe_hello "${SELFTEST_PORT}"; then
   cat "${STAGE_DIR}/selftest/msboost-selftest.log" >&2 || true
   fail "The SOCKS5 -> Mieru -> loopback TCP probe self-test failed."
 fi
+if (( UDP_ENABLED )); then
+  UDP_SELFTEST_OK=0
+  for _ in 1 2 3; do
+    probe_hello "${SELFTEST_UDP_PORT}" && UDP_SELFTEST_OK=1 && break
+    sleep 1
+  done
+  if (( ! UDP_SELFTEST_OK )); then
+    cat "${STAGE_DIR}/selftest/msboost-selftest.log" >&2 || true
+    fail "The SOCKS5 -> Mieru over UDP -> loopback TCP probe self-test failed."
+  fi
+fi
 cleanup_test
+
+# ufw_allows PORT/PROTOCOL: UFW has an added allow rule for exactly that port.
+ufw_allows() {
+  ufw show added 2>/dev/null | grep -Eq "(^|[[:space:]])allow[[:space:]]+$1([[:space:]]|$)"
+}
 
 configure_firewall() {
   local route_interface="" detected_zone="" managed=0
   local nft_rules="" iptables_rules="" custom_rules=0 inspection_uncertain=0
   note "Updating any active local firewall"
   if (( OLD_FW_UFW_OWNED )) && [[ "${OLD_FW_PORT}" == "${PORT}" ]] && \
-      command -v ufw >/dev/null 2>&1 && \
-      ufw show added 2>/dev/null | grep -Eq "(^|[[:space:]])allow[[:space:]]+${PORT}/tcp([[:space:]]|$)"; then
+      command -v ufw >/dev/null 2>&1 && ufw_allows "${PORT}/tcp"; then
     NEW_FW_UFW_OWNED=1
+  fi
+  if (( UDP_ENABLED && OLD_FW_UFW_UDP_OWNED )) && [[ "${OLD_FW_PORT}" == "${PORT}" ]] && \
+      command -v ufw >/dev/null 2>&1 && ufw_allows "${PORT}/udp"; then
+    NEW_FW_UFW_UDP_OWNED=1
   fi
   if (( OLD_FW_FIREWALLD_PERMANENT_OWNED )) && \
       [[ "${OLD_FW_PORT}" == "${PORT}" && -n "${OLD_FW_FIREWALLD_ZONE}" ]] && \
@@ -2036,16 +2191,33 @@ configure_firewall() {
     FW_FIREWALLD_ZONE="${OLD_FW_FIREWALLD_ZONE}"
     NEW_FW_FIREWALLD_PERMANENT_OWNED=1
   fi
+  if (( UDP_ENABLED && OLD_FW_FIREWALLD_PERMANENT_UDP_OWNED )) && \
+      [[ "${OLD_FW_PORT}" == "${PORT}" && -n "${OLD_FW_FIREWALLD_ZONE}" ]] && \
+      command -v firewall-offline-cmd >/dev/null 2>&1 && \
+      ! firewall-cmd --state >/dev/null 2>&1 && \
+      firewall-offline-cmd --zone="${OLD_FW_FIREWALLD_ZONE}" --query-port="${PORT}/udp" >/dev/null 2>&1; then
+    FW_FIREWALLD_ZONE="${OLD_FW_FIREWALLD_ZONE}"
+    NEW_FW_FIREWALLD_PERMANENT_UDP_OWNED=1
+  fi
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
     managed=1
-    if ! ufw show added 2>/dev/null | grep -Eq "(^|[[:space:]])allow[[:space:]]+${PORT}/tcp([[:space:]]|$)"; then
+    if ! ufw_allows "${PORT}/tcp"; then
       ufw allow "${PORT}/tcp" >/dev/null
       FW_UFW_ADDED=1
       NEW_FW_UFW_OWNED=1
     elif (( OLD_FW_UFW_OWNED )) && [[ "${OLD_FW_PORT}" == "${PORT}" ]]; then
       NEW_FW_UFW_OWNED=1
     fi
-    FIREWALL_STATUS="UFW active; a local allow rule for TCP/${PORT} is present"
+    if (( UDP_ENABLED )); then
+      if ! ufw_allows "${PORT}/udp"; then
+        ufw allow "${PORT}/udp" >/dev/null
+        FW_UFW_UDP_ADDED=1
+        NEW_FW_UFW_UDP_OWNED=1
+      elif (( OLD_FW_UFW_UDP_OWNED )) && [[ "${OLD_FW_PORT}" == "${PORT}" ]]; then
+        NEW_FW_UFW_UDP_OWNED=1
+      fi
+    fi
+    FIREWALL_STATUS="UFW active; local allow rules cover ${INGRESS}"
   fi
 
   if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
@@ -2078,10 +2250,28 @@ configure_firewall() {
         [[ "${OLD_FW_PORT}" == "${PORT}" && "${OLD_FW_FIREWALLD_ZONE}" == "${FW_FIREWALLD_ZONE}" ]]; then
       NEW_FW_FIREWALLD_PERMANENT_OWNED=1
     fi
+    if (( UDP_ENABLED )); then
+      if ! firewall-cmd --quiet --zone="${FW_FIREWALLD_ZONE}" --query-port="${PORT}/udp"; then
+        firewall-cmd --quiet --zone="${FW_FIREWALLD_ZONE}" --add-port="${PORT}/udp"
+        FW_FIREWALLD_RUNTIME_UDP_ADDED=1
+        NEW_FW_FIREWALLD_RUNTIME_UDP_OWNED=1
+      elif (( OLD_FW_FIREWALLD_RUNTIME_UDP_OWNED )) && \
+          [[ "${OLD_FW_PORT}" == "${PORT}" && "${OLD_FW_FIREWALLD_ZONE}" == "${FW_FIREWALLD_ZONE}" ]]; then
+        NEW_FW_FIREWALLD_RUNTIME_UDP_OWNED=1
+      fi
+      if ! firewall-cmd --quiet --permanent --zone="${FW_FIREWALLD_ZONE}" --query-port="${PORT}/udp"; then
+        firewall-cmd --quiet --permanent --zone="${FW_FIREWALLD_ZONE}" --add-port="${PORT}/udp"
+        FW_FIREWALLD_PERMANENT_UDP_ADDED=1
+        NEW_FW_FIREWALLD_PERMANENT_UDP_OWNED=1
+      elif (( OLD_FW_FIREWALLD_PERMANENT_UDP_OWNED )) && \
+          [[ "${OLD_FW_PORT}" == "${PORT}" && "${OLD_FW_FIREWALLD_ZONE}" == "${FW_FIREWALLD_ZONE}" ]]; then
+        NEW_FW_FIREWALLD_PERMANENT_UDP_OWNED=1
+      fi
+    fi
     if [[ "${FIREWALL_STATUS}" == "not checked" ]]; then
-      FIREWALL_STATUS="firewalld zone ${FW_FIREWALLD_ZONE}; a local allow rule for TCP/${PORT} is present"
+      FIREWALL_STATUS="firewalld zone ${FW_FIREWALLD_ZONE}; local allow rules cover ${INGRESS}"
     else
-      FIREWALL_STATUS="${FIREWALL_STATUS}; firewalld zone ${FW_FIREWALLD_ZONE} also has an allow rule"
+      FIREWALL_STATUS="${FIREWALL_STATUS}; firewalld zone ${FW_FIREWALLD_ZONE} also has allow rules"
     fi
   fi
 
@@ -2105,11 +2295,11 @@ configure_firewall() {
       fi
     fi
     if (( custom_rules )); then
-      warn "Custom firewall reject/drop rules exist; this installer cannot prove that public TCP/${PORT} reaches the service."
-      FIREWALL_STATUS="custom rules detected; public TCP/${PORT} was not externally verified"
+      warn "Custom firewall reject/drop rules exist; this installer cannot prove that the service is reachable on public ${INGRESS}."
+      FIREWALL_STATUS="custom rules detected; public reachability of ${INGRESS} was not externally verified"
     elif (( inspection_uncertain )); then
-      warn "The host firewall could not be fully inspected; public TCP/${PORT} was not externally verified."
-      FIREWALL_STATUS="inspection incomplete; public TCP/${PORT} was not externally verified"
+      warn "The host firewall could not be fully inspected; public reachability of ${INGRESS} was not externally verified."
+      FIREWALL_STATUS="inspection incomplete; public reachability of ${INGRESS} was not externally verified"
     else
       FIREWALL_STATUS="no active UFW/firewalld or obvious default-drop rule detected; public reachability was not externally verified"
     fi
@@ -2119,14 +2309,22 @@ configure_firewall() {
 configure_firewall
 
 remove_previous_owned_firewall_rules() {
-  local firewalld_identity_changed=0
+  local firewalld_identity_changed=0 udp_stale=0
   [[ -n "${OLD_FW_PORT}" ]] || return 0
 
   if (( OLD_FW_UFW_OWNED )) && [[ "${OLD_FW_PORT}" != "${PORT}" ]] && \
-      command -v ufw >/dev/null 2>&1 && \
-      ufw show added 2>/dev/null | grep -Eq "(^|[[:space:]])allow[[:space:]]+${OLD_FW_PORT}/tcp([[:space:]]|$)"; then
+      command -v ufw >/dev/null 2>&1 && ufw_allows "${OLD_FW_PORT}/tcp"; then
     ufw --force delete allow "${OLD_FW_PORT}/tcp" >/dev/null
     OLD_FW_UFW_REMOVED=1
+  fi
+  # A UDP rule of the previous run is also stale when this run serves TCP only.
+  if [[ "${OLD_FW_PORT}" != "${PORT}" ]] || (( ! UDP_ENABLED )); then
+    udp_stale=1
+  fi
+  if (( OLD_FW_UFW_UDP_OWNED && udp_stale )) && \
+      command -v ufw >/dev/null 2>&1 && ufw_allows "${OLD_FW_PORT}/udp"; then
+    ufw --force delete allow "${OLD_FW_PORT}/udp" >/dev/null
+    OLD_FW_UFW_UDP_REMOVED=1
   fi
 
   if [[ "${OLD_FW_PORT}" != "${PORT}" || "${OLD_FW_FIREWALLD_ZONE}" != "${FW_FIREWALLD_ZONE}" ]]; then
@@ -2151,6 +2349,25 @@ remove_previous_owned_firewall_rules() {
       fi
     fi
   fi
+  if (( firewalld_identity_changed || ! UDP_ENABLED )) && [[ -n "${OLD_FW_FIREWALLD_ZONE}" ]]; then
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+      if (( OLD_FW_FIREWALLD_RUNTIME_UDP_OWNED )) && \
+          firewall-cmd --quiet --zone="${OLD_FW_FIREWALLD_ZONE}" --query-port="${OLD_FW_PORT}/udp"; then
+        firewall-cmd --quiet --zone="${OLD_FW_FIREWALLD_ZONE}" --remove-port="${OLD_FW_PORT}/udp"
+        OLD_FW_FIREWALLD_RUNTIME_UDP_REMOVED=1
+      fi
+      if (( OLD_FW_FIREWALLD_PERMANENT_UDP_OWNED )) && \
+          firewall-cmd --quiet --permanent --zone="${OLD_FW_FIREWALLD_ZONE}" --query-port="${OLD_FW_PORT}/udp"; then
+        firewall-cmd --quiet --permanent --zone="${OLD_FW_FIREWALLD_ZONE}" --remove-port="${OLD_FW_PORT}/udp"
+        OLD_FW_FIREWALLD_PERMANENT_UDP_REMOVED=1
+      fi
+    elif (( OLD_FW_FIREWALLD_PERMANENT_UDP_OWNED )) && command -v firewall-offline-cmd >/dev/null 2>&1; then
+      if firewall-offline-cmd --zone="${OLD_FW_FIREWALLD_ZONE}" --query-port="${OLD_FW_PORT}/udp" >/dev/null 2>&1; then
+        firewall-offline-cmd --zone="${OLD_FW_FIREWALLD_ZONE}" --remove-port="${OLD_FW_PORT}/udp" >/dev/null
+        OLD_FW_FIREWALLD_PERMANENT_UDP_REMOVED_OFFLINE=1
+      fi
+    fi
+  fi
 }
 
 remove_previous_owned_firewall_rules
@@ -2162,20 +2379,20 @@ TX_ACTIVE=0
 
 echo
 echo "Installed and locally self-tested successfully."
-echo "Server: ${PUBLIC_IP}:${PORT} (TCP)"
-echo "Engine: mihomo ${VERSION}."
-if [[ "${LOW_ENTROPY}" == off ]]; then
-  echo "Low-entropy traffic pattern: off."
+if (( UDP_ENABLED )); then
+  echo "Server: ${PUBLIC_IP}:${PORT} (TCP and UDP)"
 else
-  echo "Low-entropy traffic pattern: ${LOW_ENTROPY}; the client configuration needs the MSBOOST launcher or msboost.exe (mieru) v3.35.0 or newer."
+  echo "Server: ${PUBLIC_IP}:${PORT} (TCP)"
 fi
+echo "Engine: mihomo ${VERSION}."
+echo "Low-entropy traffic pattern: ${LOW_ENTROPY}."
 echo "Time synchronization: ${TIME_STATUS}."
 echo "Host firewall: ${FIREWALL_STATUS}."
 echo "Direct exceptions: GTop100 MapleStory snapshot, Nexon/MapleStory regions, Steam, and Discord."
 echo "GFW domain data: enabled; refresh interval is 24 hours."
 echo "Status: systemctl status msboost --no-pager"
 echo "Logs:   journalctl -u msboost -f"
-echo "Public ingress was not externally probed; cloud security groups and upstream/custom firewalls must permit TCP/${PORT}."
+echo "Public ingress was not externally probed; cloud security groups and upstream/custom firewalls must permit ${INGRESS}."
 echo
 echo "----- COPY EVERYTHING BETWEEN THE LINES INTO 直连.json -----"
 cat "${CLIENT_CONFIG}"
