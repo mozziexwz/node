@@ -542,7 +542,7 @@ export function ConfigUpload({
               !Array.isArray(d.profiles) ||
               d.profiles.length !== 1 ||
               d.profiles[0]?.servers?.length !== 1 ||
-              d.profiles[0]?.servers[0]?.portBindings?.length !== 1
+              !nodeBindings(d.profiles[0]?.servers[0]?.portBindings)
             )
               throw new Error(
                 "请选择仅含一个 profile、一个服务器和一个端口的配置",
@@ -636,11 +636,29 @@ const phases: Record<string, string> = {
   verify: "目标校验",
   node_check: "节点检查",
 };
+// A node's configuration has one TCP binding and, when the node serves UDP, a
+// UDP binding on the same port right after it.
+function nodeBindings(bindings: unknown) {
+  if (!Array.isArray(bindings) || bindings.length < 1 || bindings.length > 2)
+    return false;
+  const [tcp, udp] = bindings;
+  return (
+    String(tcp?.protocol).toUpperCase() === "TCP" &&
+    (udp === undefined ||
+      (String(udp?.protocol).toUpperCase() === "UDP" &&
+        Number(udp?.port) === Number(tcp?.port)))
+  );
+}
+function configHasUDP(d: RecordData | null) {
+  const bindings = d?.profiles?.[0]?.servers?.[0]?.portBindings;
+  return nodeBindings(bindings) && bindings.length === 2;
+}
 const healthLabels: Record<string, string> = {
   bbr: "BBR 网络优化",
   service: "服务运行",
   localSelfTest: "本地自测",
   publicTCP: "公网 TCP 可达性",
+  publicUDP: "公网 UDP 可达性",
 };
 const healthValues: Record<string, string> = {
   enabled: "已启用",
@@ -653,6 +671,7 @@ const healthValues: Record<string, string> = {
   reachable: "可达",
   unreachable: "不可达",
   not_tested: "未检测",
+  off: "未开启",
   target_tcp_reachable: "目标 TCP 可达",
   unknown: "未知",
 };
@@ -759,12 +778,15 @@ export function TaskDetail({
         <Table
           headers={["检查项目", "结果"]}
           rows={Object.entries(healthLabels)
+            // Results from before nodes served UDP have no UDP row.
+            .filter(([k]) => k !== "publicUDP" || !!current.health.publicUDP)
             // Fetching a configuration runs no self-test and leaves BBR alone.
             .filter(
               ([k]) =>
                 current.kind !== "fetch-config" ||
                 k === "service" ||
-                k === "publicTCP",
+                k === "publicTCP" ||
+                k === "publicUDP",
             )
             .map(([k, label]) => [
               label,
@@ -774,7 +796,7 @@ export function TaskDetail({
       )}
       {current.health && !current.verify && (
         <p className="muted mt8">
-          游戏实际连接需由客户端自行验证；TCP 可达不代表游戏可正常使用。
+          游戏实际连接需由客户端自行验证；端口可达不代表游戏可正常使用。
         </p>
       )}
       {current.verify && <SelfTest verify={current.verify} />}
@@ -819,6 +841,8 @@ export function TaskDetail({
           <Notice tone="orange">
             {status || "配置已就绪"}
             。配置已保存在当前浏览器时，请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复。
+            {configHasUDP(config) &&
+              "这份配置同时支持 TCP 和 UDP，在启动器里选 UDP 需要最新版 MSBOOST 启动器。"}
           </Notice>
           <div className="result-actions">
             <Button
@@ -1849,15 +1873,14 @@ export function TasksPage({
                 const host = (server.ipAddress || server.domainName || "")
                   .toLowerCase()
                   .replace(/\.$/, "");
+                // ConfigUpload already checked that the first binding is TCP.
                 if (
                   host !==
                     String(restoring.configHost)
                       .toLowerCase()
                       .replace(/\.$/, "") ||
                   Number(server.portBindings[0].port) !==
-                    Number(restoring.configPort) ||
-                  String(server.portBindings[0].protocol).toLowerCase() !==
-                    "tcp"
+                    Number(restoring.configPort)
                 )
                   throw new Error("文件入口与该任务不一致");
                 restoreConfig.socks5Port = 10086;

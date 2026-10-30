@@ -322,9 +322,11 @@ func validateRelayManage(m *RelayManage) error {
 type ConfigInfo struct {
 	TargetHost string
 	TargetPort int
-	Username   string
-	Password   string
-	Document   map[string]any
+	// UDP is set when a UDP binding on the TCP port follows the TCP binding.
+	UDP      bool
+	Username string
+	Password string
+	Document map[string]any
 }
 
 func ParseClientConfig(data []byte) (ConfigInfo, error) {
@@ -351,22 +353,32 @@ func ParseClientConfig(data []byte) (ConfigInfo, error) {
 	if !ok {
 		return out, errors.New("server 格式无效")
 	}
+	// A node lists its TCP binding first and, when it serves UDP, a UDP
+	// binding on the same port; the launcher keeps only the one in use.
 	ports, ok := s["portBindings"].([]any)
-	if !ok || len(ports) != 1 {
-		return out, errors.New("配置必须仅包含一个 TCP 端口")
+	if !ok || len(ports) < 1 || len(ports) > 2 {
+		return out, errors.New("配置必须包含一个 TCP 端口，最多再加一个同端口的 UDP")
 	}
-	pb, ok := ports[0].(map[string]any)
-	if !ok {
-		return out, errors.New("portBindings 格式无效")
+	for i, raw := range ports {
+		pb, ok := raw.(map[string]any)
+		if !ok {
+			return out, errors.New("portBindings 格式无效")
+		}
+		n, ok := pb["port"].(float64)
+		if !ok || n < 1 || n > 65535 || float64(int(n)) != n {
+			return out, errors.New("目标端口无效")
+		}
+		switch {
+		case i == 0 && pb["protocol"] == "TCP":
+			out.TargetPort = int(n)
+		case i == 0:
+			return out, errors.New("配置的第一个端口必须是 TCP")
+		case pb["protocol"] != "UDP" || int(n) != out.TargetPort:
+			return out, errors.New("配置的第二个端口必须是与 TCP 同端口的 UDP")
+		default:
+			out.UDP = true
+		}
 	}
-	n, ok := pb["port"].(float64)
-	if !ok || n < 1 || n > 65535 || float64(int(n)) != n {
-		return out, errors.New("目标端口无效")
-	}
-	if pb["protocol"] != "TCP" {
-		return out, errors.New("MSBOOST 自备中转仅接受 TCP 配置")
-	}
-	out.TargetPort = int(n)
 	ip, _ := s["ipAddress"].(string)
 	domain, _ := s["domainName"].(string)
 	if ip != "" && domain != "" {
@@ -418,7 +430,10 @@ func RewriteClientConfig(data []byte, host string, port int) ([]byte, error) {
 		s["ipAddress"] = ""
 		s["domainName"] = host
 	}
-	s["portBindings"].([]any)[0].(map[string]any)["port"] = port
+	// Relay entries forward TCP only, so a UDP binding is dropped.
+	bindings := s["portBindings"].([]any)
+	bindings[0].(map[string]any)["port"] = port
+	s["portBindings"] = bindings[:1]
 	info.Document["socks5Port"] = 10086
 	return json.MarshalIndent(info.Document, "", "  ")
 }

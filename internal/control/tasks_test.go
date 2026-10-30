@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -426,6 +427,35 @@ func TestLegacyExecutorStillClaimsNonRelayJobs(t *testing.T) {
 		})
 	}
 }
+
+// A configuration from a node that serves UDP only goes to executors that can
+// read it; deploys stay open to older executors, which install TCP only.
+func TestUDPConfigurationsNeedTheUDPExecutor(t *testing.T) {
+	tcp := `{"profiles":[{"profileName":"x","user":{"name":"u","password":"p"},"servers":[{"ipAddress":"8.8.8.8","domainName":"","portBindings":[{"port":31234,"protocol":"TCP"}]}]}],"activeProfile":"x"}`
+	dual := strings.Replace(tcp, `{"port":31234,"protocol":"TCP"}`, `{"port":31234,"protocol":"TCP"},{"port":31234,"protocol":"UDP"}`, 1)
+	if slices.Contains(requiredCapabilities(executor.Request{Kind: "relay", ClientConfig: []byte(tcp)}), executor.NodeUDPCapability) {
+		t.Fatal("a TCP-only configuration required the UDP executor")
+	}
+	if !slices.Contains(requiredCapabilities(executor.Request{Kind: "relay", ClientConfig: []byte(dual)}), executor.NodeUDPCapability) {
+		t.Fatal("a UDP configuration could reach executors that refuse it")
+	}
+	for _, kind := range []string{"deploy", "upgrade", "fetch-config"} {
+		if slices.Contains(requiredCapabilities(executor.Request{Kind: kind}), executor.NodeUDPCapability) {
+			t.Fatalf("%s no longer reaches older executors", kind)
+		}
+	}
+	poll := httptest.NewRequest(http.MethodGet, "/api/executor/next", nil)
+	poll.Header.Set(executor.NodeUDPHeader, "1")
+	if !slices.Contains(executorCapabilitiesFromRequest(poll), executor.NodeUDPCapability) {
+		t.Fatal("the UDP capability header was ignored")
+	}
+	for in, want := range map[string]string{"": "", "reachable": "reachable", "unreachable": "unreachable", executor.UDPOff: executor.UDPOff, executor.UDPNotTested: executor.UDPNotTested, "bogus": "unknown"} {
+		if got := cleanTaskHealth(&executor.Health{PublicUDP: in}).PublicUDP; got != want {
+			t.Fatalf("PublicUDP %q cleaned to %q", in, got)
+		}
+	}
+}
+
 func TestExecutorClaimIsSingleDeliveryAndLeaseBound(t *testing.T) {
 	a, s, u := taskFixture(t)
 	token := strings.Repeat("t", 48)

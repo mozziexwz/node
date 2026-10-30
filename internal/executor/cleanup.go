@@ -45,7 +45,7 @@ func ValidCleanupReport(report *CleanupReport, scope string, removed bool) bool 
 }
 
 var cleanupRelayPath = regexp.MustCompile(`^(/etc/msboost-free/[A-Za-z0-9_-]{1,100}|/etc/systemd/system/msboost-free-[A-Za-z0-9_-]{1,100}\.service)$`)
-var cleanupFirewall = regexp.MustCompile(`^(ufw::|runtime:[A-Za-z0-9_.-]{1,80}:|permanent:[A-Za-z0-9_.-]{1,80}:)[0-9]{1,5}/tcp$`)
+var cleanupFirewall = regexp.MustCompile(`^(ufw::|runtime:[A-Za-z0-9_.-]{1,80}:|permanent:[A-Za-z0-9_.-]{1,80}:)[0-9]{1,5}/(tcp|udp)$`)
 
 func validCleanupItem(scope string, item CleanupItem) bool {
 	if item.Kind == "firewall" {
@@ -123,15 +123,15 @@ def env(path):
             if key in result: reject()
             result[key]=value
     return result
-def firewall(port,ufw,runtime,permanent,zone):
+def firewall(port,ufw,runtime,permanent,zone,protocol='tcp'):
     if not re.fullmatch(r'[0-9]{1,5}',port) or not 1<=int(port)<=65535: reject()
     for name,value in [('ufw',ufw),('runtime',runtime),('permanent',permanent)]:
         if value not in ['0','1']: reject()
         if value=='1':
-            if name=='ufw': firewalls.append(('ufw','',port))
+            if name=='ufw': firewalls.append(('ufw','',port+'/'+protocol))
             else:
                 if not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}',zone): reject()
-                firewalls.append((name,zone,port))
+                firewalls.append((name,zone,port+'/'+protocol))
 def add(path,kind,allowed={0}):
     validate(path,allowed)
     if os.path.exists(path):
@@ -270,6 +270,7 @@ try:
             check_unit('msboost.service','/etc/systemd/system/msboost.service',['Description=msboost service','ExecStart=/usr/local/bin/msboost -d /var/lib/msboost -f /etc/msboost/config.yaml','User=msboost'])
             for root in roots: add(root,'directory' if root in roots[:2] else 'file',{0,uid} if root in roots[:2] else {0})
             firewall(settings.get('FIREWALL_PORT',''),settings.get('FIREWALL_UFW_OWNED','0'),settings.get('FIREWALLD_RUNTIME_OWNED','0'),settings.get('FIREWALLD_PERMANENT_OWNED','0'),settings.get('FIREWALLD_ZONE',''))
+            firewall(settings.get('FIREWALL_PORT',''),settings.get('FIREWALL_UFW_UDP_OWNED','0'),settings.get('FIREWALLD_RUNTIME_UDP_OWNED','0'),settings.get('FIREWALLD_PERMANENT_UDP_OWNED','0'),settings.get('FIREWALLD_ZONE',''),'udp')
     else:
         validate('/etc/msboost-free')
         candidates=set()
@@ -329,7 +330,7 @@ try:
                         if len(fields)!=2 or fields[1]!=port: reject()
                         firewall(port,'0','1' if mode.endswith('runtime') else '0','1' if mode.endswith('permanent') else '0',fields[0])
             add(conf,'directory');add(unitpath,'file')
-    for mode,zone,port in firewalls: items.append({'path':mode+':'+zone+':'+port+'/tcp','kind':'firewall'})
+    for mode,zone,rule in firewalls: items.append({'path':mode+':'+zone+':'+rule,'kind':'firewall'})
     digest=hashlib.sha256(json.dumps([scope,records,firewalls],sort_keys=True,separators=(',',':')).encode()).hexdigest()
     if selected: digest=hashlib.sha256((digest+':'+selected).encode()).hexdigest()
     if action=='cleanup':
@@ -339,10 +340,10 @@ try:
         for unit in units:
             run(['systemctl','disable','--now',unit])
             if unit in runtime_units: run(['systemctl','disable','--runtime',unit])
-        for mode,zone,port in firewalls:
-            if mode=='ufw': run(['ufw','--force','delete','allow',port+'/tcp'])
+        for mode,zone,rule in firewalls:
+            if mode=='ufw': run(['ufw','--force','delete','allow',rule])
             else:
-                args=['firewall-cmd']+(['--permanent'] if mode=='permanent' else [])+['--zone='+zone,'--remove-port='+port+'/tcp']
+                args=['firewall-cmd']+(['--permanent'] if mode=='permanent' else [])+['--zone='+zone,'--remove-port='+rule]
                 run(args)
         for path in targets:
             validate(path,{0,pwd.getpwnam('msboost').pw_uid} if scope=='msboost' and path in ['/etc/msboost','/var/lib/msboost'] else {0})

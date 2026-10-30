@@ -34,6 +34,11 @@ const RelayCodeHeader = "X-MSBOOST-Relay-Code"
 const NodeUpgradeCapability = "node_upgrade_v1"
 const NodeUpgradeHeader = "X-MSBOOST-Node-Upgrade"
 
+// NodeUDPCapability: the executor reads configurations that add a UDP binding
+// on the TCP port, and asks the installer to serve UDP.
+const NodeUDPCapability = "node_udp_v1"
+const NodeUDPHeader = "X-MSBOOST-Node-UDP"
+
 func setCapabilityHeaders(h http.Header) {
 	h.Set(executorCapabilitiesHeader, FreeRelayGuardCapability)
 	h.Set("X-MSBOOST-Scoped-Cleanup", "1")
@@ -41,6 +46,7 @@ func setCapabilityHeaders(h http.Header) {
 	h.Set(RelayCodeHeader, "1")
 	h.Set(RelayVerifyHeader, "1")
 	h.Set(NodeUpgradeHeader, "1")
+	h.Set(NodeUDPHeader, "1")
 	h.Set("X-MSBOOST-Agent-Version", buildinfo.Version)
 }
 

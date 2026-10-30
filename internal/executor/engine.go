@@ -21,6 +21,9 @@ import (
 type Engine struct {
 	Remote   Remote
 	TCPProbe func(context.Context, string, int) string
+	// UDPProbe checks a node configuration's UDP binding from outside; nil
+	// uses the Verifier's mihomo tunnel (see Verifier.ProbeUDP).
+	UDPProbe func(context.Context, []byte) string
 	// Verifier checks relay targets; nil uses mihomo (see verify.go).
 	Verifier *Verifier
 	// GOST archives are administrator-pinned; unsupported architectures fail closed.
@@ -110,6 +113,9 @@ func (e *Engine) Execute(ctx context.Context, job Job) Result {
 	if e.TCPProbe == nil {
 		e.TCPProbe = probeTCP
 	}
+	if e.UDPProbe == nil {
+		e.UDPProbe = e.verifier().ProbeUDP
+	}
 	if job.Request.Kind == "fingerprint" {
 		fp, alg, err := e.Remote.Probe(ctx, job.Request.SSH.Host, job.Request.SSH.Port)
 		if err != nil {
@@ -162,7 +168,9 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	// Fresh mode replaces the prior managed authentication and port. The
 	// installer still snapshots managed files so a failed replacement can roll
 	// back without deleting an existing working node.
-	script += "MSBOOST_FORCE_FRESH=1 bash \"$work/installer.sh\" \"$node_user\" \"$node_pass\" >\"$work/private.log\" 2>&1\n"
+	// MSBOOST_UDP=1: this executor reads configurations with a UDP binding,
+	// so the node serves UDP too; without it the installer stays TCP-only.
+	script += "MSBOOST_FORCE_FRESH=1 MSBOOST_UDP=1 bash \"$work/installer.sh\" \"$node_user\" \"$node_pass\" >\"$work/private.log\" 2>&1\n"
 	script += nodeConfigTail
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	r.Health = &Health{BBR: marker(out, "MSBOOST_BBR")}
@@ -182,9 +190,9 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	}
 	r.State = "succeeded"
 	r.Phase = "complete"
-	r.Message = "节点服务及全程 TCP 测速协议自测通过；公网 TCP 单独检查，游戏连通性尚未验证"
+	r.Message = "节点服务及全程 TCP 测速协议自测通过；公网 TCP 和 UDP 单独检查，游戏连通性尚未验证"
 	r.Config = data
-	r.Health = &Health{Service: "running", LocalSelfTest: "passed", PublicTCP: e.TCPProbe(ctx, info.TargetHost, info.TargetPort), Game: "not_tested", BBR: marker(out, "MSBOOST_BBR")}
+	r.Health = &Health{Service: "running", LocalSelfTest: "passed", PublicTCP: e.TCPProbe(ctx, info.TargetHost, info.TargetPort), PublicUDP: e.UDPProbe(ctx, data), Game: "not_tested", BBR: marker(out, "MSBOOST_BBR")}
 	return r
 }
 func probeTCP(ctx context.Context, host string, port int) string {

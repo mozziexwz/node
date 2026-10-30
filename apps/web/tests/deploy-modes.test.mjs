@@ -195,6 +195,65 @@ test(
   },
 );
 
+test(
+  "a node that serves UDP shows its UDP check and the launcher it needs",
+  { timeout: 60000 },
+  async () => {
+    const browser = await launch();
+    try {
+      const config = {
+        profiles: [
+          {
+            profileName: "msboost",
+            user: { name: "node-user", password: "node-password-1234" },
+            servers: [
+              {
+                ipAddress: "203.0.113.10",
+                domainName: "",
+                portBindings: [
+                  { port: 23456, protocol: "TCP" },
+                  { port: 23456, protocol: "UDP" },
+                ],
+              },
+            ],
+            mtu: 1400,
+          },
+        ],
+        activeProfile: "msboost",
+      };
+      const { page, errors } = await mount(
+        browser,
+        "import {TaskDetail} from './tools'",
+        '<TaskDetail owner="member" onClose={()=>{}} task={{id:"deployed",userId:"member",kind:"deploy",host:"203.0.113.10",state:"succeeded",phase:"complete",configAvailable:true,message:"部署完成",health:{service:"running",localSelfTest:"passed",publicTCP:"reachable",publicUDP:"unreachable",bbr:"enabled"}}}/>',
+        (route) =>
+          route.fulfill({
+            json: route.request().url().endsWith("/api/tasks/deployed/config")
+              ? config
+              : {},
+          }),
+      );
+      await expect(
+        page.getByText("这份配置同时支持 TCP 和 UDP", { exact: false }),
+      ).toBeVisible();
+      const rows = await page
+        .locator("dialog tbody tr")
+        .evaluateAll((trs) =>
+          trs.map((tr) => tr.innerText.replace(/\s+/g, " ").trim()),
+        );
+      assert.deepEqual(rows, [
+        "BBR 网络优化 已启用",
+        "服务运行 运行中",
+        "本地自测 通过",
+        "公网 TCP 可达性 可达",
+        "公网 UDP 可达性 不可达",
+      ]);
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
 test("administrators write the upgrade notes", { timeout: 60000 }, async () => {
   const browser = await launch();
   try {

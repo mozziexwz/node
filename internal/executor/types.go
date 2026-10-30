@@ -121,7 +121,10 @@ type Health struct {
 	Service       string `json:"service"`
 	LocalSelfTest string `json:"localSelfTest"`
 	PublicTCP     string `json:"publicTCP"`
-	Game          string `json:"game"`
+	// PublicUDP: reachable, unreachable, off or not_tested; empty in
+	// results from before nodes served UDP.
+	PublicUDP string `json:"publicUDP,omitempty"`
+	Game      string `json:"game"`
 }
 
 // RelayRecord is meta.json as written on the relay server.

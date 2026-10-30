@@ -22,10 +22,10 @@
 
 | kind | 额外参数 |
 |---|---|
-| `deploy` | `ssh`；仅接受 `mode:"fresh"`。每次重新生成受管节点认证与端口，不重装操作系统；失败时安装器仍以私有快照回滚。部署前只读核验目标为 Debian 11 或以上版本。 |
-| `upgrade` | 只有 `ssh`（公网 IPv4），不接受 `mode`、备注或其他参数。先只读取回节点现有配置（没有 `/etc/msboost/install.env` 或 `/root/直连.json` 时以 `not_installed` 失败，服务器不做任何改动；配置入口不是这台服务器时为 `config_host_mismatch`），再核验 Debian 11 或以上版本，然后不带 `MSBOOST_FORCE_FRESH` 重跑固定版本安装脚本，安装脚本沿用已记录的用户名、密码、端口和低熵档位。升级后的配置必须与升级前入口、端口和凭据一致，否则以 `config_changed` 失败。成功时交付同一份配置。 |
-| `fetch-config` | 只有 `ssh`（公网 IPv4）。只读取节点上的 `/root/直连.json`，按部署的标准核验格式和入口，不改动服务器，不跑本地自测也不调整 BBR；`health` 只有 `service`（两个节点服务都在运行为 `running`，否则 `stopped`）和 `publicTCP`。失败编码同 `upgrade` 的前两种。 |
-| `relay` | `ssh`；`clientConfig` 为 JSON 对象，只允许一个 profile、server 和 TCP 端口，其余字段（如 `trafficPattern`）原样保留；可选 `front:SSH` 增加第二台前置机，不能替代中转；`remark` 可选、最多 60 字符且不得含换行；`rateMbps` 可选，上下行各限速，省略为管理员设置的默认值（5），须在管理员设置的范围（1–10）内。网站另行写入使用者记录（`source:"manual"`、配置人邮箱），浏览器不能提交 `meta`。中转及前置 VPS 均先只读核验为 Debian 11 或以上版本。 |
+| `deploy` | `ssh`；仅接受 `mode:"fresh"`。每次重新生成受管节点认证与端口，不重装操作系统；执行机以 `MSBOOST_UDP=1` 运行安装脚本，节点在同一端口同时开 TCP 和 UDP（UDP 端口被其他程序占用时只开 TCP），配置在 TCP 绑定之后再列同端口的 UDP 绑定；失败时安装器仍以私有快照回滚。部署前只读核验目标为 Debian 11 或以上版本。 |
+| `upgrade` | 只有 `ssh`（公网 IPv4），不接受 `mode`、备注或其他参数。先只读取回节点现有配置（没有 `/etc/msboost/install.env` 或 `/root/直连.json` 时以 `not_installed` 失败，服务器不做任何改动；配置入口不是这台服务器时为 `config_host_mismatch`），再核验 Debian 11 或以上版本，然后不带 `MSBOOST_FORCE_FRESH`、带 `MSBOOST_UDP=1` 重跑固定版本安装脚本，安装脚本沿用已记录的用户名、密码、端口和低熵档位，原来只开 TCP 的节点同时开 UDP。升级后的配置必须与升级前入口、端口和凭据一致，否则以 `config_changed` 失败。成功时交付同一份配置。 |
+| `fetch-config` | 只有 `ssh`（公网 IPv4）。只读取节点上的 `/root/直连.json`，按部署的标准核验格式和入口，不改动服务器，不跑本地自测也不调整 BBR；`health` 只有 `service`（两个节点服务都在运行为 `running`，否则 `stopped`）、`publicTCP` 和 `publicUDP`。失败编码同 `upgrade` 的前两种。 |
+| `relay` | `ssh`；`clientConfig` 为 JSON 对象，只允许一个 profile、server 和 TCP 端口（之后可再有一个同端口的 UDP 绑定；生成的中转配置只保留 TCP，带 UDP 绑定的配置只派给声明 `node_udp_v1` 的执行机），其余字段（如 `trafficPattern`）原样保留；可选 `front:SSH` 增加第二台前置机，不能替代中转；`remark` 可选、最多 60 字符且不得含换行；`rateMbps` 可选，上下行各限速，省略为管理员设置的默认值（5），须在管理员设置的范围（1–10）内。网站另行写入使用者记录（`source:"manual"`、配置人邮箱），浏览器不能提交 `meta`。中转及前置 VPS 均先只读核验为 Debian 11 或以上版本。 |
 | `dd` | `ssh`；`dd:{confirmErase:true,portMode:"keep"\|"new",newPort?,passwordMode:"keep"\|"new",newPassword?,loginMode?}`，仅固定 Debian 12 重装流程。密钥登录时必须给 `loginMode`：`key` 把当前私钥推导出的公钥写入新系统（`passwordMode:"keep"`，不设 root 密码，私钥本身不写入），`password` 改为新 root 密码（`passwordMode:"new"` 与 `newPassword`）；重装脚本不能同时设置密码和公钥。密码登录时不接受 `loginMode:"key"`。 |
 | `cleanup-preview` / `cleanup` | 见下节；不接受前置机、客户端配置或 DD 参数 |
 
@@ -44,7 +44,7 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 
 `GET /api/tasks/{id}/config` 返回原始客户端 JSON，仅所有者可读，服务器内存副本保留 10 分钟，重启即丢失。浏览器可存入加密 IndexedDB，不承诺跨浏览器或清除网站数据后的恢复；节点配置可以用 `fetch-config` 从服务器重新读取。部署、升级和取回的默认下载名为 `直连.json`，自备中转为 `自备中转.json`。自备备注用于配置 `profileName` / `activeProfile` 和下载名基础，文件名清理路径及控制字符；浏览器同时处理 Windows 保留名。自备中转监听端口从可用范围随机选择，不按区间起点顺序递增；仍须真实绑定成功才交付配置。备注不改变节点认证。
 
-`health` 分离 `service,localSelfTest,publicTCP,game`；`game` 保留协议兼容，当前没有游戏探测，UI 不显示未检测的 Game 行。页面显示“服务运行 / 本地自测 / 公网 TCP 可达性”，并说明游戏需自行验证。`target_tcp_reachable` 仅表示目标 TCP 可达。`hops` 字段为 `fromHost,fromPort,toHost,toPort`。
+`health` 分离 `service,localSelfTest,publicTCP,publicUDP,game`；`publicUDP` 由执行机经 UDP 打开用户自己的 mieru 隧道、向节点 `127.0.0.1:20424` 发 hello 得出：`reachable`、`unreachable`、`off`（配置没有 UDP 绑定）或 `not_tested`（执行机无法运行检查），旧执行机的结果没有这一项；`game` 保留协议兼容，当前没有游戏探测，UI 不显示未检测的 Game 行。页面显示“服务运行 / 本地自测 / 公网 TCP 可达性 / 公网 UDP 可达性”（结果没有 `publicUDP` 时不显示最后一行），并说明游戏需自行验证。`target_tcp_reachable` 仅表示目标 TCP 可达。`hops` 字段为 `fromHost,fromPort,toHost,toPort`。
 
 维护模式对所有角色（含管理员）阻止新部署、中转、DD、清理及权益前置执行任务；已接受任务不自动取消。历史元数据、所有者临时配置和无密码的只读指纹探测仍可使用。指纹探测要求已认证的 active 账户、正常配额、公网地址及在线执行机，不套用免费工具邮箱要求；实际创建免费任务仍在读取 SSH 凭据前执行邮箱门禁，权益前置仍检查维护状态和权益。
 
@@ -92,7 +92,7 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 - `relay-code`：按 `code` 设置。`log` 只把结果记入使用记录（`verify,verifiedAt`）。`enforce` 时 `tunnel_failed`、`not_msboost` 和 `entry_unreachable` 会让执行机删除刚建立的中转和前置机上的配置，任务失败（`phase:"verify"`，`errorCode` 为 `verify_tunnel_failed`、`verify_not_msboost` 或 `verify_entry_unreachable`，`failedRole:"target"`），本次不计次；`unavailable` 不阻止建立。强制校验只派给声明了校验能力的执行机，没有时拒绝使用并提示升级执行机。
 - 中转服务器 `meta.json` 写入 `verified`。网站读取服务器列表时给 `relay-inventory` 附带 `reportVerified:true`，执行机返回每条中转的 `verified`，拥有者的列表据此显示。
 - `relay-verify`：面板为捐赠权益线路发起的内部任务，只有 `clientConfig`（入口改写为该规则的线路入口；规则被校验暂停时为客户节点本身）和 `verify`，不带 SSH，也不占用服务器。期限 10 分钟，不进入用户任务列表，管理员审计可见，结束 7 天后删除记录，结果保留在规则上。调度和处理见 [商务契约](contracts-commerce.md) 的「用户配置」。
-- 隧道客户端是 mihomo v1.19.32，两架构 `.gz` 的 SHA-256 与节点安装器相同并固定在代码中。执行机第一次校验时从 GitHub Release 下载到服务私有的临时目录并核对摘要，之后每次启动前再次核对；它作为单独程序运行，只监听回环地址，关闭进程查找和 IPv6，校验结束即停止并删除工作目录。执行机不链接 mieru 代码。`MSBOOST_MIHOMO_BINARY` 可改用管理员自备的本机文件，按原样使用。
+- 隧道客户端是 mihomo v1.19.33，两架构 `.gz` 的 SHA-256 与节点安装器相同并固定在代码中。执行机第一次校验时从 GitHub Release 下载到服务私有的临时目录并核对摘要，之后每次启动前再次核对；它作为单独程序运行，只监听回环地址，关闭进程查找和 IPv6，校验结束即停止并删除工作目录。执行机不链接 mieru 代码。`MSBOOST_MIHOMO_BINARY` 可改用管理员自备的本机文件，按原样使用。
 - 校验用的配置与 SSH 凭据一样只在执行任务的内存信封中，不写入任务记录、数据库或日志。
 - 实机检查：在 Linux 上用 `go test -c -o verify-field.test ./internal/executor` 编译，再以 `MSBOOST_VERIFY_FIELD=<放客户端配置的目录> ./verify-field.test -test.run TestVerifyField -test.v` 运行，会用真实的 mihomo 逐个校验目录里的配置并打印结果；不设这个变量时该测试跳过。
 

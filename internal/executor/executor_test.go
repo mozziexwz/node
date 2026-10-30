@@ -78,6 +78,37 @@ func TestClientConfigRejectsAmbiguityAndPreservesCredentials(t *testing.T) {
 	}
 }
 
+// A node that serves UDP lists a UDP binding on its TCP port after the TCP one.
+// Relays forward TCP only, so their rewritten configuration drops it.
+func TestClientConfigAcceptsSamePortUDP(t *testing.T) {
+	tcp := `{"port":23456,"protocol":"TCP"}`
+	dual := strings.Replace(sampleConfig, tcp, tcp+`,{"port":23456,"protocol":"UDP"}`, 1)
+	info, err := ParseClientConfig([]byte(dual))
+	if err != nil || !info.UDP || info.TargetPort != 23456 {
+		t.Fatalf("dual-transport config: %+v %v", info, err)
+	}
+	if info, err := ParseClientConfig([]byte(sampleConfig)); err != nil || info.UDP {
+		t.Fatal("TCP-only config reported UDP")
+	}
+	out, err := RewriteClientConfig([]byte(dual), "1.1.1.1", 45678)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := ParseClientConfig(out); err != nil || info.UDP || info.TargetPort != 45678 || strings.Contains(string(out), "UDP") {
+		t.Fatalf("relay configuration kept UDP: %s", out)
+	}
+	for _, bad := range []string{
+		strings.Replace(sampleConfig, tcp, `{"port":23456,"protocol":"UDP"},`+tcp, 1),
+		strings.Replace(sampleConfig, tcp, tcp+`,{"port":23457,"protocol":"UDP"}`, 1),
+		strings.Replace(sampleConfig, tcp, tcp+`,{"port":23456,"protocol":"UDP"},{"port":23456,"protocol":"UDP"}`, 1),
+		strings.Replace(sampleConfig, tcp, tcp+`,{"portRange":"23456-23457","protocol":"UDP"}`, 1),
+	} {
+		if _, err := ParseClientConfig([]byte(bad)); err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+}
+
 // New nodes default to a low-entropy traffic pattern. A relay only moves bytes,
 // so the customer's profile setting must survive the entry rewrite unchanged.
 func TestRelayConfigPreservesTrafficPattern(t *testing.T) {

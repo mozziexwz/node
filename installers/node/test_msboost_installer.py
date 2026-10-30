@@ -119,6 +119,7 @@ class InstallerTests(unittest.TestCase):
             result=subprocess.run([sys.executable,"-B",str(HERE/"tcp_probe.py"),"--config",str(config),"--validate-config"],capture_output=True)
             self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('probe_hello "${SELFTEST_PORT}"',SCRIPT)
+        self.assertIn('probe_hello "${SELFTEST_UDP_PORT}"',SCRIPT)
         self.assertNotIn("${PROBE_PORT}",function("configure_firewall"))
         self.assertIn('(( candidate != PROBE_PORT )) || continue',function("random_free_port"))
         self.assertIn('(( PORT != PROBE_PORT )) || fail',SCRIPT)
@@ -224,6 +225,13 @@ OLD_FW_UFW_REMOVED=0
 OLD_FW_FIREWALLD_RUNTIME_REMOVED=0
 OLD_FW_FIREWALLD_PERMANENT_REMOVED=0
 OLD_FW_FIREWALLD_PERMANENT_REMOVED_OFFLINE=0
+FW_UFW_UDP_ADDED=0
+FW_FIREWALLD_RUNTIME_UDP_ADDED=0
+FW_FIREWALLD_PERMANENT_UDP_ADDED=0
+OLD_FW_UFW_UDP_REMOVED=0
+OLD_FW_FIREWALLD_RUNTIME_UDP_REMOVED=0
+OLD_FW_FIREWALLD_PERMANENT_UDP_REMOVED=0
+OLD_FW_FIREWALLD_PERMANENT_UDP_REMOVED_OFFLINE=0
 warn() { printf '%s\n' "$*" >&2; }
 install() {
   local -a args=()
@@ -327,13 +335,15 @@ echo ROLLBACK_VERIFIED
 '''
 
 PINNED_ENGINE = {
-    "mihomo-linux-amd64-compatible-v1.19.32.gz": "ba3ce607747a07f948fc35780e108a4a7c7f552a38b9bd4d115f313ebcb89c20",
-    "mihomo-linux-amd64-v1-v1.19.32.gz": "306f81e723e60ce6b828899a6fe83e1d00e9ecefb2dc8d4d849312a5bc00efdc",
-    "mihomo-linux-amd64-v1.19.32.gz": "8451100836c9eda194331c2babfad490b2faf30cebc1a04b0e76fd8ac2d35d10",
-    "mihomo-linux-arm64-v1.19.32.gz": "9dd862e28b46ff7d775f169cceebc28deccaa0a9e804237d421cd2571e0caba0",
+    "mihomo-linux-amd64-compatible-v1.19.33.gz": "386508bfb1c72c43b6a0eda73708ecdce82546581b0ebcb16366c53757c622b6",
+    "mihomo-linux-amd64-v1-v1.19.33.gz": "8ec92e7b2fdc6b853ba00156bab7e4e965c8b0d843b8c4ac8ab98795f02ad524",
+    "mihomo-linux-amd64-v1.19.33.gz": "132f6f3edf9a65e62f04853aed3358472e0b2b7666daa8419edfa2ddf5bb6323",
+    "mihomo-linux-arm64-v1.19.33.gz": "ba408b317080ee265c46cb923a50018c1b82cbd708551cdd46a1e3e307396187",
 }
 # LOW_ENTROPY_MODE_* enum values from mieru pkg/appctl/proto/base.proto.
 LOW_ENTROPY_ENUM = {"32": 1, "40": 2, "48": 3, "56": 4}
+# TrafficPattern field 4 (nonce) -> NoncePattern field 2 (applyToAllUDPPacket) = true.
+NONCE_PATTERN = bytes((0x22, 0x02, 0x10, 0x01))
 LEGACY_CLIENT = """{
   "profiles": [
     {
@@ -387,13 +397,13 @@ def guard_block():
 
 class EngineAndTrafficPatternTests(unittest.TestCase):
     def test_pinned_engine_version_files_and_hashes(self):
-        self.assertIn('readonly PINNED_ENGINE_VERSION="v1.19.32"\n', SCRIPT)
+        self.assertIn('readonly PINNED_ENGINE_VERSION="v1.19.33"\n', SCRIPT)
         self.assertIn('readonly VERSION="${MSBOOST_ENGINE_VERSION:-${PINNED_ENGINE_VERSION}}"\n', SCRIPT)
         rows = [line.split() for line in heredoc("MSBOOST_PINNED_ENGINE").splitlines()]
         self.assertEqual({name: digest for name, digest in rows}, PINNED_ENGINE)
         for name, digest in rows:
             self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
-            self.assertTrue(name.endswith("-v1.19.32.gz"), name)
+            self.assertTrue(name.endswith("-v1.19.33.gz"), name)
         # Every name the selector can choose for the pinned version is reviewed.
         selector = function("download_engine")
         for name in PINNED_ENGINE:
@@ -405,32 +415,32 @@ class EngineAndTrafficPatternTests(unittest.TestCase):
 
     def test_pinned_selection_ignores_unreviewed_assets(self):
         code = engine_selector()
-        assets = [{"name": "mihomo-linux-arm64-v8-v1.19.32.gz", "browser_download_url": "https://example.invalid/v8", "digest": "sha256:" + "0" * 64},
-                  {"name": "mihomo-linux-arm64-v1.19.32.gz", "browser_download_url": "https://example.invalid/arm64", "digest": "sha256:" + "1" * 64},
-                  {"name": "mihomo-linux-amd64-v1.19.32.gz", "browser_download_url": "https://example.invalid/amd64", "digest": "sha256:" + "2" * 64}]
+        assets = [{"name": "mihomo-linux-arm64-v8-v1.19.33.gz", "browser_download_url": "https://example.invalid/v8", "digest": "sha256:" + "0" * 64},
+                  {"name": "mihomo-linux-arm64-v1.19.33.gz", "browser_download_url": "https://example.invalid/arm64", "digest": "sha256:" + "1" * 64},
+                  {"name": "mihomo-linux-amd64-v1.19.33.gz", "browser_download_url": "https://example.invalid/amd64", "digest": "sha256:" + "2" * 64}]
         with tempfile.TemporaryDirectory() as directory:
             release = Path(directory) / "release.json"
             release.write_text(json.dumps({"assets": assets}), encoding="utf-8")
             pinned = " ".join(PINNED_ENGINE)
-            out = subprocess.run([sys.executable, "-c", code, str(release), "arm64", "v1.19.32", pinned], capture_output=True, text=True)
-            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-arm64-v1.19.32.gz")
-            out = subprocess.run([sys.executable, "-c", code, str(release), "arm64", "v1.19.32", ""], capture_output=True, text=True)
-            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-arm64-v8-v1.19.32.gz")
-            out = subprocess.run([sys.executable, "-c", code, str(release), "amd64", "v1.19.32", pinned], capture_output=True, text=True)
-            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-amd64-v1.19.32.gz")
+            out = subprocess.run([sys.executable, "-c", code, str(release), "arm64", "v1.19.33", pinned], capture_output=True, text=True)
+            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-arm64-v1.19.33.gz")
+            out = subprocess.run([sys.executable, "-c", code, str(release), "arm64", "v1.19.33", ""], capture_output=True, text=True)
+            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-arm64-v8-v1.19.33.gz")
+            out = subprocess.run([sys.executable, "-c", code, str(release), "amd64", "v1.19.33", pinned], capture_output=True, text=True)
+            self.assertEqual(out.stdout.splitlines()[1], "mihomo-linux-amd64-v1.19.33.gz")
 
-    def test_low_entropy_patterns_are_mieru_protobuf(self):
+    def test_traffic_patterns_are_mieru_protobuf(self):
         if not bash(): self.skipTest("Bash unavailable")
         import base64
-        code = function("low_entropy_pattern")
+        code = function("traffic_pattern")
         for level, value in LOW_ENTROPY_ENUM.items():
             with self.subTest(level=level):
-                result = run_bash(code + 'low_entropy_pattern ' + level + '\n')
+                result = run_bash(code + 'traffic_pattern ' + level + '\n')
                 self.assertEqual(result.returncode, 0, result.stderr)
-                # TrafficPattern field 6 (lowEntropy) -> LowEntropyPattern field 1 (mode).
-                self.assertEqual(base64.b64decode(result.stdout, validate=True), bytes((0x32, 0x02, 0x08, value)))
-        self.assertEqual(run_bash(code + 'low_entropy_pattern off\n').stdout, "")
-        self.assertNotEqual(run_bash(code + 'low_entropy_pattern 64\n').returncode, 0)
+                # Then TrafficPattern field 6 (lowEntropy) -> LowEntropyPattern field 1 (mode).
+                self.assertEqual(base64.b64decode(result.stdout, validate=True), NONCE_PATTERN + bytes((0x32, 0x02, 0x08, value)))
+        self.assertEqual(base64.b64decode(run_bash(code + 'traffic_pattern off\n').stdout, validate=True), NONCE_PATTERN)
+        self.assertNotEqual(run_bash(code + 'traffic_pattern 64\n').returncode, 0)
 
     def test_explicit_value_is_validated_before_any_change(self):
         if not bash(): self.skipTest("Bash unavailable")
@@ -452,7 +462,7 @@ class EngineAndTrafficPatternTests(unittest.TestCase):
 
     def test_default_levels(self):
         if not bash(): self.skipTest("Bash unavailable")
-        code = "".join(function(name) for name in ("valid_low_entropy", "low_entropy_pattern", "state_value", "resolve_low_entropy"))
+        code = "".join(function(name) for name in ("valid_low_entropy", "traffic_pattern", "state_value", "resolve_low_entropy"))
         code += 'fail() { printf "FAILED\\n"; exit 1; }\n'
         cases = [
             # (explicit, force_fresh, managed, recorded, expected)
@@ -486,20 +496,21 @@ class EngineAndTrafficPatternTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     level, pattern = result.stdout.strip().split("|")
                     self.assertEqual(level, expected)
-                    self.assertEqual(pattern, run_bash(function("low_entropy_pattern") + "low_entropy_pattern " + expected + "\n").stdout)
+                    self.assertEqual(pattern, run_bash(function("traffic_pattern") + "traffic_pattern " + expected + "\n").stdout)
             state.write_text("MANAGED_BY=msboost-installer-v1\nLOW_ENTROPY=64\n", encoding="utf-8")
             env = {key: item for key, item in os.environ.items() if key not in ("MSBOOST_LOW_ENTROPY", "MSBOOST_FORCE_FRESH")}
             result = run_bash("STATE_FILE='" + root + "/install.env'\nMANAGED_INSTALL=1\n" + code + "resolve_low_entropy\n", env=env)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("FAILED", result.stdout)
 
-    def render(self, level):
-        functions = function("low_entropy_pattern") + "".join(heredoc_function(name) for name in ("write_server_config", "write_client_config", "write_selftest_config"))
+    def render(self, level, udp=True):
+        functions = function("traffic_pattern") + "".join(heredoc_function(name) for name in ("write_server_config", "write_client_config", "write_selftest_config"))
         with tempfile.TemporaryDirectory(dir=HERE) as directory:
             root = Path(os.path.relpath(directory, Path.cwd())).as_posix()
-            body = ("PORT=23456\nUSER_NAME=node-user\nUSER_PASS=node-password-1234\nPUBLIC_IP=8.8.8.8\nSELFTEST_PORT=34567\n"
+            body = ("PORT=23456\nUSER_NAME=node-user\nUSER_PASS=node-password-1234\nPUBLIC_IP=8.8.8.8\nSELFTEST_PORT=34567\nSELFTEST_UDP_PORT=34568\n"
+                    "UDP_ENABLED=" + ("1" if udp else "0") + "\n"
                     "RULE_URL=https://example.invalid/gfw.mrs\nLOW_ENTROPY=" + level + "\n" + functions +
-                    'TRAFFIC_PATTERN="$(low_entropy_pattern "$LOW_ENTROPY")"\n'
+                    'TRAFFIC_PATTERN="$(traffic_pattern "$LOW_ENTROPY")"\n'
                     "write_server_config '" + root + "/server.yaml' /direct.yaml /filter.mrs\n"
                     "write_client_config '" + root + "/client.json'\n"
                     "write_selftest_config '" + root + "/selftest.yaml'\n")
@@ -509,26 +520,42 @@ class EngineAndTrafficPatternTests(unittest.TestCase):
 
     def test_generated_configurations_per_level(self):
         if not bash(): self.skipTest("Bash unavailable")
-        server, client, selftest = self.render("off")
-        self.assertEqual(client, LEGACY_CLIENT)
-        self.assertNotIn("traffic-pattern", server + selftest)
-        self.assertIn("    transport: TCP\n    users:\n", server)
-        self.assertIn("    handshake-mode: HANDSHAKE_STANDARD\nrules:\n", selftest)
         import base64
-        for level, value in LOW_ENTROPY_ENUM.items():
-            with self.subTest(level=level):
-                encoded = base64.b64encode(bytes((0x32, 0x02, 0x08, value))).decode()
-                server, client, selftest = self.render(level)
-                self.assertIn('    transport: TCP\n    traffic-pattern: "' + encoded + '"\n    users:\n', server)
-                self.assertEqual(server.count("traffic-pattern"), 1)
-                self.assertIn('    handshake-mode: HANDSHAKE_STANDARD\n    traffic-pattern: "' + encoded + '"\nrules:\n', selftest)
-                document = json.loads(client)
-                profile = document["profiles"][0]
-                self.assertEqual(profile["trafficPattern"], {"lowEntropy": {"mode": "LOW_ENTROPY_MODE_" + level}})
-                self.assertEqual(list(profile), ["profileName", "user", "servers", "mtu", "trafficPattern"])
-                legacy = json.loads(LEGACY_CLIENT)
-                del profile["trafficPattern"]
-                self.assertEqual(document, legacy)
+        for level in ["off"] + list(LOW_ENTROPY_ENUM):
+            low_entropy = bytes((0x32, 0x02, 0x08, LOW_ENTROPY_ENUM[level])) if level != "off" else b""
+            encoded = base64.b64encode(NONCE_PATTERN + low_entropy).decode()
+            for udp in (True, False):
+                with self.subTest(level=level, udp=udp):
+                    server, client, selftest = self.render(level, udp)
+                    # One mieru listener per transport, same port, user and pattern.
+                    tcp_listener = ('  - name: msboost-in\n    type: mieru\n    listen: 0.0.0.0\n    port: 23456\n    transport: TCP\n'
+                                    '    traffic-pattern: "' + encoded + '"\n    users:\n      "node-user": "node-password-1234"\n')
+                    udp_listener = tcp_listener.replace("msboost-in\n", "msboost-in-udp\n").replace("transport: TCP", "transport: UDP")
+                    self.assertIn("listeners:\n" + tcp_listener + (udp_listener if udp else "") + "\nrule-providers:\n", server)
+                    self.assertEqual(server.count("traffic-pattern"), 2 if udp else 1)
+                    tcp_proxy = ('  - name: msboost-loopback\n    type: mieru\n    server: 127.0.0.1\n    port: 23456\n    transport: TCP\n'
+                                 '    username: "node-user"\n    password: "node-password-1234"\n    multiplexing: MULTIPLEXING_LOW\n'
+                                 '    handshake-mode: HANDSHAKE_STANDARD\n    traffic-pattern: "' + encoded + '"\n')
+                    if udp:
+                        udp_proxy = tcp_proxy.replace("msboost-loopback\n", "msboost-loopback-udp\n").replace("transport: TCP", "transport: UDP")
+                        self.assertIn("    port: 34567\n  - name: msboost-test-udp-in\n    type: socks\n    listen: 127.0.0.1\n    port: 34568\nproxies:\n" +
+                                      tcp_proxy + udp_proxy + "rules:\n  - IN-NAME,msboost-test-udp-in,msboost-loopback-udp\n  - MATCH,msboost-loopback\n", selftest)
+                    else:
+                        self.assertIn("    port: 34567\nproxies:\n" + tcp_proxy + "rules:\n  - MATCH,msboost-loopback\n", selftest)
+                        self.assertNotIn("udp", selftest.lower())
+                    document = json.loads(client)
+                    profile = document["profiles"][0]
+                    expected = {"nonce": {"applyToAllUDPPacket": True}}
+                    if level != "off":
+                        expected["lowEntropy"] = {"mode": "LOW_ENTROPY_MODE_" + level}
+                    self.assertEqual(profile["trafficPattern"], expected)
+                    self.assertEqual(list(profile), ["profileName", "user", "servers", "mtu", "trafficPattern"])
+                    bindings = profile["servers"][0]["portBindings"]
+                    self.assertEqual(bindings, [{"port": 23456, "protocol": "TCP"}] + ([{"port": 23456, "protocol": "UDP"}] if udp else []))
+                    # Apart from those two fields the file is the original format.
+                    del profile["trafficPattern"]
+                    profile["servers"][0]["portBindings"] = bindings[:1]
+                    self.assertEqual(document, json.loads(LEGACY_CLIENT))
 
     def test_install_state_records_level_and_guard_accepts_it(self):
         if not bash(): self.skipTest("Bash unavailable")
@@ -536,18 +563,139 @@ class EngineAndTrafficPatternTests(unittest.TestCase):
             root = Path(os.path.relpath(directory, Path.cwd())).as_posix()
             Path(directory, "msboost.service").write_bytes(unit("msboost.service"))
             Path(directory, "msboost-tcp-probe.service").write_bytes(unit("msboost-tcp-probe.service"))
-            body = ("MANAGED_MARKER=msboost-installer-v1\nUSER_NAME=u\nUSER_PASS=p\nPORT=1\nVERSION=v1.19.32\nLOW_ENTROPY=48\n"
+            body = ("MANAGED_MARKER=msboost-installer-v1\nUSER_NAME=u\nUSER_PASS=p\nPORT=1\nVERSION=v1.19.33\nLOW_ENTROPY=48\nUDP_ENABLED=1\n"
                     "NEW_FW_UFW_OWNED=0\nNEW_FW_FIREWALLD_RUNTIME_OWNED=0\nNEW_FW_FIREWALLD_PERMANENT_OWNED=0\nFW_FIREWALLD_ZONE=\n"
+                    "NEW_FW_UFW_UDP_OWNED=1\nNEW_FW_FIREWALLD_RUNTIME_UDP_OWNED=0\nNEW_FW_FIREWALLD_PERMANENT_UDP_OWNED=0\n"
                     "STAGE_DIR='" + root + "'\n" + heredoc_function("write_install_state") + "write_install_state '" + root + "/install.env'\n")
             result = run_bash(body)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             lines = Path(directory, "install.env").read_text(encoding="utf-8").splitlines()
             self.assertIn("LOW_ENTROPY=48", lines)
-            self.assertIn("ENGINE_VERSION=v1.19.32", lines)
+            self.assertIn("ENGINE_VERSION=v1.19.33", lines)
+            for line in ("UDP=1", "FIREWALL_UFW_UDP_OWNED=1", "FIREWALLD_RUNTIME_UDP_OWNED=0", "FIREWALLD_PERMANENT_UDP_OWNED=0"):
+                self.assertIn(line, lines)
         fixture = VirtualLinux()
         data, uid, gid, mode, nlink = fixture.files["/etc/msboost/install.env"]
         fixture.put("/etc/msboost/install.env", data + b"LOW_ENTROPY=48\n", uid, gid, mode, nlink)
         fixture.check()
+
+# A UFW model for the firewall functions: the rule list lives in $RULES, and
+# firewalld is installed but not running.
+FIREWALL_FAKES = r'''
+note() { :; }
+warn() { :; }
+ufw() {
+  case "$1" in
+    status) echo "Status: active" ;;
+    show) [[ ! -f "$RULES" ]] || sed 's/^/ufw allow /' "$RULES" ;;
+    allow) printf '%s\n' "$2" >> "$RULES" ;;
+    --force) grep -vxF "$4" "$RULES" > "$RULES.new" || true; mv "$RULES.new" "$RULES" ;;
+    *) return 99 ;;
+  esac
+}
+firewall-cmd() { return 252; }
+firewall-offline-cmd() { return 1; }
+rules() { if [[ -f "$RULES" ]]; then sort "$RULES" | tr '\n' ' '; fi; echo; }
+'''
+
+class UdpTests(unittest.TestCase):
+    def resolve_udp(self, env, state=None):
+        code = "".join(function(name) for name in ("state_value", "port_in_use", "udp_held_by_service", "resolve_udp"))
+        with tempfile.TemporaryDirectory(dir=HERE) as directory:
+            root = Path(os.path.relpath(directory, Path.cwd())).as_posix()
+            if state is not None:
+                Path(directory, "install.env").write_bytes(("MANAGED_BY=msboost-installer-v1\n" + state).encode())
+            code += ('fail() { printf "FAILED %s\\n" "$*"; exit 1; }\nwarn() { printf "WARN %s\\n" "$*"; }\n'
+                     "SERVICE=msboost.service\nPORT=23456\nSTATE_FILE='" + root + "/install.env'\n"
+                     'ss() { case "$*" in *--udp*) printf "%s" "${UDP_ROWS:-}" ;; *-lunp*) printf "%s" "${UDP_OWNER:-}" ;; esac; }\n'
+                     'systemctl() { printf "%s\\n" "${MAIN_PID:-0}"; }\n'
+                     'resolve_udp\nprintf "%s|%s\\n" "$UDP_ENABLED" "$INGRESS"\n')
+            base = {key: item for key, item in os.environ.items() if key not in ("MSBOOST_UDP", "MSBOOST_FORCE_FRESH")}
+            result = run_bash(code, env=dict(base, **env))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            enabled = result.stdout.splitlines()[-1].split("|")[0]
+            self.assertEqual(result.stdout.splitlines()[-1], enabled + "|" + ("TCP/23456 and UDP/23456" if enabled == "1" else "TCP/23456"))
+            return enabled, "WARN" in result.stdout
+
+    def test_udp_follows_the_port_owner(self):
+        if not bash(): self.skipTest("Bash unavailable")
+        bound = "UNCONN 0 0 0.0.0.0:23456 0.0.0.0:*\n"
+        cases = [
+            ("free", "", "", "0", "1"),
+            ("other port", "UNCONN 0 0 0.0.0.0:2345 0.0.0.0:*\n", "", "0", "1"),
+            # A rerun finds its own service on the port; the restart releases it.
+            ("own service", bound, bound.strip() + ' users:(("msboost",pid=4242,fd=7))\n', "4242", "1"),
+            ("other process", bound, bound.strip() + ' users:(("dnsmasq",pid=99,fd=4))\n', "4242", "0"),
+            ("shared", bound, bound.strip() + ' users:(("msboost",pid=4242,fd=7),("other",pid=99,fd=4))\n', "4242", "0"),
+            ("no service", bound, bound.strip() + ' users:(("msboost",pid=4242,fd=7))\n', "0", "0"),
+        ]
+        for name, rows, owner, pid, expected in cases:
+            with self.subTest(name):
+                env = {"MSBOOST_UDP": "1", "UDP_ROWS": rows, "UDP_OWNER": owner, "MAIN_PID": pid}
+                self.assertEqual(self.resolve_udp(env), (expected, expected == "0"))
+
+    def test_udp_choice_is_explicit_or_recorded(self):
+        if not bash(): self.skipTest("Bash unavailable")
+        cases = [
+            # (env, recorded state, expected): older executors pass nothing and
+            # get TCP only; a rerun keeps the recorded choice like low entropy.
+            ({}, None, "0"),
+            ({}, "UDP=1\n", "1"),
+            ({}, "UDP=0\n", "0"),
+            ({"MSBOOST_FORCE_FRESH": "1"}, "UDP=1\n", "0"),
+            ({"MSBOOST_UDP": "0"}, "UDP=1\n", "0"),
+            ({"MSBOOST_UDP": "1", "MSBOOST_FORCE_FRESH": "1"}, None, "1"),
+        ]
+        for env, state, expected in cases:
+            with self.subTest(env=env, state=state):
+                self.assertEqual(self.resolve_udp(env, state), (expected, False))
+        guard = re.search(r'^if \[\[ -n "\$\{MSBOOST_UDP\+set\}".*?^fi\n', SCRIPT, re.M | re.S).group(0)
+        self.assertLess(SCRIPT.index(guard), SCRIPT.index("\npreflight_checks \"$@\"\n"))
+        code = 'fail() { printf "REJECTED\\n"; exit 1; }\n' + guard + 'printf "ACCEPTED\\n"\n'
+        for value, accepted in (("0", True), ("1", True), ("", False), ("yes", False), ("01", False), ("true", False)):
+            with self.subTest(value=value):
+                result = run_bash(code, env=dict(os.environ, MSBOOST_UDP=value))
+                self.assertEqual("ACCEPTED" in result.stdout, accepted, result.stdout + result.stderr)
+
+    def firewall(self, initial, setup):
+        start = SCRIPT.index('STAGE_DIR=""\n')
+        end = SCRIPT.index('TRAFFIC_PATTERN=""\n') + len('TRAFFIC_PATTERN=""\n')
+        code = SCRIPT[start:end] + "".join(function(name) for name in ("rollback_problem", "ufw_allows", "configure_firewall", "remove_previous_owned_firewall_rules", "rollback_firewall")) + FIREWALL_FAKES
+        with tempfile.TemporaryDirectory(dir=HERE) as directory:
+            root = Path(os.path.relpath(directory, Path.cwd())).as_posix()
+            if initial:
+                Path(directory, "rules").write_bytes("".join(rule + "\n" for rule in initial).encode())
+            body = (code + 'RULES="' + root + '/rules"\n' + setup +
+                    'configure_firewall\nremove_previous_owned_firewall_rules\nrules\n'
+                    'echo "$NEW_FW_UFW_OWNED $NEW_FW_UFW_UDP_OWNED $FW_UFW_ADDED $FW_UFW_UDP_ADDED $OLD_FW_UFW_REMOVED $OLD_FW_UFW_UDP_REMOVED"\n'
+                    'rollback_firewall\nrules\necho "$ROLLBACK_FAILED"\n')
+            result = run_bash(body)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return [line.strip() for line in result.stdout.splitlines()]
+
+    def test_firewall_rules_follow_udp(self):
+        if not bash(): self.skipTest("Bash unavailable")
+        both = 'PORT=23456\nUDP_ENABLED=1\nINGRESS="TCP/23456 and UDP/23456"\n'
+        tcp_only = 'PORT=23456\nUDP_ENABLED=0\nINGRESS="TCP/23456"\n'
+        cases = [
+            # (name, rules before, setup, rules after, flags, rules after rollback)
+            ("fresh", [], both, "23456/tcp 23456/udp", "1 1 1 1 0 0", ""),
+            ("adds UDP to an owned TCP rule", ["23456/tcp"], both + "OLD_FW_PORT=23456\nOLD_FW_UFW_OWNED=1\n",
+             "23456/tcp 23456/udp", "1 1 0 1 0 0", "23456/tcp"),
+            ("keeps both owned rules", ["23456/tcp", "23456/udp"], both + "OLD_FW_PORT=23456\nOLD_FW_UFW_OWNED=1\nOLD_FW_UFW_UDP_OWNED=1\n",
+             "23456/tcp 23456/udp", "1 1 0 0 0 0", "23456/tcp 23456/udp"),
+            # A TCP-only rerun removes the UDP rule it owns; rollback puts it back.
+            ("drops an owned UDP rule", ["23456/tcp", "23456/udp"], tcp_only + "OLD_FW_PORT=23456\nOLD_FW_UFW_OWNED=1\nOLD_FW_UFW_UDP_OWNED=1\n",
+             "23456/tcp", "1 0 0 0 0 1", "23456/tcp 23456/udp"),
+            ("moves both rules to a new port", ["11111/tcp", "11111/udp"], both + "OLD_FW_PORT=11111\nOLD_FW_UFW_OWNED=1\nOLD_FW_UFW_UDP_OWNED=1\n",
+             "23456/tcp 23456/udp", "1 1 1 1 1 1", "11111/tcp 11111/udp"),
+            # Someone else's UDP rule is used but never claimed or removed.
+            ("leaves a foreign UDP rule", ["23456/udp"], both, "23456/tcp 23456/udp", "1 0 1 0 0 0", "23456/udp"),
+            ("never claims a foreign UDP rule when TCP-only", ["23456/udp"], tcp_only + "OLD_FW_PORT=23456\n", "23456/tcp 23456/udp", "1 0 1 0 0 0", "23456/udp"),
+        ]
+        for name, initial, setup, after, flags, rolled_back in cases:
+            with self.subTest(name):
+                self.assertEqual(self.firewall(initial, setup), [after, flags, rolled_back, "0"])
 
 class HelloTests(unittest.TestCase):
     def run_hello(self, mutate=lambda raw:raw, auth=0, atyp=1, delay=0):
