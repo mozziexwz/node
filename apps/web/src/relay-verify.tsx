@@ -50,6 +50,13 @@ const filters: Record<string, string> = {
   skipped: "未检测",
 };
 
+// The UDP check through the relay entry; "off" (no UDP) shows nothing.
+const udpResults: Record<string, string> = {
+  reachable: "经中转可用",
+  unreachable: "经中转不通，可能是服务器没有放行 UDP；启动器会改用 TCP",
+  not_tested: "未检测",
+};
+
 const shortTime = (ms?: number) =>
   ms
     ? new Date(ms).toLocaleString("zh-CN", {
@@ -123,6 +130,7 @@ export function SelfTest({ verify }: { verify: RecordData }) {
                 : `${games[verify.game] || "连接失败"}：可能是游戏维护或 VPS 网络问题`
               : "未检测",
           ],
+          ...(udpResults[verify.udp] ? [["UDP", udpResults[verify.udp]]] : []),
         ]}
       />
       <p className="muted mt8">
@@ -193,6 +201,9 @@ export function RuleVerify({
   }
   if (verify.state === "ok" && verify.code && verify.code !== "ok" && !failed) {
     text += ` 最近一次未能确认：${verifyReason(verify.code)}，会自动重试。`;
+  }
+  if (verify.state === "ok" && rule.udp === "on" && udpResults[verify.udp]) {
+    text += ` UDP：${udpResults[verify.udp]}。`;
   }
   return (
     <div className="mt16" aria-label="目标校验">

@@ -38,7 +38,7 @@ func resolveRelayTarget(ctx context.Context, host string, port int) ([]string, e
 	return out, nil
 }
 
-type frontProvisioner func(context.Context, string, executor.SSH, string, int) (executor.Hop, error)
+type frontProvisioner func(context.Context, string, executor.SSH, string, int, bool) (executor.Hop, error)
 
 var relayFrontProvisioners sync.Map
 
@@ -66,7 +66,7 @@ func (a *App) startRelayFront(rule UserRule, ssh executor.SSH, config []byte) {
 		if err == nil {
 			if value, ok := relayFrontProvisioners.Load(a); ok {
 				attempted = true
-				hop, err = value.(frontProvisioner)(ctx, rule.UserID, ssh, rule.EntryAddress, rule.EntryPort)
+				hop, err = value.(frontProvisioner)(ctx, rule.UserID, ssh, rule.EntryAddress, rule.EntryPort, rule.UDP == "pending")
 			} else {
 				err = errors.New("front executor unavailable")
 			}
@@ -89,7 +89,7 @@ func (a *App) startRelayFront(rule UserRule, ssh executor.SSH, config []byte) {
 						if !ok || current.ID != rule.ID || current.State != "awaiting_front" || !routeOK || !route.Enabled || relayRecoveryRequired(s, current) || !relayEntitled(s.Users[rule.UserID], time.Now().UnixMilli()) || !userCanUseRoute(s.Users[rule.UserID], route) {
 							return errors.New("front authorization changed")
 						}
-						current.SealedConfig, current.HasFront = sealed, true
+						current.SealedConfig, current.HasFront, current.FrontUDP = sealed, true, hop.UDP
 						current.EntryAddress, current.EntryPort = hop.FromHost, hop.FromPort
 						current.State, current.FrontStatus = "pending", "ready"
 						return SaveDoc(s, "user_rules", key, current)
@@ -120,7 +120,7 @@ func (a *App) startRelayFront(rule UserRule, ssh executor.SSH, config []byte) {
 	}()
 }
 
-func (a *App) SetFrontProvisioner(fn func(context.Context, string, executor.SSH, string, int) (executor.Hop, error)) {
+func (a *App) SetFrontProvisioner(fn func(context.Context, string, executor.SSH, string, int, bool) (executor.Hop, error)) {
 	relayFrontProvisioners.Store(a, frontProvisioner(fn))
 }
 func (a *App) relayFrontReady(ctx context.Context, key string) error {

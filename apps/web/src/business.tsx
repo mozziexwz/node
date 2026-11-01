@@ -573,6 +573,12 @@ export function Routes({ user }: { user: RecordData }) {
                     {rule ? relayMemberLabel(rule, route.online) : "尚未配置"}
                   </b>
                 </div>
+                {rule?.udp && (
+                  <div>
+                    <small>UDP</small>
+                    <b>{rule.udp === "on" ? "已开启" : "校验通过后开启"}</b>
+                  </div>
+                )}
               </div>
               {rule && (
                 <RelayStatusDetail
@@ -707,6 +713,11 @@ export function Routes({ user }: { user: RecordData }) {
                   </Button>
                 )}
               </div>
+              {rule?.udp === "on" && (
+                <p className="muted mt8">
+                  这条中转同时支持 TCP 和 UDP，在启动器里选 UDP 需要最新版 MSBOOST 启动器。之前下载的配置只有 TCP，要用 UDP 请重新下载。
+                </p>
+              )}
             </div>
           );
         })}

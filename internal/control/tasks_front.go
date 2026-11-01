@@ -10,7 +10,8 @@ import (
 
 // ProvisionFront is an internal paid-route adapter, not a browser-callable action.
 // The caller must check ownership and entitlement and revoke station rules on error.
-func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh executor.SSH, targetHost string, targetPort int) (executor.Hop, error) {
+// udp asks the front to forward UDP too, for a rule that will open UDP.
+func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh executor.SSH, targetHost string, targetPort int, udp bool) (executor.Hop, error) {
 	var zero executor.Hop
 	if err := executor.ValidateSSH(ssh); err != nil {
 		return zero, err
@@ -24,7 +25,7 @@ func (t *TaskService) ProvisionFront(ctx context.Context, userID string, ssh exe
 	result := make(chan executor.Result, 1)
 	job := Task{ID: ID(), UserID: userID, Kind: "front", Host: ssh.Host, State: "queued", Phase: "paid_front", Message: "等待配置此线路的客户前置机", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli()}
 	job.SSHPort, job.SSHFingerprint = ssh.Port, ssh.Fingerprint
-	envelope := &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: executor.Request{Kind: "front", SSH: ssh, ForwardTarget: &executor.Target{Host: targetHost, Port: targetPort}}, Deadline: now.Add(4 * time.Minute).UnixMilli()}, UserID: userID, QueuedAt: now, Result: result}
+	envelope := &taskEnvelope{Job: executor.Job{ID: job.ID, Lease: ID(), Request: executor.Request{Kind: "front", SSH: ssh, ForwardTarget: &executor.Target{Host: targetHost, Port: targetPort, UDP: udp}}, Deadline: now.Add(4 * time.Minute).UnixMilli()}, UserID: userID, QueuedAt: now, Result: result}
 	t.mu.Lock()
 	probed := t.confirmedProbe(userID, ssh)
 	memoryBusy := t.envelopesBusyLocked(ssh.Host)

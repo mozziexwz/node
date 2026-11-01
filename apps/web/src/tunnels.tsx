@@ -149,6 +149,17 @@ export function RouteBuilder() {
   );
   const nodes = array(nodeData, "agents");
   const routes = array(data, "routes");
+  // New rules on a route open UDP only when every node on it supports it.
+  const routeUDP = (route: RecordData) =>
+    [
+      route.entryAgentId,
+      ...(route.hops || []).flatMap((hop: RecordData) => hop.agentIds || []),
+      ...(route.exit?.agentIds || []),
+    ].every((id) =>
+      nodes
+        .find((node) => node.id === id)
+        ?.capabilities?.includes("udp_forward_v1"),
+    );
   const [editing, setEditing] = useState<RecordData | null>(null);
   const [message, setMessage] = useState("");
   function open(route?: RecordData) {
@@ -233,9 +244,10 @@ export function RouteBuilder() {
             route.type === "port_forward" ? "端口中转" : "隧道中转",
             nodes.find((node) => node.id === route.entryAgentId)?.name ||
               "节点不可用",
-            route.type === "port_forward"
+            (route.type === "port_forward"
               ? "直接中转"
-              : `${route.hops?.length || 0} 个中间跳 · ${route.exit?.agentIds?.length || 0} 个出口候选`,
+              : `${route.hops?.length || 0} 个中间跳 · ${route.exit?.agentIds?.length || 0} 个出口候选`) +
+              (routeUDP(route) ? " · 支持 UDP" : ""),
             `${modes[route.trafficMode] || modes.both} × ${(route.trafficMultiplierPermille || 1000) / 1000}`,
             <Badge tone={route.enabled && route.online ? "green" : "orange"}>
               {!route.enabled

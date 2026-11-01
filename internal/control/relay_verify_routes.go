@@ -37,6 +37,9 @@ type RuleVerify struct {
 	NextAt       int64  `json:"nextAt,omitempty"`
 	PausedAt     int64  `json:"pausedAt,omitempty"`
 	ExemptReason string `json:"exemptReason,omitempty"`
+	// UDP is the last check of the rule's UDP through the relay (see
+	// executor.ProbeUDP); empty while the rule has no UDP.
+	UDP string `json:"udp,omitempty"`
 }
 
 const (
@@ -228,7 +231,7 @@ func applyRuleVerify(s *State, rule *UserRule, report executor.VerifyReport, v R
 		rule.Verify = &RuleVerify{State: "unchecked"}
 	}
 	check := rule.Verify
-	check.Code, check.CheckedAt, check.Game, check.Filter = report.Code, now, report.Game, report.Filter
+	check.Code, check.CheckedAt, check.Game, check.Filter, check.UDP = report.Code, now, report.Game, report.Filter, report.UDP
 	recheck := time.Duration(v.RecheckHours) * time.Hour
 	grace := time.Duration(v.GraceHours) * time.Hour
 	failing := executor.VerifyBlocks(report.Code) || (report.Code == executor.VerifyTargetDown && check.State == "pending")
@@ -447,6 +450,10 @@ func (a *App) verifyRule(ctx context.Context, key string, verify routeVerifier) 
 		}
 		policy := relayVerifySettings(s)
 		events := applyRuleVerify(s, &current, report, policy, now)
+		if report.Code == executor.VerifyOK {
+			// The target is an MSBOOST node: a rule waiting for UDP opens it.
+			_ = a.relayEnableUDP(s, &current)
+		}
 		if err := SaveDoc(s, "user_rules", key, current); err != nil {
 			return err
 		}

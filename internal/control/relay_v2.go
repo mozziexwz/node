@@ -322,7 +322,7 @@ func (a *App) relayV2Issue(s *State, catalog *RelayV2Catalog, agent RelayAgent, 
 	seg.ProtocolVersion, seg.ConfigGeneration = relayruntime.ProtocolV2, command.Generation
 	seg.LastCommandID, seg.LastCommandAction, seg.RuntimeHash = command.CommandID, command.Action, command.RuntimeHash
 	if action == "upsert" {
-		seg.IssuedRateMbps, seg.IssuedEntitlementVersion = wireRule.RateMbps, wireRule.EntitlementVersion
+		seg.IssuedRateMbps, seg.IssuedEntitlementVersion, seg.IssuedUDP = wireRule.RateMbps, wireRule.EntitlementVersion, wireRule.UDP
 	}
 	seg.StopConfirmed, seg.AckState = false, "pending"
 	return nil

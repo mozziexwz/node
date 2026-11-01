@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,7 +106,10 @@ type RelaySegment struct {
 	FirewallStatus           string            `json:"firewallStatus,omitempty"`
 	IssuedRateMbps           int64             `json:"issuedRateMbps,omitempty"`
 	IssuedEntitlementVersion int64             `json:"issuedEntitlementVersion,omitempty"`
-	ConfigError              bool              `json:"configError,omitempty"`
+	// IssuedUDP is Runtime.UDP as last issued, so a hop opening UDP is not
+	// ready until the Agent has applied it.
+	IssuedUDP   bool `json:"issuedUdp,omitempty"`
+	ConfigError bool `json:"configError,omitempty"`
 }
 type UserRule struct {
 	ID                        string         `json:"id"`
@@ -138,6 +142,11 @@ type UserRule struct {
 	ReconcileState            string         `json:"reconcileState,omitempty"`
 	// Verify is the target verification of this rule (see relay_verify_routes.go).
 	Verify *RuleVerify `json:"verify,omitempty"`
+	// UDP is "pending" for a rule that opens UDP once its target passes a
+	// check, then "on" (see relay_udp.go); empty for TCP only.
+	UDP string `json:"udp,omitempty"`
+	// FrontUDP: the customer front forwards UDP too.
+	FrontUDP bool `json:"frontUdp,omitempty"`
 }
 type UserTarget struct {
 	Hash       string `json:"hash"`
@@ -185,7 +194,7 @@ type RelayRuleView struct {
 func relaySegmentReady(s *State, seg RelaySegment, now int64) bool {
 	agent, ok := LoadDoc[RelayAgent](s, "relay_agents", seg.AgentID)
 	if seg.ProtocolVersion == relayruntime.ProtocolV2 {
-		return ok && seg.AckState == "ready" && seg.LastCommandAction == "upsert" && seg.ConfigGeneration > 0 && seg.AppliedGeneration == seg.ConfigGeneration && seg.IssuedRateMbps == seg.Runtime.RateMbps && seg.IssuedEntitlementVersion == seg.Runtime.EntitlementVersion && !seg.StopConfirmed && agent.Enabled && agent.LastSeen > now-relayLeaseMS && !relayAgentRecoveryRequired(s, agent)
+		return ok && seg.AckState == "ready" && seg.LastCommandAction == "upsert" && seg.ConfigGeneration > 0 && seg.AppliedGeneration == seg.ConfigGeneration && seg.IssuedRateMbps == seg.Runtime.RateMbps && seg.IssuedEntitlementVersion == seg.Runtime.EntitlementVersion && seg.IssuedUDP == seg.Runtime.UDP && !seg.StopConfirmed && agent.Enabled && agent.LastSeen > now-relayLeaseMS && !relayAgentRecoveryRequired(s, agent)
 	}
 	return false
 }
@@ -375,19 +384,14 @@ func relayEffective(s *State, route Route) (bool, bool) {
 // Only newly issued rules require the new feature. Existing rules on older
 // Agents continue to sync unchanged until an explicitly scheduled upgrade.
 func relayRouteSocksGuardReady(s *State, route Route) bool {
-	for _, id := range relayRouteAgents(route) {
+	return relayAgentsCapable(s, relayRouteAgents(route), relayruntime.SocksGuardCapability)
+}
+
+// relayAgentsCapable: every listed Agent exists and reported the capability.
+func relayAgentsCapable(s *State, ids []string, capability string) bool {
+	for _, id := range ids {
 		agent, ok := LoadDoc[RelayAgent](s, "relay_agents", id)
-		if !ok {
-			return false
-		}
-		found := false
-		for _, capability := range agent.Capabilities {
-			if capability == relayruntime.SocksGuardCapability {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !ok || !slices.Contains(agent.Capabilities, capability) {
 			return false
 		}
 	}
@@ -1334,6 +1338,9 @@ func (a *App) relayCreateRule(w http.ResponseWriter, r *http.Request) {
 		if relayVerifySettings(s).Donation != "off" {
 			// Checked as soon as every segment is running.
 			out.Verify = &RuleVerify{State: "pending"}
+		}
+		if relayUDPEligible(s, route, info) {
+			out.UDP = "pending"
 		}
 		created = true
 		stages := []RouteStage{{AgentIDs: []string{route.EntryAgentID}, Protocol: "tcp", Strategy: "round"}}

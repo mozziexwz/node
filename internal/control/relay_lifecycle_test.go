@@ -169,7 +169,7 @@ func TestRelayLifecycleAsyncFrontFailureRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := make(chan struct{})
-	f.app.SetFrontProvisioner(func(ctx context.Context, user string, ssh executor.SSH, host string, port int) (executor.Hop, error) {
+	f.app.SetFrontProvisioner(func(ctx context.Context, user string, ssh executor.SSH, host string, port int, udp bool) (executor.Hop, error) {
 		close(called)
 		return executor.Hop{}, errors.New("simulated partial failure")
 	})

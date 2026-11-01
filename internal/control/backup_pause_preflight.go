@@ -220,7 +220,7 @@ func backupPausePreflight(s *State, now int64) BackupPauseReport {
 					block(rule.ID, seg.AgentID, "accounting_unconfirmed", "当前命令缺少一致的历史流量记账授权")
 				}
 				route, routeOK := LoadDoc[Route](s, "routes", rule.RouteID)
-				if !routeOK || rule.EntitlementVersion != entitlementVersion(s, rule.UserID) || seg.Runtime.ID != rule.ID || seg.Runtime.Version != rule.Version || seg.IssuedRateMbps != seg.Runtime.RateMbps || seg.Runtime.RateMbps != relayRate(s.Users[rule.UserID], route) || seg.IssuedEntitlementVersion != rule.EntitlementVersion || seg.Runtime.EntitlementVersion != rule.EntitlementVersion {
+				if !routeOK || rule.EntitlementVersion != entitlementVersion(s, rule.UserID) || seg.Runtime.ID != rule.ID || seg.Runtime.Version != rule.Version || seg.IssuedRateMbps != seg.Runtime.RateMbps || seg.Runtime.RateMbps != relayRate(s.Users[rule.UserID], route) || seg.IssuedEntitlementVersion != rule.EntitlementVersion || seg.Runtime.EntitlementVersion != rule.EntitlementVersion || seg.IssuedUDP != seg.Runtime.UDP {
 					block(rule.ID, seg.AgentID, "policy_unconfirmed", "当前权益、限速或配置版本尚未在节点确认")
 				}
 				// TLS private material is sealed and unavailable to this pure

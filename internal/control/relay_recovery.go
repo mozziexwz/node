@@ -500,7 +500,7 @@ func (a *App) finalizeRelayRecovery(confirmation string, now int64) error {
 							return errRelayRecovery
 						}
 						for _, seg := range rule.Segments {
-							if seg.AgentID == agent.ID && (seg.Runtime.RateMbps != seg.IssuedRateMbps || seg.Runtime.EntitlementVersion != seg.IssuedEntitlementVersion) {
+							if seg.AgentID == agent.ID && (seg.Runtime.RateMbps != seg.IssuedRateMbps || seg.Runtime.EntitlementVersion != seg.IssuedEntitlementVersion || seg.Runtime.UDP != seg.IssuedUDP) {
 								return errRelayRecovery
 							}
 						}

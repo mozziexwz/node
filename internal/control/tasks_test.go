@@ -104,7 +104,7 @@ func TestTaskMaintenanceBlocksAllRolesBeforeSecretsAndQuota(t *testing.T) {
 			}
 		}
 	}
-	_, err := service.ProvisionFront(context.Background(), member.ID, taskSSHFixture(), "1.1.1.1", 12345)
+	_, err := service.ProvisionFront(context.Background(), member.ID, taskSSHFixture(), "1.1.1.1", 12345, false)
 	if err == nil || !strings.Contains(err.Error(), "维护") {
 		t.Fatalf("paid front maintenance gate: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestOldExecutorCannotCreateOrClaimNewRelayTask(t *testing.T) {
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "SOCKS") {
 		t.Fatalf("old executor allowed relay creation: %d %s", w.Code, w.Body.String())
 	}
-	if _, err := service.ProvisionFront(context.Background(), user.ID, taskSSHFixture(), "1.1.1.1", 12345); err == nil || !strings.Contains(err.Error(), "SOCKS") {
+	if _, err := service.ProvisionFront(context.Background(), user.ID, taskSSHFixture(), "1.1.1.1", 12345, false); err == nil || !strings.Contains(err.Error(), "SOCKS") {
 		t.Fatalf("old executor allowed paid front creation: %v", err)
 	}
 	if err := a.Store.Update(func(s *State) error {
