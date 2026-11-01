@@ -209,11 +209,28 @@ func TestRealFreeRelayGuard(t *testing.T) {
 	for backendPort == publicPort {
 		backendPort = reservePort()
 	}
+	// The UDP service that GOST binds on the public port itself.
+	udpEcho, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpEcho.Close()
+	go func() {
+		buffer := make([]byte, 2048)
+		for {
+			n, from, err := udpEcho.ReadFromUDP(buffer)
+			if err != nil {
+				return
+			}
+			_, _ = udpEcho.WriteToUDP(buffer[:n], from)
+		}
+	}()
 	tmp := t.TempDir()
 	guardPath := filepath.Join(tmp, "guard.py")
 	configPath := filepath.Join(tmp, "config.json")
 	policyPath := filepath.Join(tmp, "guard.json")
 	config := map[string]any{"services": []any{map[string]any{"name": "msboost-free", "addr": net.JoinHostPort("127.0.0.1", strconv.Itoa(backendPort)), "handler": map[string]string{"type": "tcp"}, "listener": map[string]string{"type": "tcp"}, "admission": "guard", "forwarder": map[string]any{"nodes": []any{map[string]string{"name": "target", "addr": echo.Addr().String()}}}}}, "admissions": []any{map[string]any{"name": "guard", "whitelist": true, "matchers": []string{"127.0.0.1"}}}}
+	config["services"] = append(config["services"].([]any), map[string]any{"name": "msboost-free-udp", "addr": ":" + strconv.Itoa(publicPort), "handler": map[string]string{"type": "udp"}, "listener": map[string]any{"type": "udp", "metadata": map[string]any{"keepalive": true, "ttl": "30s"}}, "forwarder": map[string]any{"nodes": []any{map[string]string{"name": "target", "addr": udpEcho.LocalAddr().String()}}}})
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
@@ -298,6 +315,23 @@ func TestRealFreeRelayGuard(t *testing.T) {
 	received := make([]byte, len(payload))
 	if _, err := io.ReadFull(client, received); err != nil || !bytes.Equal(received, payload) {
 		t.Fatalf("normal game forwarding failed: %x %v", received, err)
+	}
+	udp, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: publicPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	datagram, reply := []byte("Mieru-like UDP datagram"), make([]byte, 64)
+	for try := 0; ; try++ {
+		_, _ = udp.Write(datagram)
+		_ = udp.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		if n, err := udp.Read(reply); err == nil && bytes.Equal(reply[:n], datagram) {
+			break
+		}
+		if try == 20 {
+			t.Fatalf("UDP beside the guard was not relayed: %s", logs.String())
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

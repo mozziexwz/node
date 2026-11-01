@@ -98,6 +98,8 @@ type CleanupReport struct {
 type Target struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
+	// UDP asks a front to forward UDP too; older executors ignore it.
+	UDP bool `json:"udp,omitempty"`
 }
 type Asset struct {
 	Data   []byte `json:"data"`
@@ -115,6 +117,8 @@ type Hop struct {
 	FromPort int    `json:"fromPort"`
 	ToHost   string `json:"toHost"`
 	ToPort   int    `json:"toPort"`
+	// UDP: this hop also forwards UDP on FromPort. Absent from older executors.
+	UDP bool `json:"udp,omitempty"`
 }
 type Health struct {
 	BBR           string `json:"bbr,omitempty"`
@@ -162,6 +166,8 @@ type RelayEntry struct {
 	Connections int          `json:"connections"`
 	CreatedAt   int64        `json:"createdAt"`
 	Record      *RelayRecord `json:"record,omitempty"`
+	// UDP: the relay also forwards UDP on Port.
+	UDP bool `json:"udp,omitempty"`
 }
 type RelayManageResult struct {
 	ID    string `json:"id"`

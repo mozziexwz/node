@@ -304,12 +304,12 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 	if rate == 0 {
 		rate = DefaultRelayRateMbps
 	}
-	port, bbr, err := e.installRelay(ctx, job.Request.SSH, target, info.TargetPort, job.ID+"r", RelayRateBytes(rate), job.Request.Meta, rate)
+	port, udp, bbr, err := e.installRelay(ctx, job.Request.SSH, target, info.TargetPort, job.ID+"r", RelayRateBytes(rate), job.Request.Meta, rate, RelayUDP(info.UDP, info.TargetPort))
 	r.Health = &Health{BBR: bbr}
 	if err != nil {
 		return role(failRemote(r, "relay", nil, err), "relay")
 	}
-	r.Hops = []Hop{{FromHost: job.Request.SSH.Host, FromPort: port, ToHost: info.TargetHost, ToPort: info.TargetPort}}
+	r.Hops = []Hop{{FromHost: job.Request.SSH.Host, FromPort: port, ToHost: info.TargetHost, ToPort: info.TargetPort, UDP: udp}}
 	entryHost, entryPort := job.Request.SSH.Host, port
 	if job.Request.Front != nil {
 		// The front belongs to the user. A relay code's private owner note is
@@ -320,7 +320,7 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 			copied.Remark = job.Request.Remark
 			frontMeta = &copied
 		}
-		frontPort, frontBBR, err := e.installRelay(ctx, *job.Request.Front, job.Request.SSH.Host, port, job.ID+"f", RelayRateBytes(rate), frontMeta, rate)
+		frontPort, frontUDP, frontBBR, err := e.installRelay(ctx, *job.Request.Front, job.Request.SSH.Host, port, job.ID+"f", RelayRateBytes(rate), frontMeta, rate, udp)
 		if err != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
@@ -332,11 +332,15 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 		if frontBBR != bbr {
 			bbr = "partial"
 		}
-		r.Hops = append(r.Hops, Hop{FromHost: job.Request.Front.Host, FromPort: frontPort, ToHost: job.Request.SSH.Host, ToPort: port})
+		r.Hops = append(r.Hops, Hop{FromHost: job.Request.Front.Host, FromPort: frontPort, ToHost: job.Request.SSH.Host, ToPort: port, UDP: frontUDP})
 		entryHost = job.Request.Front.Host
 		entryPort = frontPort
+		udp = udp && frontUDP
 	}
 	r.Config, err = RewriteClientConfig(job.Request.ClientConfig, entryHost, entryPort)
+	if err == nil && udp {
+		r.Config, err = WithUDPBinding(r.Config)
+	}
 	if err != nil {
 		return failed(r, "config", "入口配置生成失败")
 	}
@@ -349,8 +353,10 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 			r.Config, _ = json.MarshalIndent(doc, "", "  ")
 		}
 	}
+	publicUDP := ""
 	if opts := job.Request.Verify; opts != nil {
 		report := e.verifier().Verify(ctx, r.Config, *opts)
+		publicUDP = report.UDP
 		r.Verify = &report
 		if opts.Mode == "enforce" && (VerifyBlocks(report.Code) || report.Code == VerifyEntryUnreachable) {
 			// Nothing of a refused relay is left behind on either server.
@@ -375,10 +381,23 @@ func (e *Engine) relay(ctx context.Context, job Job, r Result) Result {
 	}
 	r.State = "succeeded"
 	r.Phase = "complete"
-	r.Message = "TCP 中转服务已真实绑定端口；每端口上下行各 " + strconv.Itoa(rate) + " Mbps，游戏连接尚未验证"
-	r.Health = &Health{Service: "running", LocalSelfTest: "target_tcp_reachable", PublicTCP: e.TCPProbe(ctx, entryHost, entryPort), Game: "not_tested", BBR: bbr}
+	served := "TCP"
+	if udp {
+		served = "TCP 和 UDP"
+	}
+	if publicUDP == "" {
+		// The check above already tried UDP when it ran and passed.
+		publicUDP = e.UDPProbe(ctx, r.Config)
+	}
+	r.Message = served + " 中转服务已真实绑定端口；每端口上下行各 " + strconv.Itoa(rate) + " Mbps，游戏连接尚未验证"
+	r.Health = &Health{Service: "running", LocalSelfTest: "target_tcp_reachable", PublicTCP: e.TCPProbe(ctx, entryHost, entryPort), PublicUDP: publicUDP, Game: "not_tested", BBR: bbr}
 	return r
 }
+
+// RelayUDP says whether a relay forwards UDP to a target: only when the
+// node's configuration has UDP, and never to a port below 1024, where the
+// services that answer spoofed datagrams with more data live.
+func RelayUDP(configUDP bool, targetPort int) bool { return configUDP && targetPort >= 1024 }
 
 func (e *Engine) verifier() *Verifier {
 	if e.Verifier == nil {
@@ -422,24 +441,26 @@ func (e *Engine) front(ctx context.Context, job Job, r Result) Result {
 	if checked, ok := e.preflightDebian(ctx, job.Request.SSH, r); !ok {
 		return checked
 	}
-	port, bbr, err := e.installRelay(ctx, job.Request.SSH, host, target.Port, job.ID+"p", 0, nil, 0)
+	port, udp, bbr, err := e.installRelay(ctx, job.Request.SSH, host, target.Port, job.ID+"p", 0, nil, 0, RelayUDP(target.UDP, target.Port))
 	r.Health = &Health{BBR: bbr}
 	if err != nil {
 		return failRemote(r, "front", nil, err)
 	}
 	r.State = "succeeded"
-	r.Hops = []Hop{{FromHost: job.Request.SSH.Host, FromPort: port, ToHost: target.Host, ToPort: target.Port}}
+	r.Hops = []Hop{{FromHost: job.Request.SSH.Host, FromPort: port, ToHost: target.Host, ToPort: target.Port, UDP: udp}}
 	r.Health = &Health{Service: "running", LocalSelfTest: "target_tcp_reachable", PublicTCP: e.TCPProbe(ctx, job.Request.SSH.Host, port), Game: "not_tested", BBR: bbr}
 	return r
 }
 func validSHA(s string) bool { b, e := hex.DecodeString(s); return e == nil && len(b) == 32 }
-func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetPort int, id string, rateBytes int, meta *RelayMeta, rateMbps int) (int, string, error) {
+
+// installRelay reports the bound port and whether it also forwards UDP.
+func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetPort int, id string, rateBytes int, meta *RelayMeta, rateMbps int, udp bool) (int, bool, string, error) {
 	if len(id) > 100 || strings.ContainsAny(id, "/\\. \n\r'\"") {
-		return 0, "", errors.New("任务标识无效")
+		return 0, false, "", errors.New("任务标识无效")
 	}
 	archOut, err := e.Remote.Run(ctx, s, "uname -m\n")
 	if err != nil {
-		return 0, "", remoteDiagnostic(err, archOut, "preflight")
+		return 0, false, "", remoteDiagnostic(err, archOut, "preflight")
 	}
 	url, digest := e.GostAMD64URL, e.GostAMD64SHA256
 	switch strings.TrimSpace(string(archOut)) {
@@ -447,26 +468,30 @@ func (e *Engine) installRelay(ctx context.Context, s SSH, target string, targetP
 	case "aarch64", "arm64":
 		url, digest = e.GostARM64URL, e.GostARM64SHA256
 	default:
-		return 0, "", diagnosticError("unsupported_system")
+		return 0, false, "", diagnosticError("unsupported_system")
 	}
 	if !strings.HasPrefix(url, "https://github.com/go-gost/gost/releases/download/v") || !validSHA(digest) {
-		return 0, "", diagnosticError("executor_configuration")
+		return 0, false, "", diagnosticError("executor_configuration")
 	}
 	var record RelayMeta
 	if meta != nil {
 		record = *meta
 	}
-	script := "set -Eeuo pipefail\numask 077\n" + diagnosticPrelude + encodedAssignment("gost_url", url) + encodedAssignment("gost_sha", digest) + encodedAssignment("task_id", id) + encodedAssignment("target_host", target) + encodedAssignment("target_port", strconv.Itoa(targetPort)) + encodedAssignment("rate_bytes", strconv.Itoa(rateBytes))
+	udpFlag := "0"
+	if udp {
+		udpFlag = "1"
+	}
+	script := "set -Eeuo pipefail\numask 077\n" + diagnosticPrelude + encodedAssignment("gost_url", url) + encodedAssignment("gost_sha", digest) + encodedAssignment("task_id", id) + encodedAssignment("target_host", target) + encodedAssignment("target_port", strconv.Itoa(targetPort)) + encodedAssignment("rate_bytes", strconv.Itoa(rateBytes)) + encodedAssignment("udp", udpFlag)
 	script += encodedAssignment("meta_source", record.Source) + encodedAssignment("meta_code_tail", record.CodeTail) + encodedAssignment("meta_user", record.User) + encodedAssignment("meta_panel", record.Panel) + encodedAssignment("meta_remark", record.Remark) + encodedAssignment("meta_rate", strconv.Itoa(rateMbps)) + relayInstallScript
 	out, err := e.Remote.Run(ctx, s, script)
 	if err != nil {
-		return 0, marker(out, "MSBOOST_BBR"), remoteDiagnostic(err, out, "relay")
+		return 0, false, marker(out, "MSBOOST_BBR"), remoteDiagnostic(err, out, "relay")
 	}
 	port, err := strconv.Atoi(marker(out, "MSBOOST_RELAY_PORT"))
 	if err != nil || port < 20000 || port > 59999 {
-		return 0, marker(out, "MSBOOST_BBR"), errors.New("未获得真实绑定的中转端口")
+		return 0, false, marker(out, "MSBOOST_BBR"), errors.New("未获得真实绑定的中转端口")
 	}
-	return port, marker(out, "MSBOOST_BBR"), nil
+	return port, udp && marker(out, "MSBOOST_RELAY_UDP") == "1", marker(out, "MSBOOST_BBR"), nil
 }
 func (e *Engine) cleanupRelay(ctx context.Context, s SSH, id string) error {
 	if len(id) > 100 || strings.ContainsAny(id, "/\\. \n\r'\"") {

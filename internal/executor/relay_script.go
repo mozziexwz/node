@@ -23,15 +23,22 @@ confdir="/etc/msboost-free/${task_id}"
 ` + relayStageScript + `
 installed=0
 ufw_owned=0
+ufw_udp_owned=0
 firewalld_runtime_owned=0
 firewalld_permanent_owned=0
+firewalld_runtime_udp_owned=0
+firewalld_permanent_udp_owned=0
 firewalld_zone=''
+[[ "$udp" =~ ^[01]$ ]]
 cleanup() {
   rm -rf -- "$work"
   if [ "$installed" = 0 ]; then
     if [ "$ufw_owned" = 1 ]; then ufw --force delete allow "$port/tcp" >/dev/null 2>&1 || true; fi
+    if [ "$ufw_udp_owned" = 1 ]; then ufw --force delete allow "$port/udp" >/dev/null 2>&1 || true; fi
     if [ "$firewalld_runtime_owned" = 1 ]; then firewall-cmd --zone="$firewalld_zone" --remove-port="$port/tcp" >/dev/null 2>&1 || true; fi
     if [ "$firewalld_permanent_owned" = 1 ]; then firewall-cmd --permanent --zone="$firewalld_zone" --remove-port="$port/tcp" >/dev/null 2>&1 || true; fi
+    if [ "$firewalld_runtime_udp_owned" = 1 ]; then firewall-cmd --zone="$firewalld_zone" --remove-port="$port/udp" >/dev/null 2>&1 || true; fi
+    if [ "$firewalld_permanent_udp_owned" = 1 ]; then firewall-cmd --permanent --zone="$firewalld_zone" --remove-port="$port/udp" >/dev/null 2>&1 || true; fi
     systemctl disable --now "$unit" >/dev/null 2>&1 || true
     rm -f -- "/etc/systemd/system/$unit"
     rm -rf -- "$confdir"
@@ -89,8 +96,21 @@ EOF
 systemctl daemon-reload
 msboost_phase=service
 for attempt in $(seq 1 12); do
-  ports=$(python3 - <<'PY'
-import secrets,socket
+  ports=$(python3 - "$udp" <<'PY'
+import errno,secrets,socket,sys
+# GOST binds the public UDP port itself, dual-stack like the TCP guard.
+def udp_free(port):
+    for family,host in ((socket.AF_INET6,'::'),(socket.AF_INET,'0.0.0.0')):
+        try: s=socket.socket(family,socket.SOCK_DGRAM)
+        except OSError: continue
+        with s:
+            try:
+                if family==socket.AF_INET6: s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+                s.bind((host,port)); return True
+            except OSError as e:
+                if family==socket.AF_INET6 and e.errno!=errno.EADDRINUSE: continue
+                return False
+    return False
 for _ in range(100):
     port=20000+secrets.randbelow(40000)
     with socket.socket() as public, socket.socket() as backend:
@@ -100,21 +120,27 @@ for _ in range(100):
         except OSError: continue
         backend_port=backend.getsockname()[1]
         if backend_port==port: continue
+        if sys.argv[1]=='1' and not udp_free(port): continue
         print(port,backend_port);break
 else: raise SystemExit(1)
 PY
 )
   read -r port backend_port <<< "$ports"
-  python3 - "$port" "$backend_port" "$target_host" "$target_port" "$confdir/config.json" "$confdir/guard.json" "$rate_bytes" <<'PY'
+  python3 - "$port" "$backend_port" "$target_host" "$target_port" "$confdir/config.json" "$confdir/guard.json" "$rate_bytes" "$udp" <<'PY'
 import json,sys
-p,b,host,target,path,guard_path,rate=sys.argv[1:]
+p,b,host,target,path,guard_path,rate,udp=sys.argv[1:]
 address=('['+host+']' if ':' in host else host)+':'+target
 config={'services':[{'name':'msboost-free','addr':'127.0.0.1:'+b,'handler':{'type':'tcp'},'listener':{'type':'tcp'},'admission':'guard','forwarder':{'nodes':[{'name':'target','addr':address}]},'limiter':'per-port'}],'admissions':[{'name':'guard','whitelist':True,'matchers':['127.0.0.1']}],'limiters':[{'name':'per-port','limits':['$ 625000B 625000B']} ]}
+if udp=='1':
+    # Keepalive keeps a channel per client for Mieru's heartbeats; the limiter
+    # is separate because sharing TCP's starves UDP when both are used.
+    config['services'].append({'name':'msboost-free-udp','addr':':'+p,'handler':{'type':'udp'},'listener':{'type':'udp','metadata':{'keepalive':True,'ttl':'30s'}},'forwarder':{'nodes':[{'name':'target','addr':address}]},'limiter':'per-port-udp'})
+    config['limiters'].append({'name':'per-port-udp','limits':['$ 625000B 625000B']})
 if int(rate)==0:
-    config['services'][0].pop('limiter')
+    for service in config['services']: service.pop('limiter')
     config.pop('limiters')
 else:
-    config['limiters'][0]['limits']=['$ '+rate+'B '+rate+'B']
+    for limiter in config['limiters']: limiter['limits']=['$ '+rate+'B '+rate+'B']
 with open(path,'w') as f: json.dump(config,f)
 with open(guard_path,'w') as f: json.dump({'publicPort':int(p),'backendPort':int(b)},f)
 PY
@@ -124,19 +150,37 @@ PY
   sleep 2
   if systemctl is-active --quiet "$unit"; then
     pid=$(systemctl show "$unit" -p MainPID --value)
-    if python3 - "$pid" "$port" <<'PY'
+    if python3 - "$pid" "$port" "$udp" <<'PY'
 import os,sys
-pid,port=sys.argv[1],int(sys.argv[2])
-inodes=set()
-for fd in os.listdir('/proc/'+pid+'/fd'):
-    try: val=os.readlink('/proc/'+pid+'/fd/'+fd)
-    except OSError: continue
-    if val.startswith('socket:['): inodes.add(val[8:-1])
-for name in ['tcp','tcp6']:
-    with open('/proc/net/'+name) as f:
-        for line in list(f)[1:]:
+pid,port,udp=sys.argv[1],int(sys.argv[2]),sys.argv[3]=='1'
+def sockets(pids):
+    inodes=set()
+    for p in pids:
+        try: fds=os.listdir('/proc/'+p+'/fd')
+        except OSError: continue
+        for fd in fds:
+            try: val=os.readlink('/proc/'+p+'/fd/'+fd)
+            except OSError: continue
+            if val.startswith('socket:['): inodes.add(val[8:-1])
+    return inodes
+def bound(names,state,inodes):
+    for name in names:
+        try:
+            with open('/proc/net/'+name) as f: lines=list(f)[1:]
+        except FileNotFoundError: continue
+        for line in lines:
             v=line.split()
-            if int(v[1].rsplit(':',1)[1],16)==port and v[3]=='0A' and v[9] in inodes: raise SystemExit(0)
+            if int(v[1].rsplit(':',1)[1],16)==port and v[3]==state and v[9] in inodes: return True
+    return False
+# The guard owns the TCP port; its GOST child owns the UDP port.
+children=[pid]
+for entry in os.listdir('/proc'):
+    if not entry.isdigit(): continue
+    try:
+        with open('/proc/'+entry+'/stat') as f: stat=f.read()
+    except OSError: continue
+    if stat[stat.rindex(')')+2:].split()[1]==pid: children.append(entry)
+if bound(['tcp','tcp6'],'0A',sockets([pid])) and (not udp or bound(['udp','udp6'],'07',sockets(children))): raise SystemExit(0)
 raise SystemExit(1)
 PY
     then
@@ -145,6 +189,12 @@ PY
           ufw allow "$port/tcp" >/dev/null
           ufw_owned=1
           printf '%s\n' "$port" > "$confdir/ufw-owned"
+        fi
+        # UDP rules are owned separately: either may already exist.
+        if [ "$udp" = 1 ] && ! ufw show added 2>/dev/null | grep -Eq "(^|[[:space:]])allow[[:space:]]+$port/udp([[:space:]]|$)"; then
+          ufw allow "$port/udp" >/dev/null
+          ufw_udp_owned=1
+          printf '%s\n' "$port" > "$confdir/ufw-udp-owned"
         fi
       fi
       if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
@@ -159,6 +209,16 @@ PY
           firewall-cmd --permanent --zone="$firewalld_zone" --add-port="$port/tcp" >/dev/null
           firewalld_permanent_owned=1
           printf '%s %s\n' "$firewalld_zone" "$port" > "$confdir/firewalld-permanent-owned"
+        fi
+        if [ "$udp" = 1 ] && ! firewall-cmd --quiet --zone="$firewalld_zone" --query-port="$port/udp"; then
+          firewall-cmd --zone="$firewalld_zone" --add-port="$port/udp" >/dev/null
+          firewalld_runtime_udp_owned=1
+          printf '%s %s\n' "$firewalld_zone" "$port" > "$confdir/firewalld-runtime-udp-owned"
+        fi
+        if [ "$udp" = 1 ] && ! firewall-cmd --quiet --permanent --zone="$firewalld_zone" --query-port="$port/udp"; then
+          firewall-cmd --permanent --zone="$firewalld_zone" --add-port="$port/udp" >/dev/null
+          firewalld_permanent_udp_owned=1
+          printf '%s %s\n' "$firewalld_zone" "$port" > "$confdir/firewalld-permanent-udp-owned"
         fi
       fi
       if [ -n "$meta_source" ]; then
@@ -177,6 +237,7 @@ PY
       systemctl enable "$unit" >/dev/null
       installed=1
       printf 'MSBOOST_RELAY_PORT=%s\n' "$port"
+      printf 'MSBOOST_RELAY_UDP=%s\n' "$udp"
       exit 0
     fi
   fi
@@ -199,22 +260,28 @@ if [ -e "/etc/systemd/system/$unit" ]; then
   [ "$(systemctl show "$unit" -p ActiveState --value)" = inactive ] || [ "$(systemctl show "$unit" -p ActiveState --value)" = failed ]
   [ "$(systemctl show "$unit" -p MainPID --value)" = 0 ]
 fi
-if [ -f "$confdir/ufw-owned" ]; then
-  [ ! -L "$confdir/ufw-owned" ]
-  read -r port < "$confdir/ufw-owned"
-  [[ "$port" =~ ^[0-9]+$ ]]
-  ufw --force delete allow "$port/tcp" >/dev/null 2>&1
-fi
-for mode in runtime permanent; do
-  if [ -f "$confdir/firewalld-${mode}-owned" ]; then
-    [ ! -L "$confdir/firewalld-${mode}-owned" ]
-    read -r zone port < "$confdir/firewalld-${mode}-owned"
-    if [[ "$zone" =~ ^[A-Za-z0-9_.-]+$ && "$port" =~ ^[0-9]+$ ]]; then
-      args=()
-      if [ "$mode" = permanent ]; then args+=(--permanent); fi
-      firewall-cmd "${args[@]}" --zone="$zone" --remove-port="$port/tcp" >/dev/null 2>&1
-    else exit 1; fi
+for protocol in tcp udp; do
+  owned="$confdir/ufw-owned"
+  if [ "$protocol" = udp ]; then owned="$confdir/ufw-udp-owned"; fi
+  if [ -f "$owned" ]; then
+    [ ! -L "$owned" ]
+    read -r port < "$owned"
+    [[ "$port" =~ ^[0-9]+$ ]]
+    ufw --force delete allow "$port/$protocol" >/dev/null 2>&1
   fi
+  for mode in runtime permanent; do
+    owned="$confdir/firewalld-${mode}-owned"
+    if [ "$protocol" = udp ]; then owned="$confdir/firewalld-${mode}-udp-owned"; fi
+    if [ -f "$owned" ]; then
+      [ ! -L "$owned" ]
+      read -r zone port < "$owned"
+      if [[ "$zone" =~ ^[A-Za-z0-9_.-]+$ && "$port" =~ ^[0-9]+$ ]]; then
+        args=()
+        if [ "$mode" = permanent ]; then args+=(--permanent); fi
+        firewall-cmd "${args[@]}" --zone="$zone" --remove-port="$port/$protocol" >/dev/null 2>&1
+      else exit 1; fi
+    fi
+  done
 done
 rm -f -- "/etc/systemd/system/msboost-free-${task_id}.service"
 rm -rf -- "$confdir"

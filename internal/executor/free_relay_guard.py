@@ -131,8 +131,14 @@ def main():
     with open(gost_config_path, encoding="utf-8") as stream:
         gost_config = json.load(stream)
     services = gost_config.get("services", [])
-    if (len(services) != 1 or services[0].get("name") != "msboost-free"
+    if (not 1 <= len(services) <= 2 or services[0].get("name") != "msboost-free"
             or services[0].get("addr") != "127.0.0.1:" + str(backend_port)):
+        return 2
+    # GOST itself takes the public UDP port; the guard screens TCP only.
+    if len(services) == 2 and (
+            services[1].get("name") != "msboost-free-udp"
+            or services[1].get("handler", {}).get("type") != "udp"
+            or services[1].get("addr") != ":" + str(public_port)):
         return 2
 
     listener = _public_listener(public_port)

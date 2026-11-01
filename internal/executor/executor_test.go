@@ -97,6 +97,17 @@ func TestClientConfigAcceptsSamePortUDP(t *testing.T) {
 	if info, err := ParseClientConfig(out); err != nil || info.UDP || info.TargetPort != 45678 || strings.Contains(string(out), "UDP") {
 		t.Fatalf("relay configuration kept UDP: %s", out)
 	}
+	// An entry that forwards UDP gets the binding back, on the entry's port.
+	withUDP, err := WithUDPBinding(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := ParseClientConfig(withUDP); err != nil || !info.UDP || info.TargetPort != 45678 {
+		t.Fatalf("UDP binding not added on the entry port: %s %v", withUDP, err)
+	}
+	if again, err := WithUDPBinding(withUDP); err != nil || string(again) != string(withUDP) {
+		t.Fatal("adding UDP twice must leave the configuration unchanged")
+	}
 	for _, bad := range []string{
 		strings.Replace(sampleConfig, tcp, `{"port":23456,"protocol":"UDP"},`+tcp, 1),
 		strings.Replace(sampleConfig, tcp, tcp+`,{"port":23457,"protocol":"UDP"}`, 1),

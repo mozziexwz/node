@@ -50,7 +50,9 @@ def managed(name):
     if 'Description=MSBOOST customer TCP forwarding' not in unit: raise Skip()
     config=json.loads(regular(conf+'/config.json'))
     services=config.get('services',[])
-    if len(services)!=1 or services[0].get('name')!='msboost-free': raise Skip()
+    if not 1<=len(services)<=2 or services[0].get('name')!='msboost-free': raise Skip()
+    # A relay that also forwards UDP has exactly one more service, for UDP.
+    if len(services)==2 and (services[1].get('name')!='msboost-free-udp' or services[1].get('handler',{}).get('type')!='udp'): raise Skip()
     if os.path.lexists(conf+'/guard.json'):
         port=json.loads(regular(conf+'/guard.json')).get('publicPort')
     else:
@@ -107,7 +109,8 @@ for name in names:
         if nodes: target=str(nodes[0].get('addr',''))
         entries.append({'id':name,'role':{'r':'relay','f':'front','p':'route'}.get(name[-1],'relay'),'port':port,'rateMbps':rate(config),'target':target,
             'state':'running' if active else ('paused' if paused else 'stopped'),'connections':sockets(port,'01') if active else 0,
-            'createdAt':int(os.lstat(unitpath).st_mtime*1000),'record':record})
+            'createdAt':int(os.lstat(unitpath).st_mtime*1000),'record':record,
+            'udp':any(service.get('handler',{}).get('type')=='udp' for service in config['services'])})
     except (Skip,OSError,ValueError,KeyError,TypeError,IndexError,subprocess.SubprocessError):
         continue
 print('MSBOOST_INVENTORY='+base64.b64encode(json.dumps(entries,ensure_ascii=False,separators=(',',':')).encode()).decode(),flush=True)
@@ -147,8 +150,11 @@ for name in items:
         paused=os.path.lexists(conf+'/paused')
         if action=='rate':
             limit='$ %dB %dB'%(mbps*125000,mbps*125000)
-            config['services'][0]['limiter']='per-port'
-            config['limiters']=[{'name':'per-port','limits':[limit]}]
+            # A UDP service keeps its own limiter: sharing TCP's starves UDP.
+            config['limiters']=[]
+            for service in config['services']:
+                service['limiter']='per-port-udp' if service.get('handler',{}).get('type')=='udp' else 'per-port'
+                config['limiters'].append({'name':service['limiter'],'limits':[limit]})
             write_private(conf+'/config.json',json.dumps(config))
             if os.path.lexists(conf+'/meta.json'):
                 try:
@@ -174,14 +180,14 @@ for name in items:
         elif action=='delete':
             run(['systemctl','disable','--now',unit])
             if properties(unit).get('ActiveState')=='active': raise RuntimeError('service_failed')
-            for mode in ('ufw','firewalld-runtime','firewalld-permanent'):
+            for mode,protocol in (('ufw','tcp'),('firewalld-runtime','tcp'),('firewalld-permanent','tcp'),('ufw-udp','udp'),('firewalld-runtime-udp','udp'),('firewalld-permanent-udp','udp')):
                 path=conf+'/'+mode+'-owned'
                 if not os.path.lexists(path): continue
                 fields=regular(path,256).decode().split()
-                if mode=='ufw' and len(fields)==1 and fields[0].isdigit():
-                    run(['ufw','--force','delete','allow',fields[0]+'/tcp'])
-                elif mode!='ufw' and len(fields)==2 and re.fullmatch(r'[A-Za-z0-9_.-]+',fields[0]) and fields[1].isdigit():
-                    run(['firewall-cmd']+(['--permanent'] if mode.endswith('permanent') else [])+['--zone='+fields[0],'--remove-port='+fields[1]+'/tcp'])
+                if mode.startswith('ufw') and len(fields)==1 and fields[0].isdigit():
+                    run(['ufw','--force','delete','allow',fields[0]+'/'+protocol])
+                elif not mode.startswith('ufw') and len(fields)==2 and re.fullmatch(r'[A-Za-z0-9_.-]+',fields[0]) and fields[1].isdigit():
+                    run(['firewall-cmd']+(['--permanent'] if 'permanent' in mode else [])+['--zone='+fields[0],'--remove-port='+fields[1]+'/'+protocol])
             os.unlink(unitpath)
             for entry in os.listdir(conf): os.unlink(conf+'/'+entry)
             os.rmdir(conf)

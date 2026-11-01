@@ -430,10 +430,27 @@ func RewriteClientConfig(data []byte, host string, port int) ([]byte, error) {
 		s["ipAddress"] = ""
 		s["domainName"] = host
 	}
-	// Relay entries forward TCP only, so a UDP binding is dropped.
+	// The UDP binding is dropped: whether an entry forwards UDP is decided per
+	// relay, and WithUDPBinding adds it back where it does.
 	bindings := s["portBindings"].([]any)
 	bindings[0].(map[string]any)["port"] = port
 	s["portBindings"] = bindings[:1]
 	info.Document["socks5Port"] = 10086
+	return json.MarshalIndent(info.Document, "", "  ")
+}
+
+// WithUDPBinding adds a UDP binding on the port of the single TCP binding, for
+// an entry that also forwards UDP. The traffic pattern, with its nonce, is the
+// node's own and stays as it is.
+func WithUDPBinding(data []byte) ([]byte, error) {
+	info, err := ParseClientConfig(data)
+	if err != nil {
+		return nil, err
+	}
+	if info.UDP {
+		return data, nil
+	}
+	s := info.Document["profiles"].([]any)[0].(map[string]any)["servers"].([]any)[0].(map[string]any)
+	s["portBindings"] = append(s["portBindings"].([]any), map[string]any{"port": info.TargetPort, "protocol": "UDP"})
 	return json.MarshalIndent(info.Document, "", "  ")
 }

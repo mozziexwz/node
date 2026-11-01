@@ -76,7 +76,10 @@ type VerifyReport struct {
 	Game string `json:"game,omitempty"`
 	// Filter: ok, missing (a site the node should refuse was reachable),
 	// inconclusive (the comparison site failed too) or skipped.
-	Filter    string `json:"filter,omitempty"`
+	Filter string `json:"filter,omitempty"`
+	// UDP: the configuration's own tunnel over UDP, as ProbeUDP reports it;
+	// empty when the configuration has no UDP binding.
+	UDP       string `json:"udp,omitempty"`
 	ElapsedMS int64  `json:"elapsedMs"`
 }
 
@@ -225,6 +228,9 @@ func (v *Verifier) Verify(ctx context.Context, config []byte, opts VerifyOptions
 	}
 	_ = probe.Close()
 	report.Filter = v.filterCheck(ctx, tunnel, opts)
+	if info.UDP {
+		report.UDP = v.ProbeUDP(ctx, config)
+	}
 	return done(report)
 }
 
