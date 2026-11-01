@@ -12,7 +12,10 @@ import (
 // Reserve 20 MiB for execution results, accounting and ordinary state growth;
 // attachments cannot consume the headroom needed to operate the site.
 const backupMaxBytes = 100 << 20
-const backupContentBudget = 80 << 20
+
+// backupContentBudget is a variable only so a test can scale it down.
+var backupContentBudget = 80 << 20
+
 const backupEnvelopeOverhead = 256
 const backupMaxStateBytes = (backupMaxBytes-backupEnvelopeOverhead)*3/4 - 28
 

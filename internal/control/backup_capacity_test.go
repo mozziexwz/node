@@ -11,6 +11,13 @@ import (
 )
 
 func TestBackupCapacityRejectsAttachmentBeforeCommitAndStillRestores(t *testing.T) {
+	// A tenth of the real budget and of the largest file: the same admission
+	// arithmetic, with a tenth of the state to encode in every transaction.
+	// At full size the last uploads could pass the store's 30-second limit
+	// under the race detector.
+	budget := backupContentBudget
+	backupContentBudget = 8 << 20
+	t.Cleanup(func() { backupContentBudget = budget })
 	a, _, _ := taskFixture(t)
 	var admin *User
 	if err := a.Store.Update(func(s *State) error {
@@ -31,7 +38,7 @@ func TestBackupCapacityRejectsAttachmentBeforeCommitAndStillRestores(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = file.Write(bytes.Repeat([]byte("x"), 10<<20)); err != nil {
+		if _, err = file.Write(bytes.Repeat([]byte("x"), 1<<20)); err != nil {
 			t.Fatal(err)
 		}
 		form.Close()

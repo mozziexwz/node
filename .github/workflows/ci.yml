@@ -135,7 +135,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'
-      - run: go test -race -count=1 ./...
+      # internal/control alone takes about eight minutes under the race
+      # detector, too close to go test's default ten-minute limit.
+      - run: go test -race -count=1 -timeout 20m ./...
         env:
           MSBOOST_TEST_POSTGRES_URL: postgres://msboost_ci:isolated-ci-only@127.0.0.1:5432/postgres?sslmode=disable
   gost-recovery:
