@@ -842,7 +842,7 @@ export function TaskDetail({
             {status || "配置已就绪"}
             。配置已保存在当前浏览器时，请下载备份。清除网站数据或更换设备后，本机配置可能无法恢复。
             {configHasUDP(config) &&
-              "这份配置同时支持 TCP 和 UDP，在启动器里选 UDP 需要最新版 MSBOOST 启动器。"}
+              "这份配置同时支持 TCP 和 UDP，在启动器里选 UDP 需要 v1.2.0 或更新版本的 MSBOOST 启动器。"}
           </Notice>
           <div className="result-actions">
             <Button

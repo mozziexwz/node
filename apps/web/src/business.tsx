@@ -715,7 +715,7 @@ export function Routes({ user }: { user: RecordData }) {
               </div>
               {rule?.udp === "on" && (
                 <p className="muted mt8">
-                  这条中转同时支持 TCP 和 UDP，在启动器里选 UDP 需要最新版 MSBOOST 启动器。之前下载的配置只有 TCP，要用 UDP 请重新下载。
+                  这条中转同时支持 TCP 和 UDP，在启动器里选 UDP 需要 v1.2.0 或更新版本的 MSBOOST 启动器。之前下载的配置只有 TCP，要用 UDP 请重新下载。
                 </p>
               )}
             </div>
