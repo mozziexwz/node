@@ -68,12 +68,14 @@ func ProcessStart(pid int) string {
 }
 
 // Ports are derived from the kernel's actual socket ownership for systemd's
-// MainPID, not from writable JSON supplied by the unprivileged agent.
-func listeningPorts(pid int) ([]int, error) {
+// MainPID, not from writable JSON supplied by the unprivileged agent. A TCP
+// port counts while listening (state 0A); a UDP port while bound and
+// unconnected (07), which excludes the Agent's own sockets to loopback GOST.
+func listeningPorts(pid int) (tcp, udp []int, err error) {
 	base := fmt.Sprintf("/proc/%d", pid)
 	fds, err := os.ReadDir(base + "/fd")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	inodes := map[string]bool{}
 	for _, fd := range fds {
@@ -82,18 +84,22 @@ func listeningPorts(pid int) ([]int, error) {
 			inodes[strings.TrimSuffix(strings.TrimPrefix(target, "socket:["), "]")] = true
 		}
 	}
-	ports := map[int]bool{}
-	for _, family := range []string{"tcp", "tcp6"} {
+	ports := map[string]map[int]bool{"tcp": {}, "udp": {}}
+	for _, family := range []string{"tcp", "tcp6", "udp", "udp6"} {
 		raw, e := os.ReadFile(base + "/net/" + family)
 		if e != nil {
-			if family == "tcp6" && errors.Is(e, os.ErrNotExist) {
+			if (family == "tcp6" || family == "udp6") && errors.Is(e, os.ErrNotExist) {
 				continue
 			}
-			return nil, e
+			return nil, nil, e
+		}
+		protocol, state := family[:3], "0A"
+		if protocol == "udp" {
+			state = "07"
 		}
 		for _, line := range strings.Split(string(raw), "\n") {
 			f := strings.Fields(line)
-			if len(f) < 10 || f[3] != "0A" || !inodes[f[9]] {
+			if len(f) < 10 || f[3] != state || !inodes[f[9]] {
 				continue
 			}
 			a := strings.Split(f[1], ":")
@@ -102,15 +108,15 @@ func listeningPorts(pid int) ([]int, error) {
 			} // Only wildcard public listeners.
 			port, e := strconv.ParseInt(a[1], 16, 32)
 			if e != nil || port < 1 || port > 65535 {
-				return nil, errors.New("invalid kernel port")
+				return nil, nil, errors.New("invalid kernel port")
 			}
-			ports[int(port)] = true
+			ports[protocol][int(port)] = true
 		}
 	}
-	if len(ports) > 8192 {
-		return nil, errors.New("too many listeners")
+	if len(ports["tcp"])+len(ports["udp"]) > 8192 {
+		return nil, nil, errors.New("too many listeners")
 	}
-	return sortedPorts(ports), nil
+	return sortedPorts(ports["tcp"]), sortedPorts(ports["udp"]), nil
 }
 
 type boundedOutput struct{ bytes.Buffer }
@@ -193,7 +199,7 @@ func lockUFW(ctx context.Context, path string) (*os.File, error) {
 	}
 }
 
-func syncHost(ctx context.Context, ports []int, cleanup bool) (string, error) {
+func syncHost(ctx context.Context, tcp, udp []int, cleanup bool) (string, error) {
 	// Do not bypass another firewall manager using a top-level INPUT accept.
 	if _, err := os.Stat("/usr/bin/firewall-cmd"); err == nil && !cleanup {
 		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -242,7 +248,7 @@ func syncHost(ctx context.Context, ports []int, cleanup bool) (string, error) {
 				enabled = false
 			}
 		}
-		if err := ReconcileFamily(ctx, runCommand, family, ports, enabled); err != nil {
+		if err := ReconcileFamily(ctx, runCommand, family, tcp, udp, enabled); err != nil {
 			return backend, annotate(err, family)
 		}
 	}
@@ -302,7 +308,7 @@ func Run(ctx context.Context, cleanup bool) error {
 		if e != nil || pid != 0 {
 			return errors.New("stop Relay before removing its firewall rules")
 		}
-		_, err = syncHost(ctx, nil, true)
+		_, err = syncHost(ctx, nil, nil, true)
 		return err
 	}
 	ticker := time.NewTicker(time.Second)
@@ -319,7 +325,7 @@ func Run(ctx context.Context, cleanup bool) error {
 			}
 			s.Start = ProcessStart(pid)
 			if e == nil {
-				s.Ports, e = listeningPorts(pid)
+				s.Ports, s.UDPPorts, e = listeningPorts(pid)
 			}
 			if e == nil && (s.Start == "" || ProcessStart(pid) != s.Start) {
 				e = errors.New("relay process changed during inspection")
@@ -332,7 +338,7 @@ func Run(ctx context.Context, cleanup bool) error {
 			}
 		}
 		if e == nil {
-			s.Backend, e = syncHost(ctx, s.Ports, false)
+			s.Backend, e = syncHost(ctx, s.Ports, s.UDPPorts, false)
 		}
 		s.ObservedAt = time.Now().UnixMilli()
 		s.Error = errorStatus(e)

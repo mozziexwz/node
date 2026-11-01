@@ -26,6 +26,9 @@ var V2Capabilities = []string{"keep_last", "explicit_stop", "persistent_config",
 const SocksGuardCapability = "socks_guard"
 const TargetProbeCapability = "target_probe_v1"
 
+// UDPForwardCapability: the Agent runs Rule.UDP behind its own UDP guard.
+const UDPForwardCapability = "udp_forward_v1"
+
 // Target probes are ephemeral, optional observations. A relay may probe only
 // an endpoint already present in its own running rule; this is not a generic
 // network-scanning or arbitrary-command channel.
@@ -140,6 +143,7 @@ func RuntimeHash(rule Rule) (string, error) {
 	if _, err := gostConfig(rule, "http://127.0.0.1/observer", files); err != nil {
 		return "", err
 	}
+	// UDP is omitted when false, so every rule from before UDP keeps its hash.
 	canonical := struct {
 		ListenPort                    int
 		Targets, AllowedSources       []string
@@ -147,7 +151,8 @@ func RuntimeHash(rule Rule) (string, error) {
 		RateMbps                      int64
 		TLSCertificate, TLSPrivateKey string
 		TargetTLS                     []TLSClient
-	}{rule.ListenPort, rule.Targets, append([]string(nil), rule.AllowedSources...), rule.Strategy, rule.Protocol, rule.RateMbps, rule.TLSCertificate, rule.TLSPrivateKey, append([]TLSClient(nil), rule.TargetTLS...)}
+		UDP                           bool `json:",omitempty"`
+	}{rule.ListenPort, rule.Targets, append([]string(nil), rule.AllowedSources...), rule.Strategy, rule.Protocol, rule.RateMbps, rule.TLSCertificate, rule.TLSPrivateKey, append([]TLSClient(nil), rule.TargetTLS...), rule.UDP}
 	if rule.Protocol != "tls" {
 		canonical.TLSCertificate, canonical.TLSPrivateKey = "", ""
 	}

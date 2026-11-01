@@ -110,7 +110,24 @@ func TestKernelListenerOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer private.Close()
-	ports, err := listeningPorts(os.Getpid())
+	// The Agent's UDP guard: one public socket, then one connected socket per
+	// client towards loopback GOST, which must never be opened in the firewall.
+	publicUDP, err := net.ListenUDP("udp", &net.UDPAddr{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer publicUDP.Close()
+	privateUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer privateUDP.Close()
+	session, err := net.DialUDP("udp4", nil, privateUDP.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	ports, udp, err := listeningPorts(os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +140,16 @@ func TestKernelListenerOwnership(t *testing.T) {
 	}
 	if !found || ProcessStart(os.Getpid()) == "" {
 		t.Fatal(ports)
+	}
+	found = false
+	for _, p := range udp {
+		if p == privateUDP.LocalAddr().(*net.UDPAddr).Port || p == session.LocalAddr().(*net.UDPAddr).Port {
+			t.Fatal("included a private UDP socket", udp)
+		}
+		found = found || p == publicUDP.LocalAddr().(*net.UDPAddr).Port
+	}
+	if !found {
+		t.Fatal("public UDP socket missing", udp)
 	}
 }
 
@@ -255,7 +282,7 @@ func TestIsolatedUFWChain(t *testing.T) {
 			}
 		}
 		for _, ports := range [][]int{{40897}, {40897, 48702}, {48702}, nil} {
-			if err := ReconcileFamily(ctx, runCommand, tool, ports, true); err != nil {
+			if err := ReconcileFamily(ctx, runCommand, tool, ports, ports, true); err != nil {
 				t.Fatal(err)
 			}
 			raw, err := runCommand(ctx, tool, "-S", userParent)
@@ -263,8 +290,10 @@ func TestIsolatedUFWChain(t *testing.T) {
 				t.Fatal("SSH rule changed", raw, err)
 			}
 			for _, port := range ports {
-				if out, e := runCommand(ctx, tool, append([]string{"-C", Chain}, portRule(port)...)...); e != nil {
-					t.Fatal(strconv.Itoa(port), out, e)
+				for _, protocol := range protocols {
+					if out, e := runCommand(ctx, tool, append([]string{"-C", Chain}, portRule(protocol, port)...)...); e != nil {
+						t.Fatal(protocol, strconv.Itoa(port), out, e)
+					}
 				}
 			}
 			if len(ports) > 0 {
@@ -274,7 +303,7 @@ func TestIsolatedUFWChain(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if err := ReconcileFamily(ctx, runCommand, tool, ports, true); err != nil {
+				if err := ReconcileFamily(ctx, runCommand, tool, ports, ports, true); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := runCommand(ctx, tool, append([]string{"-C", userParent}, jumpRule()...)...); err == nil {
@@ -344,7 +373,7 @@ func TestRealUFWTCPReachability(t *testing.T) {
 		}
 	}
 	probe(false)
-	if _, err = syncHost(ctx, []int{port}, false); err != nil {
+	if _, err = syncHost(ctx, []int{port}, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	probe(true)
@@ -352,31 +381,31 @@ func TestRealUFWTCPReachability(t *testing.T) {
 	// including before the helper's next polling cycle.
 	command("ufw", "deny", strconv.Itoa(port)+"/tcp")
 	probe(false)
-	if _, err = syncHost(ctx, []int{port}, false); err != nil {
+	if _, err = syncHost(ctx, []int{port}, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	probe(false)
 	command("ufw", "--force", "delete", "deny", strconv.Itoa(port)+"/tcp")
-	if _, err = syncHost(ctx, []int{port}, false); err != nil {
+	if _, err = syncHost(ctx, []int{port}, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	probe(true)
 	command("ufw", "reload")
-	if _, err = syncHost(ctx, []int{port}, false); err != nil {
+	if _, err = syncHost(ctx, []int{port}, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	probe(true)
-	if _, err = syncHost(ctx, nil, true); err != nil {
+	if _, err = syncHost(ctx, nil, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	probe(false)
 	// An explicit administrator deny keeps priority over our automatic permit.
 	command("ufw", "deny", strconv.Itoa(port)+"/tcp")
-	if _, err = syncHost(ctx, []int{port}, false); err != nil {
+	if _, err = syncHost(ctx, []int{port}, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	probe(false)
-	if _, err = syncHost(ctx, nil, true); err != nil {
+	if _, err = syncHost(ctx, nil, nil, true); err != nil {
 		t.Fatal(err)
 	}
 }

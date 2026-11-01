@@ -40,7 +40,27 @@ type process struct {
 	v2BillingPeriod string
 	serviceReady    bool
 	firewallStatus  string
+	udpGuard        *udpGuard
+	// Cumulative observer totals of the TCP [0] and UDP [1] services, each
+	// input then output, and the TCP service's current connections.
+	serviceBytes [2][2]int64
+	connections  int64
 }
+
+// observed records one service's cumulative totals and returns the totals of
+// the whole process. Each service only grows, so the sum only grows; a reset
+// shows up as a smaller sum and is caught by the traffic checks.
+func (p *process) observed(udp bool, input, output, connections int64) (int64, int64, int64) {
+	i := 0
+	if udp {
+		i = 1
+	} else {
+		p.connections = connections
+	}
+	p.serviceBytes[i] = [2]int64{input, output}
+	return saturatingTraffic(p.serviceBytes[0][0], p.serviceBytes[1][0]), saturatingTraffic(p.serviceBytes[0][1], p.serviceBytes[1][1]), p.connections
+}
+
 type runtimeState struct {
 	mu                sync.Mutex
 	cfg               Config
@@ -127,9 +147,10 @@ func GostConfig(rule Rule, observerURL string) ([]byte, error) {
 	return gostConfig(rule, observerURL, gostTLSFiles{})
 }
 func gostConfig(rule Rule, observerURL string, tlsFiles gostTLSFiles) ([]byte, error) {
-	return gostConfigAt(rule, observerURL, tlsFiles, fmt.Sprintf(":%d", rule.ListenPort))
+	listen := fmt.Sprintf(":%d", rule.ListenPort)
+	return gostConfigAt(rule, observerURL, tlsFiles, listen, listen)
 }
-func gostConfigAt(rule Rule, observerURL string, tlsFiles gostTLSFiles, listenAddress string) ([]byte, error) {
+func gostConfigAt(rule Rule, observerURL string, tlsFiles gostTLSFiles, listenAddress, udpListenAddress string) ([]byte, error) {
 	if (rule.Protocol != "tcp" && rule.Protocol != "tls") || rule.ListenPort < 1 || rule.ListenPort > 65535 || rule.RateMbps < 1 || rule.RateMbps > 100000 || len(rule.Targets) < 1 || len(rule.Targets) > 8 {
 		return nil, errors.New("invalid fixed forwarding rule")
 	}
@@ -179,6 +200,21 @@ func gostConfigAt(rule Rule, observerURL string, tlsFiles gostTLSFiles, listenAd
 		service["admission"] = "upstream"
 		config["admissions"] = []any{map[string]any{"name": "upstream", "whitelist": true, "matchers": rule.AllowedSources}}
 	}
+	if rule.UDP {
+		// Keepalive keeps one channel per client for Mieru's heartbeats; without
+		// it GOST closes the channel after the first reply. Hops are plain UDP.
+		// The limiter is separate: sharing TCP's starves UDP when both are used.
+		udpNodes := make([]map[string]any, len(rule.Targets))
+		for i, target := range rule.Targets {
+			udpNodes[i] = map[string]any{"name": fmt.Sprintf("target-%d", i), "addr": target}
+		}
+		udp := map[string]any{"name": rule.ID + "/udp", "addr": udpListenAddress, "handler": map[string]any{"type": "udp"}, "listener": map[string]any{"type": "udp", "metadata": map[string]any{"keepalive": true, "ttl": "30s"}}, "forwarder": map[string]any{"nodes": udpNodes, "selector": map[string]any{"strategy": rule.Strategy, "maxFails": 1, "failTimeout": "10s"}}, "limiter": "rate-udp", "observer": "observer", "metadata": map[string]any{"enableStats": true, "observer.period": "1s", "observer.resetTraffic": false}}
+		if admission, ok := service["admission"]; ok {
+			udp["admission"] = admission
+		}
+		config["services"] = []any{service, udp}
+		config["limiters"] = append(config["limiters"].([]any), map[string]any{"name": "rate-udp", "limits": []string{fmt.Sprintf("$ %dB %dB", bytesPerSecond, bytesPerSecond)}})
+	}
 	return json.MarshalIndent(config, "", "  ")
 }
 
@@ -211,8 +247,9 @@ func (s *runtimeState) observer(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, event := range in.Events {
-		p := s.processes[event.Service]
-		if p == nil || r.URL.Query().Get("epoch") != p.epoch {
+		id, udp := strings.CutSuffix(event.Service, "/udp")
+		p := s.processes[id]
+		if p == nil || r.URL.Query().Get("epoch") != p.epoch || udp && !p.rule.UDP {
 			continue
 		}
 		if event.Kind != "service" {
@@ -220,7 +257,8 @@ func (s *runtimeState) observer(w http.ResponseWriter, r *http.Request) {
 		}
 		switch event.Type {
 		case "status":
-			if p.stopping {
+			// Only the TCP service decides the rule's state; UDP is best effort.
+			if p.stopping || udp {
 				continue
 			}
 			switch event.Status.State {
@@ -237,20 +275,21 @@ func (s *runtimeState) observer(w http.ResponseWriter, r *http.Request) {
 				p.ack.State = "failed"
 			}
 		case "stats":
+			input, output, connections := p.observed(udp, event.Stats.InputBytes, event.Stats.OutputBytes, event.Stats.CurrentConns)
 			if s.cfg.OfflinePolicy == KeepLast {
-				s.recordV2TrafficLocked(p, event.Stats.InputBytes, event.Stats.OutputBytes, event.Stats.CurrentConns, time.Now().UnixMilli())
-				if event.Stats.InputBytes >= p.traffic.InputBytes && event.Stats.OutputBytes >= p.traffic.OutputBytes && event.Stats.CurrentConns >= 0 {
-					p.traffic.InputBytes, p.traffic.OutputBytes, p.traffic.Connections = event.Stats.InputBytes, event.Stats.OutputBytes, event.Stats.CurrentConns
+				s.recordV2TrafficLocked(p, input, output, connections, time.Now().UnixMilli())
+				if input >= p.traffic.InputBytes && output >= p.traffic.OutputBytes && connections >= 0 {
+					p.traffic.InputBytes, p.traffic.OutputBytes, p.traffic.Connections = input, output, connections
 				}
 				continue
 			}
-			if event.Stats.InputBytes < p.traffic.InputBytes || event.Stats.OutputBytes < p.traffic.OutputBytes {
+			if input < p.traffic.InputBytes || output < p.traffic.OutputBytes {
 				continue
 			}
 			p.traffic.Sequence++
-			p.traffic.InputBytes = event.Stats.InputBytes
-			p.traffic.OutputBytes = event.Stats.OutputBytes
-			p.traffic.Connections = event.Stats.CurrentConns
+			p.traffic.InputBytes = input
+			p.traffic.OutputBytes = output
+			p.traffic.Connections = connections
 			s.pending[p.epoch] = p.traffic
 		}
 	}
@@ -298,6 +337,9 @@ func (s *runtimeState) stopLocked(id string) {
 	if p.guard != nil {
 		p.guard.close()
 	}
+	if p.udpGuard != nil {
+		p.udpGuard.close()
+	}
 	p.stopping = true
 	p.ack.State = "stopping"
 	p.ack.Message = "rule removed or lease expired"
@@ -311,16 +353,28 @@ func (s *runtimeState) startLocked(ctx context.Context, rule Rule) error {
 }
 
 type preparedProcess struct {
-	epoch, path string
-	cleanupTLS  func()
-	backend     net.Listener
-	backendAddr string
+	epoch, path    string
+	cleanupTLS     func()
+	backend        net.Listener
+	backendAddr    string
+	udpBackend     *net.UDPConn
+	udpBackendAddr string
+}
+
+// releaseBackends frees the reserved loopback ports just before GOST binds them.
+func (p *preparedProcess) releaseBackends() {
+	if p.backend != nil {
+		_ = p.backend.Close()
+		p.backend = nil
+	}
+	if p.udpBackend != nil {
+		_ = p.udpBackend.Close()
+		p.udpBackend = nil
+	}
 }
 
 func (p *preparedProcess) cleanup() {
-	if p.backend != nil {
-		_ = p.backend.Close()
-	}
+	p.releaseBackends()
 	p.cleanupTLS()
 	_ = os.Remove(p.path)
 }
@@ -334,15 +388,24 @@ func (s *runtimeState) prepareProcess(rule Rule) (*preparedProcess, error) {
 	if err != nil {
 		return nil, err
 	}
-	backendAddr := backend.Addr().String()
+	prepared := &preparedProcess{epoch: epoch, cleanupTLS: func() {}, backend: backend, backendAddr: backend.Addr().String()}
 	backendRule := rule
 	backendRule.ListenPort = backend.Addr().(*net.TCPAddr).Port
+	if rule.UDP {
+		// A UDP port GOST cannot bind would end the whole process, TCP included,
+		// so it is reserved here like the TCP one.
+		if prepared.udpBackend, err = reserveUDPBackend(rule.ListenPort); err != nil {
+			prepared.releaseBackends()
+			return nil, err
+		}
+		prepared.udpBackendAddr = prepared.udpBackend.LocalAddr().String()
+	}
 	if rule.Protocol == "tls" {
 		// Terminate inter-node TLS in the Agent guard, then screen the cleartext
 		// before passing it to loopback-only GOST. The externally pinned node
 		// identity remains unchanged.
 		if _, err := tls.X509KeyPair([]byte(rule.TLSCertificate), []byte(rule.TLSPrivateKey)); err != nil {
-			_ = backend.Close()
+			prepared.releaseBackends()
 			return nil, errors.New("invalid TLS node identity")
 		}
 		backendRule.Protocol = "tcp"
@@ -351,19 +414,20 @@ func (s *runtimeState) prepareProcess(rule Rule) (*preparedProcess, error) {
 	// The public guard enforces the original source ACL. GOST must be reachable
 	// only from that local guard, never directly from the network.
 	backendRule.AllowedSources = []string{"127.0.0.1"}
-	raw, cleanupTLS, err := prepareGostConfig(backendRule, s.observerURL+"&epoch="+epoch, s.cfg.StateDir, backendAddr)
+	raw, cleanupTLS, err := prepareGostConfig(backendRule, s.observerURL+"&epoch="+epoch, s.cfg.StateDir, prepared.backendAddr, prepared.udpBackendAddr)
 	if err != nil {
-		_ = backend.Close()
+		prepared.releaseBackends()
 		cleanupTLS()
 		return nil, err
 	}
-	path := filepath.Join(s.cfg.StateDir, "rule-"+epoch+".json")
-	if err = os.WriteFile(path, raw, 0600); err != nil {
-		_ = backend.Close()
+	prepared.cleanupTLS = cleanupTLS
+	prepared.path = filepath.Join(s.cfg.StateDir, "rule-"+epoch+".json")
+	if err = os.WriteFile(prepared.path, raw, 0600); err != nil {
+		prepared.releaseBackends()
 		cleanupTLS()
 		return nil, err
 	}
-	return &preparedProcess{epoch: epoch, path: path, cleanupTLS: cleanupTLS, backend: backend, backendAddr: backendAddr}, nil
+	return prepared, nil
 }
 
 func (s *runtimeState) startPreparedLocked(ctx context.Context, rule Rule, prepared *preparedProcess) error {
@@ -373,18 +437,28 @@ func (s *runtimeState) startPreparedLocked(ctx context.Context, rule Rule, prepa
 		prepared.cleanup()
 		return err
 	}
-	_ = prepared.backend.Close()
-	prepared.backend = nil
+	var udp *udpGuard
+	if rule.UDP {
+		if udp, err = newUDPGuard(rule, prepared.udpBackendAddr); err != nil {
+			guard.close()
+			prepared.cleanup()
+			return err
+		}
+	}
+	prepared.releaseBackends()
 	child, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(child, s.cfg.GostBinary, "-C", path)
 	protectChild(cmd)
-	p := &process{rule: rule, epoch: epoch, cmd: cmd, cancel: cancel, guard: guard, ack: Ack{ID: rule.ID, Version: rule.Version, State: "pending"}, traffic: Traffic{ID: rule.ID, Version: rule.Version, Epoch: epoch, EntitlementVersion: rule.EntitlementVersion}, expires: time.Now().Add(30 * time.Second), done: make(chan struct{}), startedAt: time.Now().UnixMilli()}
+	p := &process{rule: rule, epoch: epoch, cmd: cmd, cancel: cancel, guard: guard, udpGuard: udp, ack: Ack{ID: rule.ID, Version: rule.Version, State: "pending"}, traffic: Traffic{ID: rule.ID, Version: rule.Version, Epoch: epoch, EntitlementVersion: rule.EntitlementVersion}, expires: time.Now().Add(30 * time.Second), done: make(chan struct{}), startedAt: time.Now().UnixMilli()}
 	s.processes[rule.ID] = p
 	// Logging is not forwarded to the control plane; target details are private.
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
 		guard.close()
+		if udp != nil {
+			udp.close()
+		}
 		cleanupTLS()
 		cancel()
 		os.Remove(path)
@@ -394,10 +468,17 @@ func (s *runtimeState) startPreparedLocked(ctx context.Context, rule Rule, prepa
 		return err
 	}
 	guard.serve(child)
+	if udp != nil {
+		udp.serve(child)
+	}
 	go func() {
 		err := cmd.Wait()
 		guard.close()
 		guard.wait()
+		if udp != nil {
+			udp.close()
+			udp.wait()
+		}
 		cleanupTLS()
 		os.Remove(path)
 		s.mu.Lock()

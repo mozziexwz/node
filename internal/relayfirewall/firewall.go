@@ -25,38 +25,44 @@ type Status struct {
 	Start      string `json:"start"`
 	ObservedAt int64  `json:"observedAt"`
 	Ports      []int  `json:"ports"`
+	UDPPorts   []int  `json:"udpPorts,omitempty"`
 	Backend    string `json:"backend"`
 	Error      string `json:"error,omitempty"`
 }
 
 type Runner func(context.Context, string, ...string) (string, error)
 
-func portRule(port int) []string {
-	return []string{"-p", "tcp", "-m", "tcp", "--dport", strconv.Itoa(port), "-m", "comment", "--comment", Marker, "-j", "ACCEPT"}
+// protocols are the ones a relay listens on, in the order rules are changed.
+var protocols = []string{"tcp", "udp"}
+
+func portRule(protocol string, port int) []string {
+	return []string{"-p", protocol, "-m", protocol, "--dport", strconv.Itoa(port), "-m", "comment", "--comment", Marker, "-j", "ACCEPT"}
 }
 
 func jumpRule() []string { return []string{"-m", "comment", "--comment", Marker, "-j", Chain} }
 
 // The final marker and EVERY rule must have exactly our shape. Never flush or
-// adopt an existing same-name chain containing an administrator's rules.
-func parseOwned(raw string) (map[int]bool, error) {
+// adopt an existing same-name chain containing an administrator's rules. The
+// result maps each protocol to its permitted ports.
+func parseOwned(raw string) (map[string]map[int]bool, error) {
 	lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(raw, "\"", "")), "\n")
 	if len(lines) < 2 || lines[0] != "-N "+Chain || lines[len(lines)-1] != "-A "+Chain+" -m comment --comment "+Marker+" -j RETURN" {
 		return nil, errors.New("firewall chain ownership mismatch")
 	}
-	ports := map[int]bool{}
+	owned := map[string]map[int]bool{"tcp": {}, "udp": {}}
 	for _, line := range lines[1 : len(lines)-1] {
 		words := strings.Fields(line)
 		if len(words) != 14 {
 			return nil, errors.New("unknown firewall rule")
 		}
+		ports, known := owned[words[3]]
 		port, err := strconv.Atoi(words[7])
-		if err != nil || port < 1 || port > 65535 || ports[port] || line != "-A "+Chain+" "+strings.Join(portRule(port), " ") {
+		if !known || err != nil || port < 1 || port > 65535 || ports[port] || line != "-A "+Chain+" "+strings.Join(portRule(words[3], port), " ") {
 			return nil, errors.New("unknown firewall rule")
 		}
 		ports[port] = true
 	}
-	return ports, nil
+	return owned, nil
 }
 
 func sortedPorts(ports map[int]bool) []int {
@@ -72,18 +78,21 @@ func sortedPorts(ports map[int]bool) []int {
 // ufw-after-input. UFW user rules always run first, including administrator deny
 // rules appended AFTER reconciliation. Never put an ACCEPT jump in user-input.
 // Rechecking every cycle also repairs a UFW reload without restarting Relay.
-func ReconcileFamily(ctx context.Context, run Runner, tool string, desired []int, enabled bool) error {
+func ReconcileFamily(ctx context.Context, run Runner, tool string, tcp, udp []int, enabled bool) error {
 	parent, legacyParent := "ufw-after-input", "ufw-user-input"
 	if tool == "ip6tables" {
 		parent, legacyParent = "ufw6-after-input", "ufw6-user-input"
 	}
-	wanted := map[int]bool{}
-	for _, port := range desired {
-		if port < 1 || port > 65535 {
-			return errors.New("invalid listen port")
+	wanted := map[string]map[int]bool{"tcp": {}, "udp": {}}
+	for protocol, desired := range map[string][]int{"tcp": tcp, "udp": udp} {
+		for _, port := range desired {
+			if port < 1 || port > 65535 {
+				return errors.New("invalid listen port")
+			}
+			wanted[protocol][port] = true
 		}
-		wanted[port] = true
 	}
+	wantedCount := len(wanted["tcp"]) + len(wanted["udp"])
 	ip := func(args ...string) (string, error) { return run(ctx, tool, append([]string{"-w", "5"}, args...)...) }
 	raw, err := ip("-S")
 	if err != nil {
@@ -100,7 +109,7 @@ func ReconcileFamily(ctx context.Context, run Runner, tool string, desired []int
 			}
 		}
 	}
-	if !hasChain && (!enabled || len(wanted) == 0) {
+	if !hasChain && (!enabled || wantedCount == 0) {
 		return nil
 	}
 	if enabled {
@@ -124,7 +133,7 @@ func ReconcileFamily(ctx context.Context, run Runner, tool string, desired []int
 		return err
 	}
 	if !enabled {
-		wanted = map[int]bool{}
+		wanted, wantedCount = map[string]map[int]bool{"tcp": {}, "udp": {}}, 0
 	}
 	// Ownership was verified before touching either parent. Retire the old
 	// placement first so an administrator denial cannot be bypassed during an
@@ -136,23 +145,27 @@ func ReconcileFamily(ctx context.Context, run Runner, tool string, desired []int
 	}
 	// Remove stale permissions before adding new ones; never change policies,
 	// unrelated chains, UFW files, SSH rules, or administrator-owned permits.
-	for _, port := range sortedPorts(owned) {
-		if !wanted[port] {
-			if _, err = ip(append([]string{"-D", Chain}, portRule(port)...)...); err != nil {
-				return err
+	for _, protocol := range protocols {
+		for _, port := range sortedPorts(owned[protocol]) {
+			if !wanted[protocol][port] {
+				if _, err = ip(append([]string{"-D", Chain}, portRule(protocol, port)...)...); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	for _, port := range sortedPorts(wanted) {
-		if !owned[port] {
-			if _, err = ip(append([]string{"-I", Chain, "1"}, portRule(port)...)...); err != nil {
-				return err
+	for _, protocol := range protocols {
+		for _, port := range sortedPorts(wanted[protocol]) {
+			if !owned[protocol][port] {
+				if _, err = ip(append([]string{"-I", Chain, "1"}, portRule(protocol, port)...)...); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	jump := jumpRule()
 	_, linked := ip(append([]string{"-C", parent}, jump...)...)
-	if len(wanted) > 0 {
+	if wantedCount > 0 {
 		if linked != nil {
 			_, err = ip(append([]string{"-A", parent}, jump...)...)
 			return err

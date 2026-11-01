@@ -18,6 +18,9 @@ type Rule struct {
 	TLSCertificate     string      `json:"tlsCertificate,omitempty"`
 	TLSPrivateKey      string      `json:"tlsPrivateKey,omitempty"`
 	TargetTLS          []TLSClient `json:"targetTls,omitempty"`
+	// UDP also forwards UDP on ListenPort to the same targets, always in plain
+	// UDP. Only Agents reporting UDPForwardCapability receive such a rule.
+	UDP bool `json:"udp,omitempty"`
 }
 type TLSClient struct {
 	CA         string `json:"ca"`
