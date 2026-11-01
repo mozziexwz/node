@@ -1146,7 +1146,7 @@ export function ToolForm({
               <div className="form-grid mt16">
                 <Field
                   label="配置备注"
-                  placeholder="例如：东京中转（将用于配置名称和文件名）"
+                  placeholder="例如：日本中转（将用于配置名称和文件名）"
                   value={remark}
                   maxLength={60}
                   onChange={(e) => setRemark(e.target.value)}
