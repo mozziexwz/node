@@ -61,7 +61,7 @@ const launch = () =>
   });
 
 test(
-  "deployment errors follow SSH advanced settings and precede three consecutive notices",
+  "deployment errors follow SSH advanced settings and precede four consecutive notices",
   { timeout: 60000 },
   async () => {
     const browser = await launch();
@@ -121,7 +121,7 @@ test(
               ? "服务器身份已变化，请在高级设置中核对。"
               : "请求失败 (502)";
           await expect(form.getByText(message, { exact: true })).toBeVisible();
-          await expect(form.locator(":scope > .notice.orange")).toHaveCount(3);
+          await expect(form.locator(":scope > .notice.orange")).toHaveCount(4);
           const order = await form.evaluate((node) => {
             const error = [...node.children].find((c) =>
               c.matches(".notice.red"),

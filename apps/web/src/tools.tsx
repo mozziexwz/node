@@ -655,6 +655,7 @@ function configHasUDP(d: RecordData | null) {
 }
 const healthLabels: Record<string, string> = {
   bbr: "BBR 网络优化",
+  fail2ban: "SSH 防护",
   service: "服务运行",
   localSelfTest: "本地自测",
   publicTCP: "公网 TCP 可达性",
@@ -674,6 +675,13 @@ const healthValues: Record<string, string> = {
   off: "未开启",
   target_tcp_reachable: "目标 TCP 可达",
   unknown: "未知",
+};
+// SSH protection (fail2ban) has states of its own.
+const fail2banValues: Record<string, string> = {
+  enabled: "已启用",
+  existing: "已有 fail2ban 配置，未改动",
+  unavailable: "未启用（不影响基础服务）",
+  review_required: "配置失败，请检查 fail2ban 服务",
 };
 export function TaskDetail({
   task,
@@ -780,6 +788,8 @@ export function TaskDetail({
           rows={Object.entries(healthLabels)
             // Results from before nodes served UDP have no UDP row.
             .filter(([k]) => k !== "publicUDP" || !!current.health.publicUDP)
+            // Only a deploy or upgrade run by a current executor reports it.
+            .filter(([k]) => k !== "fail2ban" || !!current.health.fail2ban)
             // Fetching a configuration runs no self-test and leaves BBR alone.
             .filter(
               ([k]) =>
@@ -790,7 +800,9 @@ export function TaskDetail({
             )
             .map(([k, label]) => [
               label,
-              healthValues[current.health[k]] || "未知",
+              (k === "fail2ban" ? fail2banValues : healthValues)[
+                current.health[k]
+              ] || "未知",
             ])}
         />
       )}
@@ -1129,6 +1141,13 @@ export function ToolForm({
             <Notice tone="orange">
               本功能仅限游戏用途，禁止用于翻墙、公共代理、违法活动或其他与游戏无关的用途。(MSBOOST
               将屏蔽部分网站)
+            </Notice>
+          )}
+          {(kind === "deploy" || kind === "upgrade") && (
+            <Notice tone="orange">
+              会同时安装 fail2ban 保护服务器的 SSH：同一 IP 15 分钟内输错 5
+              次密码封禁 1 天，再犯翻倍，最长 1 周。服务器已有 fail2ban
+              配置时保持不变。
             </Notice>
           )}
           {kind === "fetch-config" && (

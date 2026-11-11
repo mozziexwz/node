@@ -114,8 +114,15 @@ test(
       await expect(tab("全新部署")).toHaveAttribute("aria-selected", "true");
       await expect(page.getByText("节点更新内容")).toHaveCount(0);
       await expect(page.getByText("卸载 MSBOOST")).toBeVisible();
+      // Deploying and upgrading say that fail2ban comes with them.
+      const sshGuard = page.getByText(
+        "会同时安装 fail2ban 保护服务器的 SSH：同一 IP 15 分钟内输错 5 次密码封禁 1 天",
+        { exact: false },
+      );
+      await expect(sshGuard).toBeVisible();
 
       await tab("升级节点").click();
+      await expect(sshGuard).toBeVisible();
       await expect(
         page.getByRole("heading", { name: "节点更新内容" }),
       ).toBeVisible();
@@ -138,6 +145,7 @@ test(
 
       await tab("取回配置文件").click();
       await expect(page.getByText("节点更新内容")).toHaveCount(0);
+      await expect(sshGuard).toHaveCount(0);
       await expect(
         form.getByLabel("服务器 IP 地址", { exact: true }),
       ).toHaveValue("198.51.100.10");
@@ -248,6 +256,48 @@ test(
         "公网 UDP 可达性 不可达",
       ]);
       assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+test(
+  "a deploy or upgrade shows how protecting SSH went",
+  { timeout: 60000 },
+  async () => {
+    const browser = await launch();
+    try {
+      for (const [kind, state, shown] of [
+        ["deploy", "enabled", "已启用"],
+        ["upgrade", "existing", "已有 fail2ban 配置，未改动"],
+        ["deploy", "unavailable", "未启用（不影响基础服务）"],
+        ["upgrade", "review_required", "配置失败，请检查 fail2ban 服务"],
+        ["deploy", "unknown", "未知"],
+      ]) {
+        const { page, errors } = await mount(
+          browser,
+          "import {TaskDetail} from './tools'",
+          `<TaskDetail owner="member" onClose={()=>{}} task={{id:"guarded",userId:"member",kind:"${kind}",host:"203.0.113.10",state:"succeeded",phase:"complete",message:"节点任务已结束",health:{service:"running",localSelfTest:"passed",publicTCP:"reachable",bbr:"review_required",fail2ban:"${state}"}}}/>`,
+          (route) => route.fulfill({ json: {} }),
+        );
+        await expect(page.getByText("节点任务已结束")).toBeVisible();
+        const rows = await page
+          .locator("dialog tbody tr")
+          .evaluateAll((trs) =>
+            trs.map((tr) => tr.innerText.replace(/\s+/g, " ").trim()),
+          );
+        // BBR keeps its own wording for the state both share.
+        assert.deepEqual(rows, [
+          "BBR 网络优化 优化失败，部分参数需核查",
+          "SSH 防护 " + shown,
+          "服务运行 运行中",
+          "本地自测 通过",
+          "公网 TCP 可达性 可达",
+        ]);
+        assert.deepEqual(errors, []);
+        await page.close();
+      }
     } finally {
       await browser.close();
     }
