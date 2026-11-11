@@ -8,7 +8,9 @@
 #
 #   MSBOOST_FAIL2BAN_HOST_TEST=1 fail2ban_test.sh host STEP
 #     On a disposable machine with systemd and without fail2ban (a CI runner).
-#     Everything is real, and fail2ban is removed again afterwards.
+#     Everything is real, and fail2ban is removed again afterwards. A machine
+#     that cannot download fail2ban from its package archive skips the check
+#     with a warning: that says nothing about the step.
 #
 # STEP is the script written by:
 #   MSBOOST_FAIL2BAN_STEP_OUT=/path go test ./internal/executor -run '^TestFail2banStepDump$'
@@ -148,6 +150,23 @@ cleanup() {
   exit "$result"
 }
 trap cleanup EXIT
+
+# The check needs fail2ban from this machine's package archive. Runners now and
+# then cannot resolve theirs for minutes; the step would then report
+# "unavailable", correctly, and there would be nothing to check.
+packages_available() {
+  local -a apt=(apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2)
+  local -a fetch=(install -y -qq --no-install-recommends --download-only fail2ban python3-systemd nftables)
+  timeout 150 "${apt[@]}" "${fetch[@]}" > "$work/archive.log" 2>&1 && return 0
+  timeout 150 "${apt[@]}" update -qq >> "$work/archive.log" 2>&1 || true
+  timeout 150 "${apt[@]}" "${fetch[@]}" >> "$work/archive.log" 2>&1
+}
+if ! packages_available; then
+  reason=$(grep -m 1 -E '^(E|W|Err):' "$work/archive.log" | cut -c1-200 || true)
+  printf '::warning title=fail2ban check on a real service skipped::This machine could not download fail2ban from its package archive, so the check did not run. %s\n' "$reason"
+  printf 'SKIP: the package archive is unreachable; the fail2ban step was not checked against a real service here.\n'
+  exit 0
+fi
 
 expect_status enabled
 systemctl is-active --quiet fail2ban || fail 'fail2ban is not running'
