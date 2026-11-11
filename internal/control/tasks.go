@@ -577,6 +577,31 @@ func (t *TaskService) executorUnavailable(s *State, request executor.Request) er
 		return errors.New("当前在线执行机版本过旧，不支持此中转功能，请联系管理员升级执行机")
 	}
 }
+
+// executorAddresses lists where the executors in service were last seen from,
+// for the SSH allowlist of deployed nodes. Only public addresses are of use
+// on a member's server.
+func executorAddresses(s *State) []string {
+	out := []string{}
+	for _, record := range ListDocs[ExecutorRecord](s, "executors") {
+		if record.Status != "active" && record.Status != "draining" {
+			continue
+		}
+		ip, err := netip.ParseAddr(record.IP)
+		if err != nil {
+			continue
+		}
+		address := ip.Unmap().String()
+		if executor.PublicIP(address) == nil && !slices.Contains(out, address) {
+			out = append(out, address)
+		}
+	}
+	sort.Strings(out)
+	if len(out) > executor.MaxFail2banAllow {
+		out = out[:executor.MaxFail2banAllow]
+	}
+	return out
+}
 func taskPublicMessage(state string) string {
 	switch state {
 	case "succeeded":
@@ -623,6 +648,10 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Verify != nil || request.ReportVerified {
 		Fail(w, 400, "中转校验由网站安排")
+		return
+	}
+	if request.Fail2ban != nil {
+		Fail(w, 400, "SSH 防护由网站安排")
 		return
 	}
 	if err = executor.ValidateRequest(request); err != nil {
@@ -750,6 +779,13 @@ func (t *TaskService) create(w http.ResponseWriter, r *http.Request) {
 			job.RateMbps = rate
 			// A free relay only shows its self-test; it is never refused.
 			t.withRelayVerify(s, &envelope.Job.Request, relayVerifySettings(s).Free)
+		}
+		if request.Kind == "deploy" || request.Kind == "upgrade" {
+			// The node gets fail2ban for its SSH. Any executor may connect to
+			// it later, so none of them may be banned for a member's mistyped
+			// password; the executor that runs this task adds the address the
+			// server sees it from. Older executors ignore the field.
+			envelope.Job.Request.Fail2ban = &executor.Fail2banOptions{Allow: executorAddresses(s), ClientBits: 32}
 		}
 		if !t.hasExecutorFor(s, envelope.Job.Request) {
 			return t.executorUnavailable(s, envelope.Job.Request)
@@ -1401,6 +1437,9 @@ func (t *TaskService) result(w http.ResponseWriter, r *http.Request) {
 		}
 		job.UpdatedAt = time.Now().UnixMilli()
 		job.Health = cleanTaskHealth(out.Health)
+		if job.Health != nil && envelope.Job.Request.Fail2ban == nil {
+			job.Health.Fail2ban = ""
+		}
 		if out.Verify != nil {
 			report := *out.Verify
 			job.Verify = &report
@@ -1512,7 +1551,16 @@ func cleanTaskHealth(in *executor.Health) *executor.Health {
 	default:
 		udp = "unknown"
 	}
-	return &executor.Health{Service: clean(in.Service), LocalSelfTest: clean(in.LocalSelfTest), PublicTCP: clean(in.PublicTCP), PublicUDP: udp, Game: clean(in.Game), BBR: bbr}
+	// Reported only for a deploy or upgrade that asked for SSH protection.
+	guard := ""
+	switch in.Fail2ban {
+	case "":
+	case "enabled", "existing", "unavailable", "review_required":
+		guard = in.Fail2ban
+	default:
+		guard = "unknown"
+	}
+	return &executor.Health{Service: clean(in.Service), LocalSelfTest: clean(in.LocalSelfTest), PublicTCP: clean(in.PublicTCP), PublicUDP: udp, Game: clean(in.Game), BBR: bbr, Fail2ban: guard}
 }
 
 func (t *TaskService) listExecutors(w http.ResponseWriter, r *http.Request) {
