@@ -79,6 +79,17 @@ jobs:
           sudo bash deploy/relay_firewall_test.sh "$PWD/.runtime/relay-firewall.test"
           go build -o .runtime/relay-firewall-agent ./cmd/agent
           sudo bash deploy/relay_firewall_systemd_test.sh "$PWD/.runtime/relay-firewall-agent" "$PWD/.runtime/relay-firewall.test"
+      - name: Verify the deploy's fail2ban step against real fail2ban
+        run: |
+          mkdir -p .runtime
+          MSBOOST_FAIL2BAN_STEP_OUT="$PWD/.runtime/fail2ban-step.sh" go test -count=1 ./internal/executor -run '^TestFail2banStepDump$'
+          chmod 0644 .runtime/fail2ban-step.sh
+          # Real Debian packages and configuration parser; systemd stood in.
+          for version in 12 13; do
+            docker run --rm --cap-add NET_ADMIN --mount "type=bind,source=$PWD,target=/src,readonly" "debian:$version" bash /src/deploy/fail2ban_test.sh container /src/.runtime/fail2ban-step.sh
+          done
+          # The real service on this disposable runner; removed again afterwards.
+          sudo MSBOOST_FAIL2BAN_HOST_TEST=1 bash deploy/fail2ban_test.sh host "$PWD/.runtime/fail2ban-step.sh"
       - name: Verify Cloudflare trusted proxy boundaries with real Caddy
         run: |
           mkdir -p .runtime/caddy
