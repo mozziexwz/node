@@ -59,6 +59,9 @@ type Request struct {
 	// ReportVerified lets relay-inventory return each record's verification;
 	// only panels that set it understand the field.
 	ReportVerified bool `json:"reportVerified,omitempty"`
+	// Fail2ban asks a deploy or an upgrade to protect the server's SSH (see
+	// fail2ban.go). The panel or the local program sets it, never a browser.
+	Fail2ban *Fail2banOptions `json:"fail2ban,omitempty"`
 }
 
 // RelayMeta is the panel-supplied part of meta.json. The executor adds the
@@ -129,6 +132,10 @@ type Health struct {
 	// results from before nodes served UDP.
 	PublicUDP string `json:"publicUDP,omitempty"`
 	Game      string `json:"game"`
+	// Fail2ban: enabled, existing (the server has its own configuration,
+	// left untouched), unavailable or review_required. Reported only when the
+	// request asked for it, so older panels never see the field.
+	Fail2ban string `json:"fail2ban,omitempty"`
 }
 
 // RelayRecord is meta.json as written on the relay server.

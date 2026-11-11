@@ -102,6 +102,14 @@ func ValidateRequest(r Request) error {
 	if r.ReportVerified && r.Kind != "relay-inventory" {
 		return errors.New("校验记录参数只用于读取中转列表")
 	}
+	if r.Fail2ban != nil {
+		if r.Kind != "deploy" && r.Kind != "upgrade" {
+			return errors.New("SSH 防护参数只用于部署和升级节点")
+		}
+		if err := ValidateFail2ban(r.Fail2ban); err != nil {
+			return err
+		}
+	}
 	if r.ForwardTarget != nil {
 		return errors.New("用户任务不接受内部中转参数")
 	}

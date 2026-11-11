@@ -96,7 +96,7 @@ func (e *Engine) upgrade(ctx context.Context, job Job, r Result) Result {
 	}
 	script := prepareAsset(job.Script) + bbrTuneScript + encodedAssignment("MSBOOST_SERVER_IP", job.Request.SSH.Host) + "export MSBOOST_SERVER_IP\nmsboost_phase=install\n[ -f /etc/msboost/install.env ]\n"
 	// An upgrade adds UDP to a TCP-only node when its port is free for it.
-	script += "MSBOOST_UDP=1 bash \"$work/installer.sh\" >\"$work/private.log\" 2>&1\n" + nodeConfigTail
+	script += "MSBOOST_UDP=1 bash \"$work/installer.sh\" >\"$work/private.log\" 2>&1\n" + nodeConfigTail + fail2banStep(job.Request.Fail2ban)
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	r.Health = &Health{BBR: marker(out, "MSBOOST_BBR")}
 	if err != nil {
@@ -123,5 +123,8 @@ func (e *Engine) upgrade(ctx context.Context, job Job, r Result) Result {
 	}
 	r.Config = data
 	r.Health = &Health{Service: "running", LocalSelfTest: "passed", PublicTCP: e.TCPProbe(ctx, info.TargetHost, info.TargetPort), PublicUDP: e.UDPProbe(ctx, data), Game: "not_tested", BBR: marker(out, "MSBOOST_BBR")}
+	if job.Request.Fail2ban != nil {
+		r.Health.Fail2ban = fail2banStatus(out)
+	}
 	return r
 }

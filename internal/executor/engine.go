@@ -171,7 +171,9 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	// MSBOOST_UDP=1: this executor reads configurations with a UDP binding,
 	// so the node serves UDP too; without it the installer stays TCP-only.
 	script += "MSBOOST_FORCE_FRESH=1 MSBOOST_UDP=1 bash \"$work/installer.sh\" \"$node_user\" \"$node_pass\" >\"$work/private.log\" 2>&1\n"
-	script += nodeConfigTail
+	// SSH protection comes last: the node is already running, and the step
+	// reports its own status without affecting the deploy.
+	script += nodeConfigTail + fail2banStep(job.Request.Fail2ban)
 	out, err := e.Remote.Run(ctx, job.Request.SSH, script)
 	r.Health = &Health{BBR: marker(out, "MSBOOST_BBR")}
 	if err != nil {
@@ -193,6 +195,9 @@ func (e *Engine) deploy(ctx context.Context, job Job, r Result) Result {
 	r.Message = "节点服务及全程 TCP 测速协议自测通过；公网 TCP 和 UDP 单独检查，游戏连通性尚未验证"
 	r.Config = data
 	r.Health = &Health{Service: "running", LocalSelfTest: "passed", PublicTCP: e.TCPProbe(ctx, info.TargetHost, info.TargetPort), PublicUDP: e.UDPProbe(ctx, data), Game: "not_tested", BBR: marker(out, "MSBOOST_BBR")}
+	if job.Request.Fail2ban != nil {
+		r.Health.Fail2ban = fail2banStatus(out)
+	}
 	return r
 }
 func probeTCP(ctx context.Context, host string, port int) string {
