@@ -22,8 +22,8 @@
 
 | kind | 额外参数 |
 |---|---|
-| `deploy` | `ssh`；仅接受 `mode:"fresh"`。每次重新生成受管节点认证与端口，不重装操作系统；执行机以 `MSBOOST_UDP=1` 运行安装脚本，节点在同一端口同时开 TCP 和 UDP（UDP 端口被其他程序占用时只开 TCP），配置在 TCP 绑定之后再列同端口的 UDP 绑定；失败时安装器仍以私有快照回滚。部署前只读核验目标为 Debian 11 或以上版本。 |
-| `upgrade` | 只有 `ssh`（公网 IPv4），不接受 `mode`、备注或其他参数。先只读取回节点现有配置（没有 `/etc/msboost/install.env` 或 `/root/直连.json` 时以 `not_installed` 失败，服务器不做任何改动；配置入口不是这台服务器时为 `config_host_mismatch`），再核验 Debian 11 或以上版本，然后不带 `MSBOOST_FORCE_FRESH`、带 `MSBOOST_UDP=1` 重跑固定版本安装脚本，安装脚本沿用已记录的用户名、密码、端口和低熵档位，原来只开 TCP 的节点同时开 UDP。升级后的配置必须与升级前入口、端口和凭据一致，否则以 `config_changed` 失败。成功时交付同一份配置。 |
+| `deploy` | `ssh`；仅接受 `mode:"fresh"`。每次重新生成受管节点认证与端口，不重装操作系统；执行机以 `MSBOOST_UDP=1` 运行安装脚本，节点在同一端口同时开 TCP 和 UDP（UDP 端口被其他程序占用时只开 TCP），配置在 TCP 绑定之后再列同端口的 UDP 绑定；失败时安装器仍以私有快照回滚。部署前只读核验目标为 Debian 11 或以上版本。节点运行后再配置 SSH 防护，见下文「SSH 防护」。 |
+| `upgrade` | 只有 `ssh`（公网 IPv4），不接受 `mode`、备注或其他参数。先只读取回节点现有配置（没有 `/etc/msboost/install.env` 或 `/root/直连.json` 时以 `not_installed` 失败，服务器不做任何改动；配置入口不是这台服务器时为 `config_host_mismatch`），再核验 Debian 11 或以上版本，然后不带 `MSBOOST_FORCE_FRESH`、带 `MSBOOST_UDP=1` 重跑固定版本安装脚本，安装脚本沿用已记录的用户名、密码、端口和低熵档位，原来只开 TCP 的节点同时开 UDP。升级后的配置必须与升级前入口、端口和凭据一致，否则以 `config_changed` 失败。成功时交付同一份配置。升级同样配置 SSH 防护，并按当前执行机刷新白名单。 |
 | `fetch-config` | 只有 `ssh`（公网 IPv4）。只读取节点上的 `/root/直连.json`，按部署的标准核验格式和入口，不改动服务器，不跑本地自测也不调整 BBR；`health` 只有 `service`（两个节点服务都在运行为 `running`，否则 `stopped`）、`publicTCP` 和 `publicUDP`。失败编码同 `upgrade` 的前两种。 |
 | `relay` | `ssh`；`clientConfig` 为 JSON 对象，只允许一个 profile、server 和 TCP 端口（之后可再有一个同端口的 UDP 绑定，带 UDP 绑定的配置只派给声明 `node_udp_v1` 的执行机；有 UDP 绑定且目标端口不小于 1024 时，中转和前置机同端口也转发 UDP，生成的中转配置保留 UDP 绑定，否则只保留 TCP），其余字段（如 `trafficPattern`）原样保留；可选 `front:SSH` 增加第二台前置机，不能替代中转；`remark` 可选、最多 60 字符且不得含换行；`rateMbps` 可选，上下行各限速，省略为管理员设置的默认值（5），须在管理员设置的范围（1–10）内。网站另行写入使用者记录（`source:"manual"`、配置人邮箱），浏览器不能提交 `meta`。中转及前置 VPS 均先只读核验为 Debian 11 或以上版本。 |
 | `dd` | `ssh`；`dd:{confirmErase:true,portMode:"keep"\|"new",newPort?,passwordMode:"keep"\|"new",newPassword?,loginMode?}`，仅固定 Debian 12 重装流程。密钥登录时必须给 `loginMode`：`key` 把当前私钥推导出的公钥写入新系统（`passwordMode:"keep"`，不设 root 密码，私钥本身不写入），`password` 改为新 root 密码（`passwordMode:"new"` 与 `newPassword`）；重装脚本不能同时设置密码和公钥。密码登录时不接受 `loginMode:"key"`。 |
@@ -44,7 +44,7 @@ Task 字段：`id,userId,kind,host,sshPort,sshFingerprint,mode?,remark?,state,ph
 
 `GET /api/tasks/{id}/config` 返回原始客户端 JSON，仅所有者可读，服务器内存副本保留 10 分钟，重启即丢失。浏览器可存入加密 IndexedDB，不承诺跨浏览器或清除网站数据后的恢复；节点配置可以用 `fetch-config` 从服务器重新读取。部署、升级和取回的默认下载名为 `直连.json`，自备中转为 `自备中转.json`。自备备注用于配置 `profileName` / `activeProfile` 和下载名基础，文件名清理路径及控制字符；浏览器同时处理 Windows 保留名。自备中转监听端口从可用范围随机选择，不按区间起点顺序递增；仍须真实绑定成功才交付配置。备注不改变节点认证。
 
-`health` 分离 `service,localSelfTest,publicTCP,publicUDP,game`；`publicUDP` 由执行机经 UDP 打开用户自己的 mieru 隧道、向节点 `127.0.0.1:20424` 发 hello 得出：`reachable`、`unreachable`、`off`（配置没有 UDP 绑定）或 `not_tested`（执行机无法运行检查），旧执行机的结果没有这一项；`game` 保留协议兼容，当前没有游戏探测，UI 不显示未检测的 Game 行。页面显示“服务运行 / 本地自测 / 公网 TCP 可达性 / 公网 UDP 可达性”（结果没有 `publicUDP` 时不显示最后一行），并说明游戏需自行验证。`target_tcp_reachable` 仅表示目标 TCP 可达。`hops` 字段为 `fromHost,fromPort,toHost,toPort,udp?`，`udp` 表示这一跳也转发 UDP，旧执行机的结果没有这一项。
+`health` 分离 `service,localSelfTest,publicTCP,publicUDP,game`；`publicUDP` 由执行机经 UDP 打开用户自己的 mieru 隧道、向节点 `127.0.0.1:20424` 发 hello 得出：`reachable`、`unreachable`、`off`（配置没有 UDP 绑定）或 `not_tested`（执行机无法运行检查），旧执行机的结果没有这一项；`game` 保留协议兼容，当前没有游戏探测，UI 不显示未检测的 Game 行。页面显示“服务运行 / 本地自测 / 公网 TCP 可达性 / 公网 UDP 可达性”（结果没有 `publicUDP` 时不显示最后一行），并说明游戏需自行验证。`target_tcp_reachable` 仅表示目标 TCP 可达。`fail2ban` 只出现在配置了 SSH 防护的 `deploy` / `upgrade` 结果里，取值 `enabled`、`existing`、`unavailable`、`review_required`，页面显示为「SSH 防护」一行；旧执行机的结果没有这一项。`hops` 字段为 `fromHost,fromPort,toHost,toPort,udp?`，`udp` 表示这一跳也转发 UDP，旧执行机的结果没有这一项。
 
 维护模式对所有角色（含管理员）阻止新部署、中转、DD、清理及权益前置执行任务；已接受任务不自动取消。历史元数据、所有者临时配置和无密码的只读指纹探测仍可使用。指纹探测要求已认证的 active 账户、正常配额、公网地址及在线执行机，不套用免费工具邮箱要求；实际创建免费任务仍在读取 SSH 凭据前执行邮箱门禁，权益前置仍检查维护状态和权益。
 
@@ -153,6 +153,21 @@ UI 折叠入口为“卸载 MSBOOST”或“卸载自备中转”。点击“继
 GOST 下载归档保持固定 SHA256 校验，程序在受保护的 `/usr/local/libexec/msboost-free` 磁盘目录暂存、校验和原子发布；不在 Debian 默认可能挂载为 `noexec` 的 `/run` 中执行 ELF，也不修改挂载安全选项。已有共享缓存程序只核验、不覆盖。DD 使用仓库固定版本的 `bin456789/reinstall` 脚本，显式传入 `--username root`、密码与 SSH 端口，关闭其标准输入以避免交互提示吞掉外层执行指令。
 
 免费工具的 `deploy`、`relay` 及其自备前置目标在客户自有 VPS 调优 BBR：先记录原值，用 `sysctl -p` 只加载补充 2.4 指定的 13 个 BBR/FQ 与 TCP 参数中内核提供的项（不执行 `sysctl --system`，不重新加载其他配置），逐项读取核对后再原子写入专用 `/etc/sysctl.d/zz-msboost-bbr.conf`；重复执行保持幂等，不覆盖整份 `/etc/sysctl.conf`。控制执行机和本站捐赠权益 Relay 节点不执行该步骤。内核不支持 BBR、加载失败或任一参数未生效时恢复原值、不写入文件，任务继续并在 `health.bbr` 报告 `unavailable`（原值恢复失败为 `review_required`），不假报已启用；`/etc/sysctl.d` 或该文件的所有者、权限、符号链接检查不通过时任务在 `bbr` 阶段失败。
+
+## SSH 防护
+
+`deploy` 和 `upgrade` 在节点服务运行、配置读出之后，为服务器配置 fail2ban 保护 SSH。这一步和 BBR 一样单独报告结果，失败不影响任务成功。
+
+- 控制面给这两种任务加上 `fail2ban:{allow,clientBits:32}`。`allow` 是全部启用中（含等待现有任务完成）的执行机最近一次的公网「连接 IP」，去重排序，最多 32 个；`clientBits:32` 让执行机再加上服务器看到的本次 SSH 来源地址。浏览器提交 `fail2ban` 返回 HTTP 400，这个字段也不参与幂等摘要。
+- 「连接 IP」是执行机访问控制面时的来源地址。执行机走 IPv6 访问网站或在 NAT 之后时，它不一定是连接客户 VPS 用的出口 IPv4；只有执行本次任务的那台一定准确。
+- 默认参数：同一 IP 15 分钟内 5 次失败封禁 1 天，再犯翻倍，最长 1 周，封禁历史保留 30 天；只封 SSH 端口，端口取 sshd 实际监听的端口、`ssh.socket`、`sshd -T` 和本次连接的并集。有 `nft` 时用 nftables 动作，否则用 iptables，两者都不可用则不启用。只安装 `nft` 命令，不启用 `nftables.service`。
+- 只写入带标记的 `/etc/fail2ban/jail.d/zz-msboost.conf` 和 `/etc/fail2ban/fail2ban.d/zz-msboost.conf`。这一层的优先级低于 `jail.local`，用户之后自己的配置会覆盖它。
+- 服务器已有任何 `*.local`、其他 `jail.d/*.conf`，或软件包自带的 `jail.conf`、`fail2ban.conf`、`defaults-debian.conf` 被修改过时，不安装也不改动，报告 `existing`。
+- 白名单先于 `fail2ban` 软件包写入：Debian 装包后服务立即启动并回看最近的失败记录，其中可能有本次会话之前输错的密码。读不到本次 SSH 来源地址时不启用。
+- 安装、校验（`fail2ban-client -t`）或启动失败时撤回本次改动：本次新装的停用服务，原来在运行的恢复原配置并重启；报告 `unavailable`，撤回后原服务没有恢复为 `review_required`。下载有时限，安装从本机缓存进行、不会被中途打断。
+- 卸载 MSBOOST 不卸载 fail2ban，也不删除这两个文件。新增或更换执行机后，已部署的节点要再执行一次升级节点才会更新白名单。
+- 旧执行机会忽略 `fail2ban` 字段，照常部署，结果里没有这一项；不需要新的能力声明。
+- 本地版使用同一步骤，`clientBits` 为 16：把这台电脑连接服务器的来源地址所在的 /16 加入白名单，没有执行机列表。
 
 ## 执行机管理
 
