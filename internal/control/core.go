@@ -49,6 +49,7 @@ type App struct {
 	relayWorkCancel  context.CancelFunc
 	relayWorkClosed  bool
 	relayVerify      relayVerifyWork
+	relayProbe       relayProbeMonitor
 	public           publicCache
 	credentials      credentialCache
 }

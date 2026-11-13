@@ -26,6 +26,13 @@ type relayDiagnosticBroker struct {
 }
 
 func (b *relayDiagnosticBroker) begin(userID, ruleID, agentID, target string) (*relayDiagnosticJob, error) {
+	return b.beginLimited(userID, ruleID, agentID, target, relayruntime.MaxTargetProbes)
+}
+
+// beginLimited starts a probe only while fewer than limit probes are waiting
+// on the Agent. Scheduled probes pass a lower limit than a member's own
+// diagnosis, so they never take the last slots.
+func (b *relayDiagnosticBroker) beginLimited(userID, ruleID, agentID, target string, limit int) (*relayDiagnosticJob, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := time.Now()
@@ -45,7 +52,7 @@ func (b *relayDiagnosticBroker) begin(userID, ruleID, agentID, target string) (*
 			perAgent++
 		}
 	}
-	if perAgent >= relayruntime.MaxTargetProbes {
+	if perAgent >= limit {
 		return nil, errors.New("节点诊断繁忙，请稍后重试")
 	}
 	job := &relayDiagnosticJob{id: commerceID(), userID: userID, ruleID: ruleID, agentID: agentID, target: target, expires: now.Add(targetProbeWait), result: make(chan relayruntime.TargetProbeResult, 1)}

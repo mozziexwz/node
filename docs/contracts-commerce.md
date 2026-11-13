@@ -67,6 +67,7 @@
 - 管理员 `POST /api/admin/user-rules/{id}/verify` 输入 `{action:"recheck"|"exempt"|"unexempt",reason?}`，返回该规则的管理员视图。`exempt` 需要 2–200 字、不含换行的原因，同时恢复被校验暂停的规则；`unexempt` 回到 `unchecked` 并立即校验；`recheck` 不能用于已豁免的规则。三者都写审计（`relay.verify.recheck`、`relay.verify.exempt`、`relay.verify.unexempt`）。管理员规则列表可按目标校验状态筛选。策略通过 `PUT /api/admin/settings` 的 `relayVerify` 字段设置，见 [Identity API contract](contracts-identity.md)。
 - `POST /api/user/target/reset` 输入 `{confirm:true}`，撤销所有旧线路。纯 v1 返回 `{state:"revoking",retryAfter:时间戳毫秒}`；涉及 v2 返回 `{state:"revoking",stopStatus:"pending",message}`，全体旧实例确认撤销前不允许配置新目标。
 - `GET /api/user/traffic` → `{trafficUsed,trafficTotal,months:{"2026-09":字节},accounting}`。入口按规则保存的流量方向及倍率计费，多跳只计一次，各线路共用账户额度。整数千分倍率的小数字节余数随cursor持久化，同一epoch分批上报不会截断丢失；去重、溢出和旧权益保护继续有效。月历史不随买套餐清空。
+- `GET /api/user/probe` → `{enabled,intervalSeconds,retentionHours:24,now,routes:[{routeId,routeName,level,state,samples:[[时间戳毫秒,建连毫秒]]}]}`，只含本人的规则，按线路顺序。`samples` 是最近 24 小时已得到回答的探测，由旧到新，建连毫秒为 `-1` 表示出口连不上目标。`state`：`active` 正在探测；`paused` 规则已暂停；`unsupported` 出口节点在线但 Agent 不支持探测；`waiting` 其余情况（规则未就绪、权益或线路不可用、出口管理连接离线）。站点关闭探针时返回 `{enabled:false,routes:[]}`。每用户每分钟 60 次（429）。探测由网站定时发起，复用一次性诊断的出口探测：只测每条线路的第一个出口到规则自身目标的 TCP 建连，不含入口、中间节点和游戏协议。同一出口节点每 5 秒最多发起一次定时探测，且只在该节点空闲探测名额不少于两个时发起，手动诊断和目标校验优先；规则多于间隔内能轮到的数量时，各规则的实际间隔相应变长。节点答复“规则未在运行”或未在时限内答复时不记录结果，页面显示为无数据，不等于连接失败。结果只保存在内存，并定期写入数据目录的 `relay-probe.gob` 以便重启后保留；不进入数据库状态和整站备份，恢复备份后历史从空开始。间隔与开关通过 `PUT /api/admin/settings` 的 `relayProbe` 字段设置，见 [Identity API contract](contracts-identity.md)。
 
 ## Agent运行契约和运维边界
 

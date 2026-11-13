@@ -12,6 +12,7 @@ import { SiteSettings } from "./site-settings";
 import { RelayCodeSettings } from "./relay-code";
 import { LauncherSettings, settingsTabKey } from "./launcher";
 import { NodeUpgradeSettings } from "./node-upgrade";
+import { RelayProbeSettings } from "./probe";
 import {
   AdminRuleVerify,
   RelayVerifySettings,
@@ -1374,6 +1375,7 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           ["site", "主页与 SEO"],
           ["relayCodes", "中转码"],
           ["relayVerify", "中转校验"],
+          ["relayProbe", "探针"],
           ["launcher", "MSBOOST 启动器"],
           ["localApp", "MSBOOST 本地版"],
           ["nodeUpgrade", "升级节点"],
@@ -1403,6 +1405,8 @@ export function Settings({ onRefresh }: { onRefresh: () => void }) {
           <NodeUpgradeSettings onSaved={onRefresh} />
         ) : tab === "relayVerify" ? (
           <RelayVerifySettings onSaved={onRefresh} />
+        ) : tab === "relayProbe" ? (
+          <RelayProbeSettings onSaved={onRefresh} />
         ) : tab === "captcha" ? (
           <AsyncForm
             onSubmit={async (f) => {

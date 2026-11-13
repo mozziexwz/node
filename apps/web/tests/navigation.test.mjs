@@ -15,7 +15,10 @@ for(const [role,admin,subscribed] of [['admin',true,false],['member',false,false
     assert.ok(items.indexOf('dd')<items.indexOf('plans'));
     assert.ok(items.includes('account')&&items.includes('tickets'));
     if(admin) assert.ok(items.includes('users')&&items.includes('executors')&&items.includes('rules')&&items.includes('relayAudit')&&groups.find(g=>g.title==='平台管理').items.includes('emailLog'));
-    else {assert.ok(!items.includes('users')&&!items.includes('relayAudit')&&!items.includes('emailLog'));assert.equal(items.includes('routes'),subscribed);}
+    else {assert.ok(!items.includes('users')&&!items.includes('relayAudit')&&!items.includes('emailLog'));assert.equal(items.includes('routes'),subscribed);
+    // The probe page belongs to members with an entitlement, right below traffic.
+    assert.equal(items.includes('probe'),subscribed&&!admin);
+    if(subscribed&&!admin)assert.equal(items.indexOf('probe'),items.indexOf('traffic')+1);}
   });
 }
 test('favicon and Maple share the outlined leaf and semicircle',()=>{

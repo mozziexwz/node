@@ -27,6 +27,7 @@ import {
   MonitorDown,
   Laptop,
   Mail,
+  Radar,
 } from "lucide-react";
 import { api, post, RecordData } from "./api";
 import {
@@ -63,6 +64,7 @@ import { freeTools, navigationGroups } from "./navigation";
 import { LauncherPage } from "./launcher";
 import { LocalAppPage } from "./local-app";
 import { Guide } from "./guide";
+import { ProbePage } from "./probe";
 import { paymentReturnOrder } from "./payment-return";
 import { SiteSwitcher } from "./site-switcher";
 const labels: Record<string, [string, typeof Server]> = {
@@ -82,6 +84,7 @@ const labels: Record<string, [string, typeof Server]> = {
   account: ["账户与邮箱验证", ShieldCheck],
   routes: ["中转线路", Route],
   traffic: ["流量统计", ChartNoAxesCombined],
+  probe: ["探针", Radar],
   status: ["线路状态", Activity],
   users: ["用户管理", Users],
   agents: ["节点", Server],
@@ -354,6 +357,9 @@ export default function App() {
     case "traffic":
     case "status":
       page = <Traffic status={view === "status"} />;
+      break;
+    case "probe":
+      page = <ProbePage onNavigate={navigate} />;
       break;
     case "users":
       page = admin ? <UsersPage onRefresh={() => void refresh()} /> : <Empty />;

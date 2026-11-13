@@ -682,7 +682,7 @@ export function Guide({ navigate }: { navigate: (view: string) => void }) {
               捐赠权益
             </h3>
             <p>
-              兑换枫叶后可使用站点提供的中转线路，并查看流量统计和线路状态。免费工具不受影响。
+              兑换枫叶后可使用站点提供的中转线路，并查看流量统计、探针和线路状态。免费工具不受影响。
             </p>
             <Button className="mt16" onClick={() => navigate("plans")}>
               枫叶兑换

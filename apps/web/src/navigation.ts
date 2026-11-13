@@ -33,7 +33,7 @@ export function navigationGroups(
       items: admin
         ? ["agents", "routes", "rules", "plans", "cards", "orders", "payments"]
         : [
-            ...(subscribed ? ["routes", "traffic", "status"] : []),
+            ...(subscribed ? ["routes", "traffic", "probe", "status"] : []),
             "plans",
             "wallet",
             "orders",

@@ -615,6 +615,7 @@ func (a *App) RegisterRelay(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/user/routes/{route}/verify", a.relayVerifyNow)
 	mux.HandleFunc("POST /api/user/target/reset", a.relayResetTarget)
 	mux.HandleFunc("GET /api/user/traffic", a.relayTraffic)
+	mux.HandleFunc("GET /api/user/probe", a.relayProbeView)
 	mux.HandleFunc("GET /api/admin/relay-agents", a.relayAgents)
 	mux.HandleFunc("POST /api/admin/relay-agents", a.relaySaveAgent)
 	mux.HandleFunc("PUT /api/admin/relay-agents/{id}", a.relaySaveAgent)
@@ -1817,6 +1818,7 @@ func (a *App) StartRelay(ctx context.Context) {
 		}
 	}()
 	go a.relayVerifyLoop(ctx)
+	a.startRelayProbe(ctx)
 }
 func relayCleanup(s *State, now int64) error {
 	for _, rule := range ListDocs[UserRule](s, "user_rules") {
